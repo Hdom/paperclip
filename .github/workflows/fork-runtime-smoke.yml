@@ -14,7 +14,7 @@ jobs:
   smoke:
     if: github.repository == 'Hdom/paperclip'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 22
     steps:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -51,10 +51,10 @@ jobs:
               t.extractall('extracted', filter='data')
           PY
       - name: Bounded import, fresh startup, and restart
-        timeout-minutes: 14
+        timeout-minutes: 16
         run: |
-          timeout --signal=TERM --kill-after=20s 800s python3 - <<'PY'
-          import ctypes, json, os, pathlib, re, shutil, signal, subprocess, time, urllib.request
+          timeout --signal=TERM --kill-after=20s 900s python3 - <<'PY'
+          import ctypes, json, os, pathlib, re, shutil, signal, socket, subprocess, time, urllib.request
           root = pathlib.Path.cwd()
           evidence = root / 'evidence'; evidence.mkdir()
           raw = root / 'raw-diagnostics'; raw.mkdir()
@@ -99,33 +99,60 @@ jobs:
               for pid in ids: owned[pid]=rows[pid][1]
               return sum(rows[pid][2] for pid in ids)
           def cleanup(p):
-              track()
-              try: os.killpg(p.pid, signal.SIGTERM)
-              except ProcessLookupError: pass
-              deadline=time.monotonic()+12
+              track(); rows=process_table(); signaled=[]; forced=False
+              ports={3107}
+              for marker in data.rglob('postmaster.pid') if data.exists() else []:
+                  fields=marker.read_text().splitlines()
+                  if len(fields)>3 and fields[3].isdigit() and 0<int(fields[3])<65536: ports.add(int(fields[3]))
+              # Signal only the application Node child, never GNU time or its
+              # process group: PostgreSQL must be stopped by the app's handler.
+              live=lambda table: [pid for pid,start in owned.items()
+                  if pid in table and table[pid][1]==start and table[pid][3]!='Z']
+              if p.poll() is None:
+                  for pid,row in rows.items():
+                      if row[0]!=p.pid: continue
+                      try:
+                          if pathlib.Path('/proc',str(pid),'exe').resolve()!=pathlib.Path(node).resolve(): continue
+                          if owned.get(pid)!=row[1]: continue
+                          os.kill(pid,signal.SIGTERM); signaled.append(pid)
+                      except (FileNotFoundError,ProcessLookupError): pass
+              deadline=time.monotonic()+45
               while time.monotonic()<deadline:
-                  track()
-                  if p.poll() is not None: break
+                  p.poll(); track(); rows=process_table()
+                  if not live(rows): break
                   time.sleep(.2)
-              rows=process_table()
-              for pid,start in list(owned.items()):
-                  if pid in rows and rows[pid][1]==start:
-                      try: os.kill(pid, signal.SIGKILL)
+              track(); rows=process_table()
+              remaining=live(rows)
+              if remaining:
+                  forced=True
+                  for pid in remaining:
+                      try: os.kill(pid,signal.SIGKILL)
                       except ProcessLookupError: pass
               p.wait(timeout=5)
               deadline=time.monotonic()+5
               while time.monotonic()<deadline:
                   try:
-                      while os.waitpid(-1, os.WNOHANG)[0]: pass
+                      while os.waitpid(-1,os.WNOHANG)[0]: pass
                   except ChildProcessError: pass
                   track(); rows=process_table()
-                  live=[pid for pid,start in owned.items() if pid in rows and rows[pid][1]==start and rows[pid][3]!='Z']
-                  if not live: owned.clear(); return
-                  for pid in live:
-                      try: os.kill(pid, signal.SIGKILL)
+                  remaining=live(rows)
+                  if not remaining: break
+                  forced=True
+                  for pid in remaining:
+                      try: os.kill(pid,signal.SIGKILL)
                       except ProcessLookupError: pass
                   time.sleep(.1)
-              raise RuntimeError('Owned subprocess cleanup incomplete')
+              if remaining: raise RuntimeError('Owned subprocess cleanup incomplete')
+              owned.clear()
+              pidfiles=[str(file.relative_to(data)) for file in data.rglob('postmaster.pid')] if data.exists() else []
+              port_closed=True
+              for port in ports:
+                  try:
+                      with socket.create_connection(('127.0.0.1',port),timeout=1): port_closed=False
+                  except OSError: pass
+              return {'cleanup_complete':True,'graceful_shutdown':not forced,
+                  'forced_kill':forced,'node_pids_signaled':signaled,
+                  'postmaster_pid_files':pidfiles,'owned_ports_closed':port_closed,'checked_ports':sorted(ports)}
           def get(url):
               with opener.open('http://127.0.0.1:3107'+url,timeout=3) as response:
                   assert response.status==200
@@ -164,8 +191,10 @@ jobs:
                       signal.alarm(0)
                       results[name]={'passed':passed,'elapsed_seconds':round(time.monotonic()-begin,2),
                           'peak_sampled_descendant_rss_kib':peak,'exit_before_cleanup':p.poll(),**details}
-                      cleanup(p)
-                      results[name]['cleanup_complete']=True
+                      results[name].update(cleanup(p))
+                      if readiness and (not results[name]['graceful_shutdown'] or results[name]['postmaster_pid_files'] or not results[name]['owned_ports_closed']):
+                          passed=False
+                          results[name]['passed']=False
               print(json.dumps({name:results[name]}),flush=True)
               return passed
           try:
