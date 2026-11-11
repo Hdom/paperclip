@@ -56,13 +56,13 @@ jobs:
           mkdir -p scripts/fork-runtime-fixture
           cd scripts/fork-runtime-fixture
           for file in codex fake-codex.mjs driver.py verify.py run.py; do
-            curl --fail --silent --show-error --location --proto '=https' --max-time 30 "https://raw.githubusercontent.com/Hdom/paperclip/b38b0bdac05490367c637057a7e5e2167c1eac09/scripts/fork-runtime-fixture/$file" -o "$file"
+            curl --fail --silent --show-error --location --proto '=https' --max-time 30 "https://raw.githubusercontent.com/Hdom/paperclip/cd080bca8210f6ffeca43a99036ea6288456fb07/scripts/fork-runtime-fixture/$file" -o "$file"
           done
           sha256sum -c <<'SUMS'
           53067df410ed0ef7243e12c7174be41015a18378cceb49a910b6a2779a6fbec4  codex
           0491d88709f19ffed974fd75b878389e65abde374d74c7c7d4654786884105fd  fake-codex.mjs
           1c1ff1f0806ab9b76b0c0a461b944efd1c9745be1625c8859ed76af46cc8dc62  driver.py
-          8e274fec656c4d8b60cc5c0d62794d2bdebd55c8e1fa07e9dcf0644c64c9af6d  verify.py
+          13ce15474e73525d3a917ee852c8de7483d2af184915edfc4bdd2d6b81884c76  verify.py
           9fccbf55c97dadb93e5d7d75791f096bd4ee3a4ff6c3338163d1f14e8c81fd89  run.py
           SUMS
           chmod 0755 codex
