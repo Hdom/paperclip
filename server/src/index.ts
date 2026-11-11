@@ -1338,6 +1338,12 @@ async function startServerWithDatabaseTeardown(
     ] : []),
   ], () => !heartbeatSchedulerStopped);
 
+  if (heartbeat && config.heartbeatSchedulerEnabled) {
+    const worker = heartbeat.registerExecutionHandoffWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+    trackHeartbeatSchedulerWork(worker.ready);
+  }
+
   const budgetEnforcementWorker = registerBudgetEnforcementWork(db, deliveryWork, {
     cancelWorkForScope: accountingHeartbeat.cancelBudgetScopeWork,
   });

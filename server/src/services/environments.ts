@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
 import { randomUUID } from "node:crypto";
 
@@ -1670,8 +1671,9 @@ export function environmentService(db: Db) {
         : sql`${environmentLeases.metadata} - 'remoteExecutionTermination'`;
       const cleanupSettled = options?.expectedPendingCleanupAttemptId && options.cleanupStatus === "success"
         && status !== "pending_cleanup";
-      const row = await db
-        .update(environmentLeases)
+      const row = await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionHandoff);
+        return tx.update(environmentLeases)
         .set({
           status,
           releasedAt: status === "retained" ? null : now,
@@ -1691,6 +1693,7 @@ export function environmentService(db: Db) {
           : undefined))
         .returning()
         .then((rows) => rows[0] ?? null);
+      });
       return row ? toEnvironmentLease(row) : null;
     },
 

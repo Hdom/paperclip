@@ -85,6 +85,7 @@ const {
     reason: null,
   }));
   const heartbeatServiceMock = {
+    registerExecutionHandoffWork: vi.fn(() => ({ ready: Promise.resolve() })),
     reconcileCostAccounting: vi.fn(async () => ({ scanned: 0, accounted: 0 })),
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     recoverNativeRunsAfterRestart: vi.fn(async () => ({
