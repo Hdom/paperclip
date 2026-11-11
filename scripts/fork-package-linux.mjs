@@ -23,7 +23,7 @@ const run = (command, args, cwd = source, capture = false) => execFileSync(comma
 });
 // No production credentials or GitHub write token are needed by build scripts.
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-  /^(PATH|HOME|USER|LOGNAME|SHELL|LANG|LC_ALL|TMPDIR|CI|COREPACK_HOME|PNPM_HOME|CARGO_HOME|RUSTUP_HOME|RUSTC_WRAPPER|NODE_OPTIONS|npm_config_workspace_concurrency|CARGO_BUILD_JOBS|GOMAXPROCS)$/.test(key)));
+  /^(PATH|HOME|USER|LOGNAME|SHELL|LANG|LC_ALL|TMPDIR|CI|COREPACK_HOME|PNPM_HOME|CARGO_HOME|RUSTUP_HOME|npm_config_workspace_concurrency|CARGO_BUILD_JOBS|GOMAXPROCS)$/.test(key)));
 env.PAPERCLIP_BUILD_COMMIT = sha;
 env.PAPERCLIP_RELEASE_REUSE_UI_DIST = '1';
 env.PAPERCLIP_TELEMETRY_DISABLED = '1';
@@ -32,6 +32,9 @@ env.npm_config_registry = 'https://registry.npmjs.org';
 env.npm_config_userconfig = '/dev/null';
 const actual = run('git', ['rev-parse', 'HEAD'], source, true).toString().trim();
 if (actual !== sha) throw new Error('Source SHA differs from requested SHA');
+if (run('git', ['status', '--porcelain', '--untracked-files=all'], source, true).toString().trim()) {
+  throw new Error('Source checkout has tracked changes or untracked files; use a clean build checkout');
+}
 const stamp = json(path.join(source, 'server/dist/build-info.json'));
 if (stamp.commit !== sha) throw new Error('Prebuilt server commit stamp mismatch');
 
@@ -97,6 +100,11 @@ for (const [name, versions] of patchDefinitions) {
 // unqualified third version; never flatten these distinct provider bridges.
 
 const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'paperclip-fork-package-'));
+// Separate ordinary user configuration from the packaging subprocesses.
+// This is hygiene, not an OS sandbox: run only reviewed sources/dependencies.
+env.HOME = path.join(staging, 'home');
+fs.mkdirSync(env.HOME);
+env.npm_config_cache = path.join(staging, 'npm-cache');
 const packs = path.join(staging, 'packages');
 const payload = path.join(staging, 'payload');
 fs.mkdirSync(packs);
@@ -342,4 +350,5 @@ try {
   if (succeeded) fs.rmSync(staging, { recursive: true, force: true });
   else console.error(`Packaging failed; retained diagnostic staging: ${staging}`);
 }
+
 

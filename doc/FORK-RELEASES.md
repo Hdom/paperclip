@@ -2,7 +2,7 @@
 
 Inherited workflow files stay unchanged at their upstream `.github/workflows/` paths. Their execution is disabled through GitHub workflow settings, not by moving or editing the files. This avoids workflow-file merge conflicts when updating from upstream.
 
-The intended only enabled workflow is **Fork Linux release**, triggered manually from Actions. Before enabling repository Actions, verify every inherited workflow is disabled. It builds a full reviewed commit SHA (not a moving branch), typechecks the workspaces, runs four focused handoff regression suites, assembles the CLI/server dependency closure, and checks relocation. It does not claim the full upstream test suite passed.
+The only enabled workflow is **Fork Linux release**, triggered manually from Actions. Before enabling repository Actions, verify every inherited workflow is disabled. It builds a full reviewed commit SHA (not a moving branch), typechecks the workspaces, runs four focused handoff regression suites, assembles the CLI/server dependency closure, and checks relocation. It does not claim the full upstream test suite passed.
 
 Default output is a 14-day Actions artifact. The optional `draft_release` input additionally saves the candidate as a **draft** GitHub Release. Publishing the draft and activating a release are separate operator decisions. No npm/GitHub Packages publication is needed for the native Linux installation.
 
@@ -20,4 +20,8 @@ The initial packaging attempts exposed upstream installer-path gaps: runtime ski
 ## Upstream updates
 
 Keep inherited workflow contents unchanged. GitHub workflow disabled states are repository metadata, not source commits. Newly introduced upstream workflow files may register as enabled, so temporarily disable repository Actions before updating branches, enumerate all workflow definitions, disable every inherited workflow through GitHub controls, and verify the final list before re-enabling Actions. Never assume a newly added upstream workflow inherited the old disable state.
+
+
+The first hosted build and typecheck passed, but the initial test invocation used a 15-second global deadline for scheduler tests containing 40-second bounded waits. It failed 3 tests (97 passed, 1 fixture skipped). The fork workflow now restores the prior qualification profile: one worker and 60-second test deadline, with every assertion unchanged. This correction is not a pass claim; inspect the succeeding run’s actual test outcome.
+
 
