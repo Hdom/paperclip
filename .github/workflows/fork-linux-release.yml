@@ -67,6 +67,11 @@ jobs:
         working-directory: source
         run: >-
           pnpm exec vitest run --maxWorkers=1 --testTimeout=60000
+          server/src/__tests__/issue-review-checkout.test.ts
+          server/src/__tests__/issue-execution-policy.test.ts
+          server/src/__tests__/issue-execution-policy-routes.test.ts
+          server/src/__tests__/heartbeat-auto-checkout.test.ts
+          server/src/__tests__/issues-checkout-wakeup.test.ts
           server/src/__tests__/heartbeat-handoff-crash-child.test.ts
           server/src/__tests__/heartbeat-handoff-execution-wait.test.ts
           server/src/__tests__/issue-wake-diagnostics-routes.test.ts

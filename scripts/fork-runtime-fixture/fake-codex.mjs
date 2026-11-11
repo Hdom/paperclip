@@ -22,6 +22,14 @@ try{
  const me=await api('GET','/agents/me');if(me.id!==process.env.PAPERCLIP_AGENT_ID)throw Error('Actor mismatch');
  const path='/issues/'+fixture.issueId,issue=await api('GET',path);
  if(issue.assigneeAgentId!==me.id){log('not_assigned');process.exit(0)}
+ const beforeState=JSON.stringify(issue.executionState);
+ const checked=await api('POST',path+'/checkout',{agentId:me.id,expectedStatuses:[issue.status]});
+ if(checked.assigneeAgentId!==me.id||checked.checkoutRunId!==runId)throw Error('Checkout lease mismatch');
+ if(role==='Coordinator'&&(checked.status!=='in_review'||JSON.stringify(checked.executionState)!==beforeState))throw Error('Checkout changed native review stage');
+ if(role==='Planner'&&checked.status!=='in_progress')throw Error('Producer checkout failed');
+ const after=await api('GET',path);
+ if(after.status!==checked.status||JSON.stringify(after.executionState)!==JSON.stringify(checked.executionState))throw Error('Persisted checkout mismatch');
+ log('checkout_invariant_passed',{status:checked.status,executionState:checked.executionState});
  if(role==='Planner'){
   const r=await fetch(base+'/api'+path+'/documents/plan',{headers,signal:AbortSignal.timeout(15000)});if(!r.ok&&r.status!==404)throw Error('Plan lookup failed');const old=r.ok?await r.json():null;
   const n=old?2:1;if(old&&old.latestRevisionNumber!==1)throw Error('Unexpected rework count');
