@@ -63,15 +63,40 @@ visit('@paperclipai/server');
 const workspaceVersions = new Map(ordered.map((entry) => [entry.name,
   json(path.join(source, entry.dir, 'package.json')).version]));
 const sourcePnpm = json(path.join(source, 'package.json')).pnpm ?? {};
+// Deliberately narrow parser for pnpm 9's committed patch table. New YAML
+// constructs fail closed instead of being interpreted as equivalent metadata.
+function parseCommittedPatchTable(lockText) {
+  const lines = lockText.replaceAll('\r\n', '\n').split('\n');
+  const start = lines.indexOf('patchedDependencies:');
+  if (start < 0 || lines.lastIndexOf('patchedDependencies:') !== start) throw new Error('Missing or duplicate committed patch table');
+  let end = start + 1;
+  while (end < lines.length && (lines[end] === '' || /^ /.test(lines[end]))) end++;
+  const body = lines.slice(start + 1, end).filter((line) => line !== '');
+  const table = new Map();
+  if (body.length % 3 !== 0) throw new Error('Unsupported committed patch table shape');
+  for (let index = 0; index < body.length; index += 3) {
+    const keyMatch = /^  (?:'([@A-Za-z0-9_./+-]+)'|([@A-Za-z0-9_./+-]+)):$/.exec(body[index]);
+    const hashMatch = /^    hash: ([a-z0-9]+)$/.exec(body[index + 1]);
+    const pathMatch = /^    path: (patches\/[@A-Za-z0-9_./+-]+\.patch)$/.exec(body[index + 2]);
+    if (!keyMatch || !hashMatch || !pathMatch) throw new Error('Unsupported committed patch table syntax');
+    const key = keyMatch[1] ?? keyMatch[2];
+    if (table.has(key)) throw new Error(`Duplicate committed patch: ${key}`);
+    table.set(key, { hash: hashMatch[1], path: pathMatch[1] });
+  }
+  return table;
+}
+const committedPatches = parseCommittedPatchTable(fs.readFileSync(path.join(source, 'pnpm-lock.yaml'), 'utf8'));
 const patchDefinitions = new Map();
 for (const [key, patchRelativePath] of Object.entries(sourcePnpm.patchedDependencies ?? {})) {
   const separator = key.lastIndexOf('@');
   const name = key.slice(0, separator), version = key.slice(separator + 1);
   const patchFile = path.resolve(source, patchRelativePath);
   if (!patchFile.startsWith(source + path.sep)) throw new Error('Patch escapes checkout');
+  if (committedPatches.get(key)?.path !== patchRelativePath) throw new Error(`Patch manifest differs from committed lock: ${key}`);
   if (!patchDefinitions.has(name)) patchDefinitions.set(name, new Map());
   patchDefinitions.get(name).set(version, patchFile);
 }
+if (committedPatches.size !== Object.keys(sourcePnpm.patchedDependencies ?? {}).length) throw new Error('Committed patch table has unexpected entries');
 // Translate the source's ordinary pnpm selectors to npm's nested form. Reject
 // unfamiliar selector grammar rather than silently ignoring a source constraint.
 const npmOverrides = {};
@@ -224,7 +249,15 @@ try {
     if (!files.length || new Set(files).size !== files.length) throw new Error(`Invalid source patch files: ${key}`);
     const pnpmRoot = fs.realpathSync(path.join(source, 'node_modules/.pnpm'));
     const prefix = `${name.replace('/', '+')}@${version}_`;
-    const candidates = fs.readdirSync(pnpmRoot).filter((entry) => entry.startsWith(prefix) && entry.includes('patch_hash='))
+    const expectedHash = committedPatches.get(key)?.hash;
+    if (!expectedHash) throw new Error(`No committed patch hash: ${key}`);
+    const entries = fs.readdirSync(pnpmRoot).filter((entry) => entry.startsWith(prefix) && entry.includes('patch_hash='));
+    for (const entry of entries) {
+      if (entry.match(/(?:^|_)patch_hash=([a-z0-9]+)(?:_|$)/)?.[1] !== expectedHash) {
+        throw new Error(`Source pnpm patch hash differs from committed lock: ${key}`);
+      }
+    }
+    const candidates = entries
       .map((entry) => path.join(pnpmRoot, entry, 'node_modules', name)).filter((dir) => fs.existsSync(path.join(dir, 'package.json')));
     if (!candidates.length) throw new Error(`No frozen pnpm patched reference installed: ${key}`);
     let reference;
@@ -239,7 +272,7 @@ try {
         fileHashes[file] = createHash('sha256').update(bytes).digest('hex');
       }
       if (reference && JSON.stringify(reference.fileHashes) !== JSON.stringify(fileHashes)) throw new Error(`Conflicting pnpm patched references: ${key}`);
-      reference = { root, metadata, files, fileHashes, fileBytes };
+      reference = { root, metadata, files, fileHashes, fileBytes, pnpmPatchHash: expectedHash };
     }
     sourcePatchReferences.set(key, reference);
     return reference;
@@ -292,7 +325,7 @@ try {
       }
       patches.push({ name: pkg.name, version: pkg.version, location: path.relative(payload, realDir),
         alreadyApplied, sourcePatchSha256: createHash('sha256').update(fs.readFileSync(patchFile)).digest('hex'),
-        reference: 'frozen-source-pnpm-patched-package', fileHashes: reference.fileHashes });
+        reference: 'frozen-source-pnpm-patched-package', pnpmPatchHash: reference.pnpmPatchHash, fileHashes: reference.fileHashes });
     }
     inspectNodeModules(path.join(realDir, 'node_modules'));
   }
