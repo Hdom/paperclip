@@ -49,32 +49,6 @@ export function stageDecisionKey(
   return `${issueId}:${executionState?.currentStageId ?? ""}:${userId}`;
 }
 
-const STAGE_DECISION_NOTE_SELECTOR = "[data-stage-decision-note]";
-
-/**
- * Focuses the visible decision note. Desktop and mobile properties can both be
- * mounted, so hidden copies are skipped. Returns false when none is visible.
- */
-export function focusStageDecisionNote(): boolean {
-  const note = Array.from(document.querySelectorAll<HTMLTextAreaElement>(STAGE_DECISION_NOTE_SELECTOR))
-    .find((element) => element.getClientRects().length > 0);
-  if (note) {
-    note.focus();
-    return true;
-  }
-  // A materialized plan opens the Plan tab by default. Reveal Properties
-  // before focusing its note, including when desktop/mobile copies coexist.
-  const tab = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-stage-decision-properties-tab]"))
-    .find((element) => element.getClientRects().length > 0);
-  if (!tab) return false;
-  tab.click();
-  window.setTimeout(() => {
-    Array.from(document.querySelectorAll<HTMLTextAreaElement>(STAGE_DECISION_NOTE_SELECTOR))
-      .find((element) => element.getClientRects().length > 0)?.focus();
-  }, 0);
-  return true;
-}
-
 export function principalFromSelectionValue(value: string): IssueExecutionStagePrincipal | null {
   const selection = parseAssigneeValue(value);
   if (selection.assigneeAgentId) {

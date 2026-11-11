@@ -2889,6 +2889,19 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("acknowledges a navigation request only after focusing its visible decision note", async () => {
+    const rects = vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
+    const onStageDecisionOpened = vi.fn();
+    const root = renderProperties(container, { issue: pendingApprovalIssue(), childIssues: [], onUpdate: vi.fn(), stageDecisionRequestId: 7, onStageDecisionOpened });
+    await flush();
+    await flush();
+    await flush();
+    expect(document.activeElement).toBe(container.querySelector('[data-testid="stage-decision-note"]'));
+    expect(onStageDecisionOpened).toHaveBeenCalledWith(7);
+    act(() => root.unmount());
+    rects.mockRestore();
+  });
+
   it("cannot decide before the plan has loaded", async () => {
     mockIssuesApi.getDocument.mockReturnValue(new Promise(() => {}));
     const onUpdate = vi.fn();

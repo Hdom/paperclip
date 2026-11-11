@@ -102,7 +102,7 @@ import {
   extractIssueWorkModeChanges,
 } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
-import { focusStageDecisionNote, isStageDecisionPendingForUser } from "../lib/issue-execution-policy";
+import { isStageDecisionPendingForUser } from "../lib/issue-execution-policy";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useIssueWorkProducts } from "../hooks/useIssueWorkProducts";
 import {
@@ -3144,6 +3144,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
+  const [stageDecisionRequest, setStageDecisionRequest] = useState<{ issueId: string; requestId: number } | null>(null);
+  const stageDecisionRequestSequence = useRef(0);
+  const handleStageDecisionOpened = useCallback((requestId: number) => {
+    setStageDecisionRequest((current) => current?.requestId === requestId ? null : current);
+  }, []);
   const [artifactsOpenRequest, setArtifactsOpenRequest] = useState<{
     issueId: string;
     requestId: number;
@@ -5980,6 +5985,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         : undefined,
       onAddSubIssue: openNewSubIssue,
       onUpdate: handleIssuePropertiesUpdate,
+      stageDecisionRequestId: !isMobile && stageDecisionRequest?.issueId === panelIssue.id ? stageDecisionRequest.requestId : undefined,
+      onStageDecisionOpened: handleStageDecisionOpened,
       hasActiveRun: resolvedHasActiveRun,
       externalObjects: externalObjectsState.isEnabled
         ? externalObjectsState.groups
@@ -6063,6 +6070,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     fileViewerEnabled,
     resolvedTasksTab,
     artifactsOpenRequest,
+    stageDecisionRequest,
+    handleStageDecisionOpened,
     handleArtifactsOpened,
     isMobile,
   ]);
@@ -7258,14 +7267,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           // controls instead of sending a status change the server rejects.
           if (isMobile) setMobilePropsOpen(true);
           else openTaskSidePanel();
-          window.setTimeout(() => {
-            if (focusStageDecisionNote()) return;
-            pushToast({
-              title: "Add a decision note to approve",
-              body: "Use Approve under Execution in the task properties. The decision needs its note.",
-              tone: "info",
-            });
-          }, 150);
+          setStageDecisionRequest({ issueId: issue.id, requestId: ++stageDecisionRequestSequence.current });
           return;
         }
         updateIssue.mutate({ status });
@@ -8594,6 +8596,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     }
                     onAddSubIssue={openNewSubIssue}
                     onUpdate={handleIssuePropertiesUpdate}
+                    stageDecisionRequestId={isMobile && stageDecisionRequest?.issueId === issue.id ? stageDecisionRequest.requestId : undefined}
+                    onStageDecisionOpened={handleStageDecisionOpened}
                     inline
                     mobile
                     hasActiveRun={resolvedHasActiveRun}
@@ -8660,6 +8664,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                         }
                         onAddSubIssue={openNewSubIssue}
                         onUpdate={handleIssuePropertiesUpdate}
+                        stageDecisionRequestId={isMobile && stageDecisionRequest?.issueId === issue.id ? stageDecisionRequest.requestId : undefined}
+                    onStageDecisionOpened={handleStageDecisionOpened}
                         inline
                         hasActiveRun={resolvedHasActiveRun}
                         externalObjects={

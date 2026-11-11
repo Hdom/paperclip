@@ -207,6 +207,8 @@ interface IssuePropertiesProps {
   onCheckMonitorNow?: () => void;
   checkingMonitorNow?: boolean;
   documentDeepLink?: IssuePropertiesDocumentDeepLink | null;
+  stageDecisionRequestId?: number;
+  onStageDecisionOpened?: (requestId: number) => void;
   /** Render only the Properties body when a parent owns the side-panel tabs. */
   sidePanelContentOnly?: boolean;
 }
@@ -246,6 +248,8 @@ export function IssueProperties({
   onCheckMonitorNow,
   checkingMonitorNow = false,
   documentDeepLink,
+  stageDecisionRequestId,
+  onStageDecisionOpened,
   sidePanelContentOnly = false,
 }: IssuePropertiesProps) {
   const policyResult = useExecutionPolicy(issue.executionPolicy);
@@ -1114,6 +1118,20 @@ export function IssueProperties({
     submittedStageDecisionKeyRef.current = null;
     setSubmittedStageDecisionKey(null);
   }, [currentStageDecisionKey]);
+  useEffect(() => {
+    if (stageDecisionRequestId === undefined) return;
+    paneTabUserChosenRef.current = true;
+    setPaneTab("properties");
+    // Consume only after the selected Properties content has mounted and the
+    // note actually received focus; clearing sooner can replace the panel.
+    const timer = window.setTimeout(() => {
+      const note = stageDecisionNoteRef.current;
+      if (!note || note.getClientRects().length === 0) return;
+      note.focus();
+      if (document.activeElement === note) onStageDecisionOpened?.(stageDecisionRequestId);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [stageDecisionRequestId, onStageDecisionOpened, pendingStageDecisionForCurrentUser]);
   const submitStageDecision = (status: "done" | "in_progress") => {
     const comment = stageDecisionNote.trim();
     const key = currentStageDecisionKey;

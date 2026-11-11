@@ -112,6 +112,8 @@ export interface TaskSidePanelProps {
   checkingMonitorNow?: boolean;
   fileTabsEnabled: boolean;
   documentDeepLink?: { requestId: number; documentKey: string } | null;
+  stageDecisionRequestId?: number;
+  onStageDecisionOpened?: (requestId: number) => void;
   /** A new durable output asks the host to reveal this tab once. */
   artifactsOpenRequestId?: number;
   onArtifactsOpened?: (requestId: number) => void;
@@ -257,6 +259,8 @@ export function TaskSidePanel({
   checkingMonitorNow = false,
   fileTabsEnabled,
   documentDeepLink,
+  stageDecisionRequestId,
+  onStageDecisionOpened,
   artifactsOpenRequestId,
   onArtifactsOpened,
   onRequestClose,
@@ -429,6 +433,16 @@ export function TaskSidePanel({
     handledDocumentRequestRef.current = documentDeepLink.requestId;
     controller.openTab(taskPanelDocumentTab(documentDeepLink.documentKey, label));
   }, [controller.openTab, documentDeepLink, documents, planDocument]);
+
+  const handledStageDecisionRequestRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (stageDecisionRequestId === undefined || handledStageDecisionRequestRef.current === stageDecisionRequestId) return;
+    handledStageDecisionRequestRef.current = stageDecisionRequestId;
+    userInteractedRef.current = true;
+    autoPlanHandledRef.current = true;
+    setLauncherOpen(false);
+    controller.openTab(taskPanelPropertiesTab());
+  }, [stageDecisionRequestId, controller.openTab]);
 
   // Existing URL-backed workspace links remain the external integration API.
   useEffect(() => {
@@ -737,6 +751,8 @@ export function TaskSidePanel({
         issueLinkState={issueLinkState}
         onAddSubIssue={onAddSubIssue}
         onUpdate={onUpdate}
+        stageDecisionRequestId={stageDecisionRequestId}
+        onStageDecisionOpened={onStageDecisionOpened}
         inline={inline}
         hasActiveRun={hasActiveRun}
         externalObjects={externalObjects}
