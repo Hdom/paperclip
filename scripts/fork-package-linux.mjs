@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 const [sourceArg, outputArg, sha] = process.argv.slice(2);
 if (!sourceArg || !outputArg || !/^[a-f0-9]{40}$/.test(sha ?? '')) {
@@ -57,6 +57,44 @@ function visit(name) {
   visiting.delete(name); visited.add(name); ordered.push(entry);
 }
 visit('@paperclipai/server');
+const workspaceVersions = new Map(ordered.map((entry) => [entry.name,
+  json(path.join(source, entry.dir, 'package.json')).version]));
+const sourcePnpm = json(path.join(source, 'package.json')).pnpm ?? {};
+const patchDefinitions = new Map();
+for (const [key, patchRelativePath] of Object.entries(sourcePnpm.patchedDependencies ?? {})) {
+  const separator = key.lastIndexOf('@');
+  const name = key.slice(0, separator), version = key.slice(separator + 1);
+  const patchFile = path.resolve(source, patchRelativePath);
+  if (!patchFile.startsWith(source + path.sep)) throw new Error('Patch escapes checkout');
+  if (!patchDefinitions.has(name)) patchDefinitions.set(name, new Map());
+  patchDefinitions.get(name).set(version, patchFile);
+}
+// Translate the source's ordinary pnpm selectors to npm's nested form. Reject
+// unfamiliar selector grammar rather than silently ignoring a source constraint.
+const npmOverrides = {};
+for (const [selector, version] of Object.entries(sourcePnpm.overrides ?? {})) {
+  if (selector.includes('||') || typeof version !== 'string' || version.startsWith('$')) {
+    throw new Error(`Unsupported source override: ${selector}`);
+  }
+  const selectors = selector.split('>');
+  let container = npmOverrides;
+  for (const part of selectors.slice(0, -1)) {
+    if (typeof container[part] === 'string') container[part] = { '.': container[part] };
+    container = container[part] ??= {};
+  }
+  const last = selectors.at(-1);
+  if (typeof container[last] === 'object') container[last]['.'] = version;
+  else container[last] = version;
+}
+for (const [name, versions] of patchDefinitions) {
+  if (versions.size !== 1) continue;
+  const version = versions.keys().next().value;
+  if (typeof npmOverrides[name] === 'object') npmOverrides[name]['.'] = version;
+  else npmOverrides[name] = version;
+}
+// Multiple source-patched versions (acpx 0.12 and 0.13) deliberately retain
+// their existing per-parent requirements. The postinstall gate rejects any
+// unqualified third version; never flatten these distinct provider bridges.
 
 const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'paperclip-fork-package-'));
 const packs = path.join(staging, 'packages');
@@ -87,6 +125,22 @@ try {
     if ((pkg.bundleDependencies ?? pkg.bundledDependencies ?? []).length) {
       const staged = path.join(staging, `workspace-package-${index}`);
       run(process.execPath, [path.join(source, 'scripts/prepare-bundled-package.mjs'), dir, staged]);
+      // The upstream staging helper substitutes the parent version for every
+      // workspace dependency. That is incorrect when plugin-sdk is versioned
+      // independently. Resolve from the actual source workspace, as pnpm does.
+      const stagedManifestPath = path.join(staged, 'package.json');
+      const stagedManifest = json(stagedManifestPath);
+      for (const section of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+        for (const [name, specifier] of Object.entries(pkg[section] ?? {})) {
+          if (typeof specifier !== 'string' || !specifier.startsWith('workspace:')) continue;
+          const dependencyVersion = workspaceVersions.get(name);
+          if (!dependencyVersion) throw new Error(`Unmapped staged workspace dependency: ${name}`);
+          const range = specifier.slice('workspace:'.length);
+          const prefix = range === '^' || range === '~' ? range : '';
+          stagedManifest[section][name] = prefix + dependencyVersion;
+        }
+      }
+      fs.writeFileSync(stagedManifestPath, JSON.stringify(stagedManifest, null, 2) + '\n');
       // Staging copied already-built outputs and materialized publishConfig.
       // Its source-only prepack scripts must not be re-executed there.
       run('npm', ['pack', staged, '--ignore-scripts', '--pack-destination', packs]);
@@ -99,6 +153,10 @@ try {
   if (tarballs.length !== ordered.length + 1 || !tarballs.includes(`paperclipai-${version}.tgz`)) {
     throw new Error('Unexpected package closure');
   }
+  fs.mkdirSync(payload);
+  fs.writeFileSync(path.join(payload, 'package.json'), JSON.stringify({
+    name: 'paperclip-fork-payload-producer', private: true, overrides: npmOverrides,
+  }, null, 2) + '\n');
   run('npm', ['install', '--prefix', payload, ...tarballs.map((file) => path.join(packs, file)), '--no-audit', '--no-fund'], staging);
   const packedPackages = new Map(tarballs.map((file) => {
     const pkg = JSON.parse(run('tar', ['-xOf', path.join(packs, file), 'package/package.json'], staging, true).toString());
@@ -119,6 +177,58 @@ try {
   for (const name of packedPackages.keys()) {
     if (!observedWorkspacePackages.has(name)) throw new Error(`Missing local package in installed lock: ${name}`);
   }
+  // pnpm patchedDependencies do not automatically survive npm installation.
+  // Preserve each source patch on every installed copy of the relevant package.
+  // A changed version or unrecognizable file state blocks the artifact instead
+  // of silently substituting registry behavior (notably postgres transactions).
+  const patches = [], visitedPackages = new Set();
+  function inspectInstalledPackage(packageDir) {
+    const realDir = fs.realpathSync(packageDir);
+    if (visitedPackages.has(realDir)) return;
+    visitedPackages.add(realDir);
+    if (!realDir.startsWith(payload + path.sep)) throw new Error('Installed package escapes payload');
+    const manifestPath = path.join(realDir, 'package.json');
+    if (!fs.existsSync(manifestPath)) return;
+    const pkg = json(manifestPath), versions = patchDefinitions.get(pkg.name);
+    if (versions) {
+      const patchFile = versions.get(pkg.version);
+      if (!patchFile) throw new Error(`Patched dependency version drift: ${pkg.name}@${pkg.version}`);
+      // --force disables patch's interactive/automatic reverse guessing.
+      // Otherwise a reverse dry-run could succeed by silently applying forward.
+      const patchArgs = ['--force', '--fuzz=0', '--strip=1', '--input', patchFile];
+      function patchCheck(reverse) {
+        try { run('patch', [...patchArgs, '--dry-run', ...(reverse ? ['--reverse'] : [])], realDir, true); return true; }
+        catch { return false; }
+      }
+      const alreadyApplied = patchCheck(true);
+      if (!alreadyApplied) {
+        if (!patchCheck(false)) throw new Error(`Cannot preserve exact source patch: ${pkg.name}@${pkg.version}`);
+        run('patch', patchArgs, realDir);
+      }
+      if (!patchCheck(true)) throw new Error(`Patch verification failed: ${pkg.name}@${pkg.version}`);
+      const fileHashes = {};
+      for (const match of fs.readFileSync(patchFile, 'utf8').matchAll(/^\+\+\+ b\/(.+?)(?:\t.*)?$/gm)) {
+        const relativeFile = match[1].trim(), file = path.resolve(realDir, relativeFile);
+        if (!file.startsWith(realDir + path.sep)) throw new Error('Patch file escapes package');
+        fileHashes[relativeFile] = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+      }
+      patches.push({ name: pkg.name, version: pkg.version, location: path.relative(payload, realDir),
+        alreadyApplied, sourcePatchSha256: createHash('sha256').update(fs.readFileSync(patchFile)).digest('hex'), fileHashes });
+    }
+    inspectNodeModules(path.join(realDir, 'node_modules'));
+  }
+  function inspectNodeModules(dir) {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith('.')) continue;
+      const location = path.join(dir, entry);
+      if (!fs.statSync(location).isDirectory()) continue;
+      if (entry.startsWith('@')) {
+        for (const name of fs.readdirSync(location)) inspectInstalledPackage(path.join(location, name));
+      } else inspectInstalledPackage(location);
+    }
+  }
+  inspectNodeModules(path.join(payload, 'node_modules'));
   // npm external ranges are resolved at packaging time, not locked by pnpm's
   // workspace lock. Retain the actual install lock for audit, with temporary
   // producer path replaced by a stable marker. Not an npm reinstall recipe.
@@ -195,9 +305,14 @@ try {
   fs.accessSync(path.join(extractedServer, 'dist/vendor/paperclip-runner/bin/paperclip-runnerd'), fs.constants.X_OK);
   const provenance = {
     repository: 'Hdom/paperclip', sourceCommit: sha, packageVersion: version,
+    packagingScriptSha256: createHash('sha256').update(fs.readFileSync(fileURLToPath(import.meta.url))).digest('hex'),
+    workflowCommit: process.env.GITHUB_SHA ?? null,
+    workflowRun: process.env.GITHUB_RUN_ID ?? null,
     platform: process.platform, architecture: process.arch, node: process.version,
     glibc: process.report.getReport().header.glibcVersionRuntime,
     packages: ordered.map((entry) => entry.name), packageTarballSha256: packageChecksums,
+    sourceDependencyPatches: patches,
+    producerNpmOverrides: npmOverrides,
     resolvedPackageLockSha256: createHash('sha256').update(resolvedLock).digest('hex'),
     verified: ['workspace package closure', 'server commit stamp', 'contained relative symlinks',
       'relocated CLI version', 'relocated server module import', 'UI and migration assets',
@@ -227,3 +342,4 @@ try {
   if (succeeded) fs.rmSync(staging, { recursive: true, force: true });
   else console.error(`Packaging failed; retained diagnostic staging: ${staging}`);
 }
+
