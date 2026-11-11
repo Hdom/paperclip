@@ -57,14 +57,14 @@ jobs:
           mkdir -p scripts/fork-runtime-fixture
           cd scripts/fork-runtime-fixture
           for file in codex fake-codex.mjs driver.py verify.py run.py; do
-            curl --fail --silent --show-error --location --proto '=https' --max-time 30 "https://raw.githubusercontent.com/Hdom/paperclip/e764b372b6d4f01049677c6db6dc4f24f01a8495/scripts/fork-runtime-fixture/$file" -o "$file"
+            curl --fail --silent --show-error --location --proto '=https' --max-time 30 "https://raw.githubusercontent.com/Hdom/paperclip/b1cd0d9a7e58339473b58ce320d0e809d4d1ffc5/scripts/fork-runtime-fixture/$file" -o "$file"
           done
           sha256sum -c <<'SUMS'
           53067df410ed0ef7243e12c7174be41015a18378cceb49a910b6a2779a6fbec4  codex
           1e902d4f5970b78989040d3c74977ee5de5bd08ad55ad4253a92735a9540529e  fake-codex.mjs
           1c1ff1f0806ab9b76b0c0a461b944efd1c9745be1625c8859ed76af46cc8dc62  driver.py
           0982c4338c767859a0254f6e278ce1ca8c549b3ac6192de40854c331ddb416c3  verify.py
-          e07d77eb8c871c386bec50c205208e6f636429305411ff0aec8b93adbcb447f9  run.py
+          abae420ba71995b9696c89617d73f8c152b066981dd5b50e9b5f6b76060edd5d  run.py
           SUMS
           chmod 0755 codex
       - name: Prepare pinned browser verifier without rebuilding the payload
