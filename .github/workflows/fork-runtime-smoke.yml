@@ -24,29 +24,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api repos/Hdom/paperclip/actions/runs/43069710104 > source-run.json
-          jq -e '.conclusion == "success" and .head_sha == "c09883e63bf7ff16b8c9ce29518c4474cfa22dfd" and .path == ".github/workflows/fork-linux-release.yml"' source-run.json
-          gh api repos/Hdom/paperclip/actions/artifacts/13880170703 > source-artifact.json
-          jq -e '.expired == false and .workflow_run.id == 43069710104 and .workflow_run.head_sha == "c09883e63bf7ff16b8c9ce29518c4474cfa22dfd" and .digest == "sha256:fe9fc91ba7259543e0c685b48dff82a66838b556ce14201ca040339ca8fba2b0"' source-artifact.json
-          gh api repos/Hdom/paperclip/actions/artifacts/13880170703/zip > candidate.zip
-          echo 'fe9fc91ba7259543e0c685b48dff82a66838b556ce14201ca040339ca8fba2b0  candidate.zip' | sha256sum -c -
+          gh api repos/Hdom/paperclip/actions/runs/43085483706 > source-run.json
+          jq -e '.conclusion == "success" and .head_sha == "3f5c0dac8562658f2256aeef4c4280dcbf64ef42" and .path == ".github/workflows/fork-linux-release.yml"' source-run.json
+          gh api repos/Hdom/paperclip/actions/artifacts/13886309184 > source-artifact.json
+          jq -e '.expired == false and .workflow_run.id == 43085483706 and .workflow_run.head_sha == "3f5c0dac8562658f2256aeef4c4280dcbf64ef42" and .digest == "sha256:bdb62e84ef82eb4f3c845b44b9c5dda6d7b7d15cbeedb48e21d64ce4c5b4b2e9"' source-artifact.json
+          gh api repos/Hdom/paperclip/actions/artifacts/13886309184/zip > candidate.zip
+          echo 'bdb62e84ef82eb4f3c845b44b9c5dda6d7b7d15cbeedb48e21d64ce4c5b4b2e9  candidate.zip' | sha256sum -c -
       - name: Verify inner checksums and extract unchanged payload
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import pathlib, zipfile, tarfile
-          expected = {'SHA256SUMS', 'manifest.json', 'resolved-package-lock.json', 'paperclip-6fa9ab4d8455-linux-x64.tar.gz'}
+          expected = {'SHA256SUMS', 'manifest.json', 'resolved-package-lock.json', 'paperclip-592e08a5da9e-linux-x64.tar.gz'}
           with zipfile.ZipFile('candidate.zip') as z:
               assert set(z.namelist()) == expected
               z.extractall('candidate')
           PY
           cd candidate
           sha256sum -c SHA256SUMS
-          echo '99a7a3b651d69b264f1ed233a47c93473e44a974496f4adfb652ec236b0fecc6  manifest.json' | sha256sum -c -
-          jq -e '.sourceCommit == "6fa9ab4d8455bfd216f9a56d254ff09b6c428f7b" and .workflowCommit == "c09883e63bf7ff16b8c9ce29518c4474cfa22dfd" and .packagingScriptSha256 == "fa1dbed21eccbc407a6d1aca42848a26acf2cbea509d33bec14db0d035806072" and .platform == "linux" and .architecture == "x64"' manifest.json
+          echo 'c5c6d7902f453847978484e1639197ea0b4b27a3f625e3d6ce23988548b4399e  paperclip-592e08a5da9e-linux-x64.tar.gz' | sha256sum -c -
+          echo '8e77cfc47b53c1743ece19566f0a894ea487a06ff63ec7d268af220d8091d555  manifest.json' | sha256sum -c -
+          jq -e '.sourceCommit == "592e08a5da9ece1083ffeea913686ae8ae01728b" and .workflowCommit == "3f5c0dac8562658f2256aeef4c4280dcbf64ef42" and .packagingScriptSha256 == "fa1dbed21eccbc407a6d1aca42848a26acf2cbea509d33bec14db0d035806072" and .platform == "linux" and .architecture == "x64"' manifest.json
           python3 - <<'PY'
           import tarfile
-          with tarfile.open('paperclip-6fa9ab4d8455-linux-x64.tar.gz') as t:
+          with tarfile.open('paperclip-592e08a5da9e-linux-x64.tar.gz') as t:
               assert all(m.name == 'payload' or m.name.startswith('payload/') for m in t.getmembers())
               t.extractall('extracted', filter='data')
           PY
@@ -66,6 +67,26 @@ jobs:
           e07d77eb8c871c386bec50c205208e6f636429305411ff0aec8b93adbcb447f9  run.py
           SUMS
           chmod 0755 codex
+      - name: Prepare pinned browser verifier without rebuilding the payload
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/playwright-browsers
+        run: |
+          set -euo pipefail
+          npm install --no-save --package-lock=false --ignore-scripts @playwright/test@1.62.1
+          node node_modules/@playwright/test/cli.js install --with-deps chromium
+          curl --fail --silent --show-error --location --proto '=https' --max-time 30 https://raw.githubusercontent.com/Hdom/paperclip/592e08a5da9ece1083ffeea913686ae8ae01728b/tests/e2e/human-stage-decision.spec.ts -o scripts/fork-runtime-fixture/human-stage-decision.spec.ts
+          echo '91cf81a910fe16e98db3efa4e02b39d9017e3041b9192a582ce2040ff3e14146  scripts/fork-runtime-fixture/human-stage-decision.spec.ts' | sha256sum -c -
+          cat > scripts/fork-runtime-fixture/approval.playwright.config.cjs <<'JS'
+          const { defineConfig } = require('@playwright/test');
+          module.exports = defineConfig({
+            testDir: '.', testMatch: 'human-stage-decision.spec.ts', workers: 1,
+            retries: 0, timeout: 90_000,
+            outputDir: '../../raw-diagnostics/ui-browser',
+            reporter: [['list'], ['json', { outputFile: 'evidence/ui-results.json' }]],
+            use: { baseURL: process.env.PAPERCLIP_API_URL, headless: true,
+              browserName: 'chromium', actionTimeout: 10_000, screenshot: 'only-on-failure', trace: 'off' },
+          });
+          JS
       - name: Bounded import, startup, restart, and synthetic handoff
         timeout-minutes: 26
         run: |
@@ -175,7 +196,7 @@ jobs:
                   return response.read()
           def ready():
               h=json.loads(get('/api/health'))
-              assert h['status']=='ok' and h['commit']=='6fa9ab4d8455bfd216f9a56d254ff09b6c428f7b'
+              assert h['status']=='ok' and h['commit']=='592e08a5da9ece1083ffeea913686ae8ae01728b'
           def check_http():
               ready()
               html=get('/').decode()
@@ -185,7 +206,7 @@ jobs:
               json.loads(get('/api/companies'))
               json.loads(get('/api/instance/task-drain'))
               return {'bundled_assets':len(assets)}
-          def exercise(name,args,seconds,readiness,handoff=False):
+          def exercise(name,args,seconds,readiness,handoff=False,ui_approval=False):
               begin=time.monotonic(); peak=0; passed=False; details={}
               with open(raw/(name+'.log'),'wb') as log:
                   p=subprocess.Popen(['/usr/bin/time','-v','-o',str(raw/(name+'.time')),node,*args],
@@ -204,8 +225,8 @@ jobs:
                       if passed and handoff:
                           passed=False
                           fixture_env={**env,'PAPERCLIP_API_URL':'http://127.0.0.1:3107',
-                              'HANDOFF_ROOT':str(work),'HANDOFF_SOURCE_COMMIT':'6fa9ab4d8455bfd216f9a56d254ff09b6c428f7b',
-                              'HANDOFF_ARTIFACT_ID':'13880170703'}
+                              'HANDOFF_ROOT':str(work),'HANDOFF_SOURCE_COMMIT':'592e08a5da9ece1083ffeea913686ae8ae01728b',
+                              'HANDOFF_ARTIFACT_ID':'13886309184'}
                           (work/'handoff-workspace').mkdir()
                           with open(raw/'handoff-fixture.log','wb') as fixture_log:
                               fixture=subprocess.Popen(['/usr/bin/python3',str(root/'scripts/fork-runtime-fixture/run.py')],
@@ -225,6 +246,18 @@ jobs:
                               for required in ['verified-http.json','runner-result.json']:
                                   if not (fixture_evidence/required).is_file(): passed=False
                               if passed: details['post_handoff_http']=check_http()
+                      if passed and ui_approval:
+                          passed=False
+                          browser_env={**env, 'PAPERCLIP_API_URL':'http://127.0.0.1:3107',
+                              'PLAYWRIGHT_BROWSERS_PATH':str(root/'playwright-browsers')}
+                          with open(raw/'ui-browser.log','wb') as browser_log:
+                              browser=subprocess.run([node,str(root/'node_modules/@playwright/test/cli.js'),
+                                  'test','--config',str(root/'scripts/fork-runtime-fixture/approval.playwright.config.cjs')],
+                                  cwd=root,env=browser_env,stdout=browser_log,stderr=subprocess.STDOUT,timeout=240)
+                          passed=browser.returncode==0
+                          details['browser_exit_code']=browser.returncode
+                          details['browser_fixture_sha256']='91cf81a910fe16e98db3efa4e02b39d9017e3041b9192a582ce2040ff3e14146'
+                          if passed: details['post_ui_http']=check_http()
                   except StageDeadline:
                       passed=False
                       details['deadline_exceeded']=True
@@ -252,12 +285,16 @@ jobs:
               if imported and started and restarted:
                   print('BOUNDARY: ordinary synthetic handoff on verified runtime',flush=True)
                   handed_off=exercise('handoff',[str(cli),'run','--data-dir',str(data),'--bind','loopback','--no-repair'],300,True,True)
+              ui_passed=False
+              if handed_off:
+                  print('BOUNDARY: real packaged UI decisions on desktop and phone',flush=True)
+                  ui_passed=exercise('ui-approval',[str(cli),'run','--data-dir',str(data),'--bind','loopback','--no-repair'],300,True,ui_approval=True)
               results['limits']={'node_old_space_mib':2048,'enforced_total_4gib_cap':False,
                   'rss_note':'Sampled sum of descendant RSS; shared pages may be counted more than once',
-                  'source_run':43069710104,'artifact_id':13880170703,
-                  'source_commit':'6fa9ab4d8455bfd216f9a56d254ff09b6c428f7b',
-                  'scope':'Synthetic runtime smoke only; no real models, production or deployment'}
-              assert imported and started and restarted and handed_off, 'Runtime smoke did not pass every required stage'
+                  'source_run':43085483706,'artifact_id':13886309184,
+                  'source_commit':'592e08a5da9ece1083ffeea913686ae8ae01728b',
+                  'scope':'Synthetic runtime and real packaged UI smoke; local-trusted identity, no password login, real models, production or deployment'}
+              assert imported and started and restarted and handed_off and ui_passed, 'Runtime smoke did not pass every required stage'
           finally:
               (evidence/'summary.json').write_text(json.dumps(results,indent=2))
               fixture_public=work/'evidence/handoff'
@@ -271,7 +308,13 @@ jobs:
                           if re.search(r'Bearer\s|eyJ[A-Za-z0-9_-]{15,}\.|gh[pousr]_[A-Za-z0-9]{20,}',text):
                               raise RuntimeError('Refusing credential-shaped fixture evidence')
                           (public/name).write_text(text)
+              for screenshot in (raw/'ui-browser').rglob('*.png') if (raw/'ui-browser').exists() else []:
+                  if screenshot.is_symlink(): raise RuntimeError('Refusing symlink screenshot')
+                  destination=evidence/'ui-screenshots'/screenshot.relative_to(raw/'ui-browser')
+                  destination.parent.mkdir(parents=True,exist_ok=True)
+                  shutil.copyfile(screenshot,destination)
               for log in raw.iterdir():
+                  if not log.is_file(): continue
                   if log.name=='handoff-fixture.log': continue
                   lines=log.read_text(errors='replace').splitlines()
                   (evidence/log.name).write_text('\n'.join('[redacted credential-related line]' if re.search(r'token|secret|password|credential|api[_ -]?key|invite|authorization|bearer',line,re.I) else line for line in lines)+'\n')
