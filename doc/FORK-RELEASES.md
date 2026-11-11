@@ -2,7 +2,7 @@
 
 Inherited workflow files stay unchanged at their upstream `.github/workflows/` paths. Their execution is disabled through GitHub workflow settings, not by moving or editing the files. This avoids workflow-file merge conflicts when updating from upstream.
 
-The only enabled workflow is **Fork Linux release**, triggered manually from Actions. Before enabling repository Actions, verify every inherited workflow is disabled. It builds a full reviewed commit SHA (not a moving branch), typechecks the workspaces, runs four focused handoff regression suites, assembles the CLI/server dependency closure, and checks relocation. It does not claim the full upstream test suite passed.
+The main build workflow is **Fork Linux release**, triggered manually from Actions. The separate **Fork artifact transfer** helper is also enabled; inherited upstream workflows remain disabled. Before enabling repository Actions, verify every inherited workflow is disabled. It builds a full reviewed commit SHA (not a moving branch), typechecks the workspaces, runs four focused handoff regression suites, assembles the CLI/server dependency closure, and checks relocation. It does not claim the full upstream test suite passed.
 
 Default output is a 14-day Actions artifact. The optional `draft_release` input additionally saves the candidate as a **draft** GitHub Release. Publishing the draft and activating a release are separate operator decisions. No npm/GitHub Packages publication is needed for the native Linux installation.
 
@@ -28,3 +28,7 @@ The first hosted build and typecheck passed, but the initial test invocation use
 
 Packaging executes dependency lifecycle scripts. Use a fresh disposable build checkout/account, as the hosted workflow does. A temporary HOME and filtered environment reduce accidental configuration reuse but are not an operating-system security sandbox. A clean Git tree alone does not attest ignored build outputs or dependencies; the fresh frozen install and build steps are part of the artifact’s trust chain.
 
+
+## Bounded artifact transfer
+
+`Fork artifact transfer` supports consumers with per-download size limits. It runs manually or when its own workflow file changes. It verifies the successful source run, workflow commit, artifact ID, and original ZIP digest, then splits the unchanged ZIP into 400 MiB parts and verifies their concatenation. Its short-lived part artifacts and checksum metadata do not rebuild the application, mutate the draft Release, publish a release, or deploy anything. Consumers must verify each transfer artifact/part and the reassembled original ZIP before extraction or execution.
