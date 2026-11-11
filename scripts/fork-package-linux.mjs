@@ -116,7 +116,13 @@ const skillDestinations = ['server', 'packages/adapters/claude-local', 'packages
   .map((dir) => ({ dir: path.join(source, dir, 'skills'), existed: fs.existsSync(path.join(source, dir, 'skills')) }));
 if (fs.existsSync(path.join(source, 'cli/package.dev.json'))) throw new Error('Existing CLI backup must be resolved before packaging');
 let version, succeeded = false;
+const sourcePatchReferences = new Map();
 try {
+  // Snapshot reference bytes before any producer lifecycle runs. This trusts
+  // the workflow's fresh frozen pnpm install, not git status of ignored files.
+  for (const [name, versions] of patchDefinitions) {
+    for (const [version, patchFile] of versions) patchReference(name, version, patchFile);
+  }
   // Typecheck has its own CI gate. The upstream token checker has no private
   // forbidden-token list in this public fork, hence the explicit skip-checks.
   run('bash', ['scripts/build-npm.sh', '--skip-checks', '--skip-typecheck']);
@@ -190,6 +196,66 @@ try {
   // A changed version or unrecognizable file state blocks the artifact instead
   // of silently substituting registry behavior (notably postgres transactions).
   const patches = [], visitedPackages = new Set();
+  function checkedPatchFile(root, relativeFile, writable = false) {
+    const file = path.resolve(root, relativeFile);
+    if (!file.startsWith(root + path.sep)) throw new Error('Patch path escapes package');
+    const segments = path.relative(root, file).split(path.sep);
+    let current = root;
+    for (const [index, segment] of segments.entries()) {
+      current = path.join(current, segment);
+      const stat = fs.lstatSync(current);
+      if (stat.isSymbolicLink()) throw new Error('Symlink component in patch path');
+      if (index === segments.length - 1) {
+        if (!stat.isFile() || (writable && stat.nlink !== 1)) throw new Error('Patch target is not an independent regular file');
+      } else if (!stat.isDirectory()) throw new Error('Non-directory patch path component');
+    }
+    return file;
+  }
+  function patchReference(name, version, patchFile) {
+    const key = `${name}@${version}`;
+    if (sourcePatchReferences.has(key)) return sourcePatchReferences.get(key);
+    const patchText = fs.readFileSync(patchFile, 'utf8');
+    // Current source patches only modify existing text files. Do not guess how
+    // to materialize deletions, new files, renames, modes or binary patches.
+    if (/^(?:--- |\+\+\+ )\/dev\/null|^GIT binary patch|^Binary files |^(?:new|deleted) file mode |^rename (?:from|to) |^(?:old|new) mode /m.test(patchText)) {
+      throw new Error(`Unsupported patch operation: ${key}`);
+    }
+    const files = [...patchText.matchAll(/^\+\+\+ b\/(.+?)(?:\t.*)?$/gm)].map((match) => match[1].trim());
+    if (!files.length || new Set(files).size !== files.length) throw new Error(`Invalid source patch files: ${key}`);
+    const pnpmRoot = fs.realpathSync(path.join(source, 'node_modules/.pnpm'));
+    const prefix = `${name.replace('/', '+')}@${version}_`;
+    const candidates = fs.readdirSync(pnpmRoot).filter((entry) => entry.startsWith(prefix) && entry.includes('patch_hash='))
+      .map((entry) => path.join(pnpmRoot, entry, 'node_modules', name)).filter((dir) => fs.existsSync(path.join(dir, 'package.json')));
+    if (!candidates.length) throw new Error(`No frozen pnpm patched reference installed: ${key}`);
+    let reference;
+    for (const candidate of candidates) {
+      const root = fs.realpathSync(candidate), metadata = json(path.join(root, 'package.json'));
+      if (!root.startsWith(pnpmRoot + path.sep) || metadata.name !== name || metadata.version !== version) throw new Error(`Invalid pnpm reference: ${key}`);
+      const fileHashes = {}, fileBytes = new Map();
+      for (const file of files) {
+        const resolved = checkedPatchFile(root, file);
+        const bytes = fs.readFileSync(resolved);
+        fileBytes.set(file, bytes);
+        fileHashes[file] = createHash('sha256').update(bytes).digest('hex');
+      }
+      if (reference && JSON.stringify(reference.fileHashes) !== JSON.stringify(fileHashes)) throw new Error(`Conflicting pnpm patched references: ${key}`);
+      reference = { root, metadata, files, fileHashes, fileBytes };
+    }
+    sourcePatchReferences.set(key, reference);
+    return reference;
+  }
+  function resolvedDependencyVersion(packageDir, dependency) {
+    let current = packageDir;
+    while (current === payload || current.startsWith(payload + path.sep)) {
+      const manifest = path.join(current, 'node_modules', dependency, 'package.json');
+      if (fs.existsSync(manifest)) {
+        if (!fs.realpathSync(manifest).startsWith(payload + path.sep)) throw new Error('Dependency escapes payload');
+        return json(manifest).version;
+      }
+      current = path.dirname(current);
+    }
+    throw new Error(`Missing patched manifest dependency: ${dependency}`);
+  }
   function inspectInstalledPackage(packageDir) {
     const realDir = fs.realpathSync(packageDir);
     if (visitedPackages.has(realDir)) return;
@@ -201,27 +267,32 @@ try {
     if (versions) {
       const patchFile = versions.get(pkg.version);
       if (!patchFile) throw new Error(`Patched dependency version drift: ${pkg.name}@${pkg.version}`);
-      // --force disables patch's interactive/automatic reverse guessing.
-      // Otherwise a reverse dry-run could succeed by silently applying forward.
-      const patchArgs = ['--force', '--fuzz=0', '--strip=1', '--input', patchFile];
-      function patchCheck(reverse) {
-        try { run('patch', [...patchArgs, '--dry-run', ...(reverse ? ['--reverse'] : [])], realDir, true); return true; }
-        catch { return false; }
+      // pnpm has already applied these patches during frozen source install,
+      // which is the graph used by build/typecheck. Materialize its exact bytes,
+      // not a second fuzzy interpretation of minified provider patch context.
+      const reference = patchReference(pkg.name, pkg.version, patchFile);
+      let alreadyApplied = true;
+      for (const relativeFile of reference.files) {
+        const file = checkedPatchFile(realDir, relativeFile, true);
+        if (createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== reference.fileHashes[relativeFile]) {
+          alreadyApplied = false;
+          fs.writeFileSync(file, reference.fileBytes.get(relativeFile));
+        }
+        if (createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== reference.fileHashes[relativeFile]) throw new Error('Source patch byte parity failed');
       }
-      const alreadyApplied = patchCheck(true);
-      if (!alreadyApplied) {
-        if (!patchCheck(false)) throw new Error(`Cannot preserve exact source patch: ${pkg.name}@${pkg.version}`);
-        run('patch', patchArgs, realDir);
-      }
-      if (!patchCheck(true)) throw new Error(`Patch verification failed: ${pkg.name}@${pkg.version}`);
-      const fileHashes = {};
-      for (const match of fs.readFileSync(patchFile, 'utf8').matchAll(/^\+\+\+ b\/(.+?)(?:\t.*)?$/gm)) {
-        const relativeFile = match[1].trim(), file = path.resolve(realDir, relativeFile);
-        if (!file.startsWith(realDir + path.sep)) throw new Error('Patch file escapes package');
-        fileHashes[relativeFile] = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+      if (reference.files.includes('package.json')) {
+        for (const section of ['dependencies', 'optionalDependencies']) {
+          for (const [name, specifier] of Object.entries(reference.metadata[section] ?? {})) {
+            const changed = pkg[section]?.[name] !== specifier;
+            if (/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(specifier)) {
+              if (resolvedDependencyVersion(realDir, name) !== specifier) throw new Error(`Patched manifest dependency mismatch: ${pkg.name} -> ${name}@${specifier}`);
+            } else if (changed) throw new Error(`Cannot validate changed non-exact patched dependency: ${name}@${specifier}`);
+          }
+        }
       }
       patches.push({ name: pkg.name, version: pkg.version, location: path.relative(payload, realDir),
-        alreadyApplied, sourcePatchSha256: createHash('sha256').update(fs.readFileSync(patchFile)).digest('hex'), fileHashes });
+        alreadyApplied, sourcePatchSha256: createHash('sha256').update(fs.readFileSync(patchFile)).digest('hex'),
+        reference: 'frozen-source-pnpm-patched-package', fileHashes: reference.fileHashes });
     }
     inspectNodeModules(path.join(realDir, 'node_modules'));
   }

@@ -6,7 +6,7 @@ The only enabled workflow is **Fork Linux release**, triggered manually from Act
 
 Default output is a 14-day Actions artifact. The optional `draft_release` input additionally saves the candidate as a **draft** GitHub Release. Publishing the draft and activating a release are separate operator decisions. No npm/GitHub Packages publication is needed for the native Linux installation.
 
-Build target: Ubuntu 24.04 Linux x86_64, Node 24.22.2, pnpm 9.15.4, Rust 1.97.1. The payload includes dependencies and native build outputs, not a Node runtime. A compatible Linux/glibc target and Node runtime are required. Inspect the manifest and checksums before use. Release builds are not bit-reproducible: the locked application dependencies are used for compilation, but the upstream packaging path resolves external runtime package ranges during installation. The payload and its sanitized resolved dependency lock are captured for auditing. Source dependency patches are preserved on every discovered installed copy; version drift or an unrecognized patch state blocks the artifact. The manifest records patch and file hashes.
+Build target: Ubuntu 24.04 Linux x86_64, Node 24.22.2, pnpm 9.15.4, Rust 1.97.1. The payload includes dependencies and native build outputs, not a Node runtime. A compatible Linux/glibc target and Node runtime are required. Inspect the manifest and checksums before use. Release builds are not bit-reproducible: the locked application dependencies are used for compilation, but the upstream packaging path resolves external runtime package ranges during installation. The payload and its sanitized resolved dependency lock are captured for auditing. Source dependency patches are preserved on every discovered installed copy; version drift or an unrecognized patch state blocks the artifact. The manifest records patch and final file hashes. The resolved npm lock records the downloaded dependency graph before source-patch materialization; it is an audit record, not a reinstall recipe.
 
 No production endpoint, SSH key, Atlas token, database credential, or GitHub PAT is needed in this workflow. Build jobs have read-only repository permission; the draft job alone has contents-write permission through the short-lived GitHub token. There are no pull-request, push, schedule, or workflow-run triggers and no self-hosted runners.
 
@@ -24,4 +24,7 @@ Keep inherited workflow contents unchanged. GitHub workflow disabled states are 
 
 The first hosted build and typecheck passed, but the initial test invocation used a 15-second global deadline for scheduler tests containing 40-second bounded waits. It failed 3 tests (97 passed, 1 fixture skipped). The fork workflow now restores the prior qualification profile: one worker and 60-second test deadline, with every assertion unchanged. This correction is not a pass claim; inspect the succeeding run’s actual test outcome.
 
+
+
+Packaging executes dependency lifecycle scripts. Use a fresh disposable build checkout/account, as the hosted workflow does. A temporary HOME and filtered environment reduce accidental configuration reuse but are not an operating-system security sandbox. A clean Git tree alone does not attest ignored build outputs or dependencies; the fresh frozen install and build steps are part of the artifact’s trust chain.
 
