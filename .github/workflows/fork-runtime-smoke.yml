@@ -14,7 +14,7 @@ jobs:
   smoke:
     if: github.repository == 'Hdom/paperclip'
     runs-on: ubuntu-24.04
-    timeout-minutes: 22
+    timeout-minutes: 32
     steps:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -50,11 +50,27 @@ jobs:
               assert all(m.name == 'payload' or m.name.startswith('payload/') for m in t.getmembers())
               t.extractall('extracted', filter='data')
           PY
-      - name: Bounded import, fresh startup, and restart
-        timeout-minutes: 16
+      - name: Fetch reviewed synthetic fixture at fixed public commit
         run: |
-          timeout --signal=TERM --kill-after=20s 900s python3 - <<'PY'
-          import ctypes, json, os, pathlib, re, shutil, signal, socket, subprocess, time, urllib.request
+          set -euo pipefail
+          mkdir -p scripts/fork-runtime-fixture
+          cd scripts/fork-runtime-fixture
+          for file in codex fake-codex.mjs driver.py verify.py run.py; do
+            curl --fail --silent --show-error --location --proto '=https' --max-time 30 "https://raw.githubusercontent.com/Hdom/paperclip/b38b0bdac05490367c637057a7e5e2167c1eac09/scripts/fork-runtime-fixture/$file" -o "$file"
+          done
+          sha256sum -c <<'SUMS'
+          53067df410ed0ef7243e12c7174be41015a18378cceb49a910b6a2779a6fbec4  codex
+          0491d88709f19ffed974fd75b878389e65abde374d74c7c7d4654786884105fd  fake-codex.mjs
+          1c1ff1f0806ab9b76b0c0a461b944efd1c9745be1625c8859ed76af46cc8dc62  driver.py
+          8e274fec656c4d8b60cc5c0d62794d2bdebd55c8e1fa07e9dcf0644c64c9af6d  verify.py
+          9fccbf55c97dadb93e5d7d75791f096bd4ee3a4ff6c3338163d1f14e8c81fd89  run.py
+          SUMS
+          chmod 0755 codex
+      - name: Bounded import, startup, restart, and synthetic handoff
+        timeout-minutes: 26
+        run: |
+          timeout --signal=TERM --kill-after=20s 1500s python3 - <<'PY'
+          import ctypes, hashlib, json, os, pathlib, re, shutil, signal, socket, subprocess, time, urllib.request
           root = pathlib.Path.cwd()
           evidence = root / 'evidence'; evidence.mkdir()
           raw = root / 'raw-diagnostics'; raw.mkdir()
@@ -169,7 +185,7 @@ jobs:
               json.loads(get('/api/companies'))
               json.loads(get('/api/instance/task-drain'))
               return {'bundled_assets':len(assets)}
-          def exercise(name,args,seconds,readiness):
+          def exercise(name,args,seconds,readiness,handoff=False):
               begin=time.monotonic(); peak=0; passed=False; details={}
               with open(raw/(name+'.log'),'wb') as log:
                   p=subprocess.Popen(['/usr/bin/time','-v','-o',str(raw/(name+'.time')),node,*args],
@@ -185,7 +201,32 @@ jobs:
                                   ready(); details=check_http(); passed=True; break
                               except (OSError, ValueError, AssertionError) as error: details['last_readiness_error']=str(error)
                           time.sleep(1)
+                      if passed and handoff:
+                          passed=False
+                          fixture_env={**env,'PAPERCLIP_API_URL':'http://127.0.0.1:3107',
+                              'HANDOFF_ROOT':str(work),'HANDOFF_SOURCE_COMMIT':'20c71960bb5e6219d455f32c7df48eaaa0fcc333',
+                              'HANDOFF_ARTIFACT_ID':'13834076411'}
+                          (work/'handoff-workspace').mkdir()
+                          with open(raw/'handoff-fixture.log','wb') as fixture_log:
+                              fixture=subprocess.Popen(['/usr/bin/python3',str(root/'scripts/fork-runtime-fixture/run.py')],
+                                  cwd=work,env=fixture_env,stdout=fixture_log,stderr=subprocess.STDOUT)
+                              fixture_deadline=time.monotonic()+240
+                              while fixture.poll() is None and time.monotonic()<fixture_deadline:
+                                  peak=max(peak,track())
+                                  if p.poll() is not None: raise RuntimeError('Application exited during handoff')
+                                  time.sleep(.2)
+                              if fixture.poll() is None:
+                                  fixture.kill()
+                                  fixture.wait(timeout=5)
+                                  raise RuntimeError('Handoff fixture exceeded 240 seconds')
+                              details['fixture_exit_code']=fixture.returncode
+                              passed=fixture.returncode==0
+                              fixture_evidence=work/'evidence/handoff'
+                              for required in ['verified-http.json','runner-result.json']:
+                                  if not (fixture_evidence/required).is_file(): passed=False
+                              if passed: details['post_handoff_http']=check_http()
                   except StageDeadline:
+                      passed=False
                       details['deadline_exceeded']=True
                   finally:
                       signal.alarm(0)
@@ -207,15 +248,31 @@ jobs:
               if started:
                   print('BOUNDARY: restarting same synthetic instance',flush=True)
                   restarted=exercise('restart',[str(cli),'run','--data-dir',str(data),'--bind','loopback','--no-repair'],180,True)
+              handed_off=False
+              if imported and started and restarted:
+                  print('BOUNDARY: ordinary synthetic handoff on verified runtime',flush=True)
+                  handed_off=exercise('handoff',[str(cli),'run','--data-dir',str(data),'--bind','loopback','--no-repair'],300,True,True)
               results['limits']={'node_old_space_mib':2048,'enforced_total_4gib_cap':False,
                   'rss_note':'Sampled sum of descendant RSS; shared pages may be counted more than once',
                   'source_run':42970866896,'artifact_id':13834076411,
                   'source_commit':'20c71960bb5e6219d455f32c7df48eaaa0fcc333',
                   'scope':'Synthetic runtime smoke only; no real models, production or deployment'}
-              assert imported and started and restarted, 'Runtime smoke did not pass every required stage'
+              assert imported and started and restarted and handed_off, 'Runtime smoke did not pass every required stage'
           finally:
               (evidence/'summary.json').write_text(json.dumps(results,indent=2))
+              fixture_public=work/'evidence/handoff'
+              if fixture_public.exists():
+                  public=evidence/'handoff'; public.mkdir()
+                  for name in ['fixture.json','driver-events.jsonl','agent-events.jsonl','verified-http.json','runner-result.json','children.jsonl']:
+                      source=fixture_public/name
+                      if source.is_symlink(): raise RuntimeError('Refusing symlink fixture evidence')
+                      if source.is_file():
+                          text=source.read_text()
+                          if re.search(r'Bearer\s|eyJ[A-Za-z0-9_-]{15,}\.|gh[pousr]_[A-Za-z0-9]{20,}',text):
+                              raise RuntimeError('Refusing credential-shaped fixture evidence')
+                          (public/name).write_text(text)
               for log in raw.iterdir():
+                  if log.name=='handoff-fixture.log': continue
                   lines=log.read_text(errors='replace').splitlines()
                   (evidence/log.name).write_text('\n'.join('[redacted credential-related line]' if re.search(r'token|secret|password|credential|api[_ -]?key|invite|authorization|bearer',line,re.I) else line for line in lines)+'\n')
           PY
