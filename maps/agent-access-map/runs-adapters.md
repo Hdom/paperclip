@@ -356,9 +356,12 @@ objective. Source: [request owner](../../server/src/services/heartbeat/checkpoin
 HTTP and real-Postgres negative/concurrency tests are in
 [route tests](../../server/src/__tests__/issue-scheduled-retry-routes.test.ts) and
 [retry tests](../../server/src/services/heartbeat/retries.test.ts).
-No live provider or pilot execution is claimed. A crash after terminal persistence
-but before successor admission has no checkpoint-specific replay yet; do not
-claim restart-complete continuation from request acceptance.
+No live provider or pilot execution is claimed. Crash replay reuses the same
+admission through legacy reconciliation and stale-lock settlement. It requires a
+controller-written completion receipt and the unchanged source execution claim;
+live controller leases, unverified processes and pending environment cleanup hold
+the claim. Missing proof or revoked authority never creates a replacement claim
+or falls through to a fresh disposition-repair allowance.
 
 ## `session`
 

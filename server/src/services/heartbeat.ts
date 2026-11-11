@@ -1014,6 +1014,9 @@ export function heartbeatService(
     liveRunExecutions,
     // Bound at call time: the heartbeat recovery module is created below.
     settleLostRunProcess: scope => recoverActiveExecutions(scope),
+    replayCheckpointContinuation: runId => replayCheckpointContinuation(runId, {
+      executionActive: liveRunExecutions.has(runId),
+    }),
     settleExplicitContinuationRetry: releaseIssueExecutionAndPromote,
     scheduleRecoveryRetry: async (runId) => {
       const [run] = await db
@@ -1033,6 +1036,7 @@ export function heartbeatService(
   });
   const runDispatch = createRunDispatch(db);
   const {
+    replayCheckpointContinuation,
     scheduleBoundedRetryForRun,
     timerClaimWasFirstHeartbeat,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,

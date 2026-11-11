@@ -32,6 +32,12 @@ export function isOrdinaryLegacyCheckpointRun(run: Run): boolean {
     && !context.explicitUserContinuation && !context.chatCompletionDeliveryIds;
 }
 
+/** Written by completion with its terminal CAS, never inferred by a lock sweep. */
+export function hasCheckpointCompletionReceipt(run: Run): boolean {
+  const receipt = run.resultJson?.checkpointCompletionReceipt as Record<string, unknown> | undefined;
+  return receipt?.version === 1 && receipt.sourceRunId === run.id;
+}
+
 /** Records intent only. Completion and dispatch retain execution authority. */
 export async function requestCheckpointContinuation(db: Db, input: {
   companyId: string; issueId: string; agentId: string; runId: string;

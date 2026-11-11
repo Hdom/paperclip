@@ -914,6 +914,7 @@ export function recoveryService(
   db: Db,
   deps: {
     enqueueWakeup: RecoveryWakeup;
+    replayCheckpointContinuation?: (runId: string) => Promise<"scheduled" | "pending" | "not_scheduled">;
     scheduleRecoveryRetry?: (
       runId: string,
     ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
@@ -3875,6 +3876,13 @@ export function recoveryService(
     )).limit(1);
     if (!run || run.runtimeMode === "native" || run.status !== "succeeded") return "skipped" as const;
     const context = parseObject(run.contextSnapshot);
+    if (context.checkpointContinuationRequest) {
+      if (run.resultJson?.checkpointContinuationReplayClosed === true) return "skipped" as const;
+      // Explicit checkpoint intent owns this successor slot. A denial must not
+      // fall through to a disposition-repair turn with a fresh allowance.
+      const outcome = await deps.replayCheckpointContinuation?.(run.id);
+      return outcome === "scheduled" ? "queued" as const : "skipped" as const;
+    }
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return "skipped" as const;
     const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).limit(1);
@@ -6569,6 +6577,13 @@ export function recoveryService(
       // newer terminal status. Do not test claim ownership using the old status.
       const owner = originalOwner ? { ...originalOwner,
         status: runStatusById.get(originalOwner.id) ?? originalOwner.status } : undefined;
+      if (owner?.status === "succeeded" && owner.contextSnapshot?.checkpointContinuationRequest
+        && owner.resultJson?.checkpointContinuationReplayClosed !== true) {
+        // Replay before discarding exact-owner authority. Pending cleanup or a
+        // transient DB failure keeps this durable obligation and its source lock.
+        const replay = await deps.replayCheckpointContinuation?.(owner.id);
+        if (replay !== "not_scheduled") continue;
+      }
       if (owner && isExplicitContinuationRetryClaim(issue, owner)) {
         // A terminal row can still own cleanup and a pending bounded retry.
         // Re-enter the same policy rather than erasing its exact-owner proof.

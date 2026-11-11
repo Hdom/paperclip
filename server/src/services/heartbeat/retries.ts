@@ -1,3 +1,6 @@
+import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
+import { recordedLocalExecutionStopped } from "../native-local-process-stop.js";
+import { environmentLeases } from "@paperclipai/db";
 import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
 import { isInterruptedNativePreparation } from "../cancelled-native-startup.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
@@ -5,7 +8,7 @@ import { notifyAttentionRetentionWork } from "../retention-work-notifications.js
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
-import { CHECKPOINT_CONTINUATION_MAX_ATTEMPTS, checkpointContinuationAttempts, isOrdinaryLegacyCheckpointRun } from "./checkpoint-continuation.js";
+import { CHECKPOINT_CONTINUATION_MAX_ATTEMPTS, hasCheckpointCompletionReceipt, checkpointContinuationAttempts, isOrdinaryLegacyCheckpointRun } from "./checkpoint-continuation.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
@@ -516,7 +519,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const isCheckpoint = retryReason === CHECKPOINT_CONTINUATION_RETRY_REASON;
     const checkpointRequest = parseObject(run.contextSnapshot?.checkpointContinuationRequest);
-    if (isCheckpoint && (run.status !== "succeeded" || !isOrdinaryLegacyCheckpointRun(run)
+    if (isCheckpoint && (run.status !== "succeeded" || run.resultJson?.checkpointContinuationReplayClosed === true || !hasCheckpointCompletionReceipt(run) || !isOrdinaryLegacyCheckpointRun(run)
         || checkpointRequest.version !== 1 || checkpointRequest.sourceRunId !== run.id
         || !readNonEmptyString(checkpointRequest.summary) || !readNonEmptyString(checkpointRequest.nextAction))) {
       return { outcome: "not_scheduled" as const, reason: "Checkpoint continuation requires a successful ordinary legacy run and its own durable request.", issueId: run.issueId };
@@ -939,7 +942,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           const [source] = await tx.select().from(heartbeatRuns).where(and(
             eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
           ));
-          if (!source || source.status !== "succeeded" || !isOrdinaryLegacyCheckpointRun(source)
+          if (!source || source.status !== "succeeded" || source.resultJson?.checkpointContinuationReplayClosed === true || !hasCheckpointCompletionReceipt(source) || !isOrdinaryLegacyCheckpointRun(source)
             || JSON.stringify(source.contextSnapshot?.checkpointContinuationRequest) !== JSON.stringify(checkpointRequest)
             || checkpointContinuationAttempts(source.contextSnapshot) !== consumedAttempts) {
             return { outcome: "not_scheduled", issueId, errorCode: "issue_execution_lock_changed",
@@ -2076,6 +2079,37 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     };
   }
 
+  /** Replay an existing durable obligation; never recover arbitrary successful work. */
+  async function replayCheckpointContinuation(runId: string, options: { executionActive?: boolean; now?: Date } = {}): Promise<"scheduled" | "pending" | "not_scheduled"> {
+    const run = await getRun(runId, { unsafeFullResultJson: true });
+    if (!run || run.status !== "succeeded" || run.resultJson?.checkpointContinuationReplayClosed === true || !run.contextSnapshot?.checkpointContinuationRequest) return "not_scheduled";
+    const closeReplay = async () => {
+      await db.update(heartbeatRuns).set({
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || '{"checkpointContinuationReplayClosed":true}'::jsonb`,
+        updatedAt: new Date(),
+      }).where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
+      return "not_scheduled" as const;
+    };
+    if (!isOrdinaryLegacyCheckpointRun(run) || !hasCheckpointCompletionReceipt(run)) return closeReplay();
+    const now = options.now ?? new Date();
+    if (options.executionActive || (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now)) return "pending";
+    // Completion and provider settlement are distinct from environment cleanup.
+    // Retain the exact source lock while the existing cleanup owner settles it.
+    const leases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    ));
+    if (leases.some(lease => !lease.releasedAt || ["active", "retained", "pending_cleanup"].includes(lease.status)
+      || (lease.cleanupStatus !== null && lease.cleanupStatus !== "success"))) return "pending";
+    if ((run.processPid || run.processGroupId) && !(leases.length > 0 && leases.every(hasRemoteTerminationReceipt))
+      && !(await recordedLocalExecutionStopped(db, run))) return "pending";
+    const agent = await getAgent(run.agentId);
+    if (!agent || agent.companyId !== run.companyId) return closeReplay();
+    const result = await scheduleBoundedRetryForRun(run, agent, {
+      retryReason: CHECKPOINT_CONTINUATION_RETRY_REASON, wakeReason: "checkpoint_continuation", delayMs: 1000, now,
+    });
+    return result.outcome === "scheduled" ? "scheduled" : closeReplay();
+  }
+
   function timerClaimWasFirstHeartbeat(
     run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot">,
   ): true | undefined {
@@ -2085,6 +2119,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
   }
 
   return {
+    replayCheckpointContinuation,
     scheduleBoundedRetryForRun,
     timerClaimWasFirstHeartbeat,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,

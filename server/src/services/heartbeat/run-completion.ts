@@ -673,6 +673,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               : {}),
             ...(outcome === "cancelled" ? controllerLeaseLossResultJson(signal) : {}),
             ...(failureCause ? { failureCause } : {}),
+            // Controller-authored settlement receipt travels with the winning
+            // terminal CAS. A synthetic success from orphan repair cannot mint it.
+            checkpointCompletionReceipt: outcome === "succeeded" && run.runtimeMode === "legacy"
+              ? { version: 1, sourceRunId: run.id } : null,
             configFreshness: configFreshnessResultMetadata,
           },
           errorFamily: adapterResult.errorFamily ?? null,

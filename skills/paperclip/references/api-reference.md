@@ -1715,7 +1715,7 @@ task and skill visibility, and monitor-management permission. Asset mutations,
 skill-file mutations and recovery-action resolution remain restricted.
 
 
-## Explicit checkpoint continuation (legacy CLI/SSH)
+**Explicit checkpoint continuation (legacy CLI/SSH)**
 
 `POST /api/issues/{issueId}/checkpoint-continuation`
 
@@ -1738,3 +1738,9 @@ review/approval and recovery-only scope retain authority. Keep the task
 `in_progress`; never fabricate a blocker or self-comment wake. If the write fails,
 report that no continuation was registered. Native Runner retains its separate
 semantic continuation contract.
+
+If the controller restarts after successful completion but before admission, its
+existing recovery path replays the recorded request only with controller-written
+completion proof and the unchanged execution claim. Unsettled execution/cleanup
+remains held. A revoked claim, failed/timeout outcome or refused gate never grants
+a fresh continuation through recovery.

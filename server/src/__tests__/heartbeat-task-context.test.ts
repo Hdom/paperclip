@@ -1,6 +1,6 @@
 import { requestCheckpointContinuation } from "../services/heartbeat/checkpoint-continuation.js";
 import { createHash, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { FAST_RESPONSE_AGENT_GUIDANCE } from "@paperclipai/shared";
@@ -109,6 +109,29 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     expect(finished.contextSnapshot?.checkpointContinuationRequest).toBeUndefined();
     const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
     expect(issue.status).toBe("done");
+  });
+
+  it("reconstructs the checkpoint after a terminal write survives failed admission", async () => {
+    const f = await seed();
+    checkpointTasks.add(f.issueId);
+    await db.execute(sql`ALTER TABLE agent_wakeup_requests ADD CONSTRAINT checkpoint_fault CHECK (reason <> 'checkpoint_continuation') NOT VALID`);
+    let source: AdapterExecutionContext;
+    try { source = await execute(f, {}); }
+    finally { await db.execute(sql`ALTER TABLE agent_wakeup_requests DROP CONSTRAINT checkpoint_fault`); }
+    const [terminal] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source!.runId));
+    expect(terminal).toMatchObject({ status: "succeeded", resultJson: { checkpointCompletionReceipt: { version: 1, sourceRunId: source!.runId } } });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.runId))).toHaveLength(0);
+    // Simulate a new controller after the crashed boot's lease expired.
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(0) }).where(eq(heartbeatRuns.id, source!.runId));
+    const restarted = heartbeatService(db);
+    await Promise.all([restarted.reconcileStrandedAssignedIssues(), heartbeatService(db).sweepStaleIssueLocks()]);
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0].scheduledRetryReason).toBe("checkpoint_continuation");
+    await restarted.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
+    await restarted.resumeQueuedRunsForAgent(f.companyId, f.agentId);
+    await restarted.drainActiveRunExecutions();
+    expect((await restarted.getRun(successors[0].id))?.status).toBe("succeeded");
   });
 
   it("keeps assignment, wake, compact, and revision context aligned after secret redaction", async () => {

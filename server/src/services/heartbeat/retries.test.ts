@@ -1,7 +1,8 @@
+import { recoveryService } from "../recovery/service.js";
 import { requestCheckpointContinuation } from "./checkpoint-continuation.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, environmentLeases, agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -262,6 +263,7 @@ describePostgres("heartbeat retry module database wiring", () => {
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   afterEach(async () => {
+    await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
@@ -489,7 +491,7 @@ describePostgres("heartbeat retry module database wiring", () => {
   async function checkpointFixture() {
     const f = await fixture();
     const [run] = await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "legacy",
-      errorCode: null, error: null, resultJson: null, finishedAt: null,
+      errorCode: null, error: null, resultJson: { checkpointCompletionReceipt: { version: 1, sourceRunId: f.run.id } }, finishedAt: null,
     }).where(eq(heartbeatRuns.id, f.run.id)).returning();
     const input = { companyId: f.companyId, issueId: f.issue.id, agentId: f.agent.id, runId: run.id,
       request: { version: 1 as const, summary: "Saved implementation", nextAction: "Verify tests" } };
@@ -563,7 +565,7 @@ describePostgres("heartbeat retry module database wiring", () => {
     const binding = boundRetries();
     for (let attempt = 1; attempt <= 3; attempt++) {
       await requestCheckpointContinuation(db, { ...f.input, runId: run.id });
-      const [source] = await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
+      const [source] = await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: now, resultJson: { checkpointCompletionReceipt: { version: 1, sourceRunId: run.id } } }).where(eq(heartbeatRuns.id, run.id)).returning();
       const result = await binding.retries.scheduleBoundedRetryForRun(source, f.agent, { retryReason: "checkpoint_continuation", now, maxAttempts: 999, delayMs: 1000 });
       if (result.outcome !== "scheduled") throw new Error(JSON.stringify(result));
       expect(result.run.contextSnapshot?.checkpointContinuationAttempts).toBe(attempt);
@@ -597,6 +599,82 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(result.run.contextSnapshot?.checkpointContinuationRequest).toBeUndefined();
     await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, result.run.id));
     await expect(requestCheckpointContinuation(db, { ...f.input, runId: result.run.id })).resolves.toMatchObject({ accepted: true });
+  });
+
+  function checkpointRecovery(binding = boundRetries()) {
+    const enqueueWakeup = vi.fn(async () => { throw new Error("Checkpoint must not fall through to generic recovery"); });
+    const recovery = recoveryService(db, { enqueueWakeup,
+      replayCheckpointContinuation: id => binding.retries.replayCheckpointContinuation(id, { now }),
+    });
+    return { binding, recovery, enqueueWakeup };
+  }
+
+  it("replays terminal-before-admission across concurrent cold recovery and stale-lock sweeps exactly once", async () => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: now }).where(eq(heartbeatRuns.id, f.run.id));
+    const a = checkpointRecovery(), b = checkpointRecovery();
+    await Promise.all([a.recovery.reconcileLegacyContinuation(f.run.id), b.recovery.sweepStaleIssueLocks()]);
+    await checkpointRecovery().recovery.reconcileStrandedAssignedIssues();
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ scheduledRetryReason: "checkpoint_continuation", scheduledRetryAttempt: 1 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    expect(issue.executionRunId).toBe(successors[0].id);
+    expect(a.enqueueWakeup).not.toHaveBeenCalled(); expect(b.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it.each(["live_controller", "pending_cleanup", "unknown_cleanup", "unverified_process"])("retains the source claim until %s settles", async kind => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    await db.update(heartbeatRuns).set({ status: "succeeded",
+      ...(kind === "live_controller" ? { controllerLeaseExpiresAt: new Date(now.getTime() + 60_000) } : {}),
+      ...(kind === "unverified_process" ? { processPid: 999999, processGroupId: 999999, processStartedAt: now } : {}),
+    }).where(eq(heartbeatRuns.id, f.run.id));
+    if (kind === "pending_cleanup") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.run.id, provider: "local", status: "pending_cleanup" });
+    if (kind === "unknown_cleanup") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.run.id, provider: "local", status: "released", releasedAt: now, cleanupStatus: "unknown" });
+    const a = checkpointRecovery();
+    await a.recovery.sweepStaleIssueLocks();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.run.id);
+    expect(a.enqueueWakeup).not.toHaveBeenCalled();
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: null, processPid: null, processGroupId: null }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(environmentLeases).set({ status: "released", releasedAt: now, cleanupStatus: "success" }).where(eq(environmentLeases.heartbeatRunId, f.run.id));
+    await checkpointRecovery().recovery.sweepStaleIssueLocks();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(1);
+  });
+
+  it("requires an exact remote termination receipt instead of probing remote PIDs locally", async () => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    await db.update(heartbeatRuns).set({ status: "succeeded", processPid: process.pid, processGroupId: process.pid, processStartedAt: now }).where(eq(heartbeatRuns.id, f.run.id));
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.run.id,
+      provider: "ssh", providerLeaseId: "test-remote", status: "released", releasedAt: now, cleanupStatus: "success" }).returning();
+    const receipt = { schema: "paperclip.remote-termination.v1", companyId: f.companyId, runId: f.run.id,
+      leaseId: lease.id, provider: "ssh", providerLeaseId: "test-remote", state: "stopped" };
+    await db.update(environmentLeases).set({ metadata: { remoteExecutionTermination: { ...receipt, runId: "foreign-run" } } }).where(eq(environmentLeases.id, lease.id));
+    expect(await boundRetries().retries.replayCheckpointContinuation(f.run.id, { now })).toBe("pending");
+    await db.update(environmentLeases).set({ metadata: { remoteExecutionTermination: receipt } }).where(eq(environmentLeases.id, lease.id));
+    expect(await boundRetries().retries.replayCheckpointContinuation(f.run.id, { now })).toBe("scheduled");
+  });
+
+  it.each(["missing_receipt", "stopped", "paused", "reassigned", "exhausted"])("does not replay or grant generic repair after %s", async kind => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    await db.update(heartbeatRuns).set({ status: "succeeded",
+      ...(kind === "missing_receipt" ? { resultJson: {} } : {}),
+      ...(kind === "exhausted" ? { contextSnapshot: { ...(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0].contextSnapshot, checkpointContinuationAttempts: 3 } } : {}),
+    }).where(eq(heartbeatRuns.id, f.run.id));
+    if (kind === "stopped") await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issue.id));
+    if (kind === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
+    if (kind === "reassigned") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issue.id));
+    const a = checkpointRecovery();
+    await a.recovery.reconcileLegacyContinuation(f.run.id);
+    await a.recovery.sweepStaleIssueLocks();
+    await a.recovery.reconcileLegacyContinuation(f.run.id);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
+    expect(a.enqueueWakeup).not.toHaveBeenCalled();
+    expect((await a.binding.deps.getRun(f.run.id))?.resultJson?.checkpointContinuationReplayClosed).toBe(true);
   });
 
   it("promotes only due retries and publishes after commit", async () => {

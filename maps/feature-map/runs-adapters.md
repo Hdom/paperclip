@@ -314,5 +314,6 @@ worker can register a saved checkpoint before ending successfully. Completion
 may create a bounded scheduled successor, visible in ordinary task/run history.
 Acceptance alone is not proof of execution. Existing execution controls still
 apply; timeout/cancellation do not qualify. This is source and mock-adapter test
-scope, not a live pilot qualification. Terminal-to-admission crash replay remains
-a qualification gap.
+scope, not a live pilot qualification. Terminal-to-admission crash replay is
+covered by durable completion proof and existing recovery admission; unresolved
+execution cleanup remains held rather than starting another worker.
