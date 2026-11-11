@@ -96,11 +96,16 @@ export async function isPreDispatchRepairCancellationVerified(db: Db, run: Run):
     if (current.runtimeMode !== "legacy" || !current.finishedAt
       || !["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(current.status)
       || (current.controllerLeaseExpiresAt && current.controllerLeaseExpiresAt > new Date())
+      || (current.controllerBootId && !current.controllerLeaseExpiresAt)
       || current.resultJson?.workspaceRestoreFailure || hasRequiredWorkspaceRecovery(current.resultJson)
       || leases.some(lease => !lease.releasedAt || ["active", "retained", "pending_cleanup"].includes(lease.status)
         || (lease.cleanupStatus !== null && lease.cleanupStatus !== "success"))) return false;
     if (leases.some(lease => lease.provider !== "local")) return leases.every(hasRemoteTerminationReceipt);
-    return await recordedLocalExecutionStopped(db, current) || await hasNativeLocalProcessStop(db, run.companyId, current.id);
+    // A historical stop receipt cannot override currently retained process
+    // fields. Re-observe that exact host/process generation whenever present.
+    return current.processPid || current.processGroupId
+      ? await recordedLocalExecutionStopped(db, current)
+      : await hasNativeLocalProcessStop(db, run.companyId, current.id);
   }
   return false;
 }

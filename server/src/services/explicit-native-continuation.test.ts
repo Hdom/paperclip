@@ -1605,6 +1605,13 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       payload: { targetKind: "local", hostname: os.hostname(), processPid: child.pid,
         processGroupId: null, processStartedAt: processStartedAt.toISOString() } });
     expect(await isPreDispatchRepairCancellationVerified(db, repair)).toBe(true);
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: parent.id, agentId: f.agentId,
+      eventType: "native.local_process_stopped", stream: "system", level: "info", message: "Old stop receipt" });
+    await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, parent.id));
+    // Even a server stop receipt cannot excuse a currently retained live PID.
+    expect(await isPreDispatchRepairCancellationVerified(db, repair)).toBe(false);
+    expect(await admit(f)).toBeNull();
+    await db.update(heartbeatRuns).set({ processPid: child.pid }).where(eq(heartbeatRuns.id, parent.id));
     expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId });
   });
 

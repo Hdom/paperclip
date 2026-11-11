@@ -2092,7 +2092,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     };
     if (!isOrdinaryLegacyCheckpointRun(run) || !hasCheckpointCompletionReceipt(run)) return closeReplay();
     const now = options.now ?? new Date();
-    if (options.executionActive || (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now)) return "pending";
+    if (options.executionActive || (run.controllerBootId && !run.controllerLeaseExpiresAt)
+      || (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now)) return "pending";
     // Completion and provider settlement are distinct from environment cleanup.
     // Retain the exact source lock while the existing cleanup owner settles it.
     const leases = await db.select().from(environmentLeases).where(and(
@@ -2100,6 +2101,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     ));
     if (leases.some(lease => !lease.releasedAt || ["active", "retained", "pending_cleanup"].includes(lease.status)
       || (lease.cleanupStatus !== null && lease.cleanupStatus !== "success"))) return "pending";
+    if (leases.some(lease => lease.provider !== "local") && !leases.every(hasRemoteTerminationReceipt)) return "pending";
     if ((run.processPid || run.processGroupId) && !(leases.length > 0 && leases.every(hasRemoteTerminationReceipt))
       && !(await recordedLocalExecutionStopped(db, run))) return "pending";
     const agent = await getAgent(run.agentId);

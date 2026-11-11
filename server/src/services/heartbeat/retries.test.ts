@@ -624,11 +624,12 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(a.enqueueWakeup).not.toHaveBeenCalled(); expect(b.enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it.each(["live_controller", "pending_cleanup", "unknown_cleanup", "unverified_process"])("retains the source claim until %s settles", async kind => {
+  it.each(["live_controller", "undated_controller", "pending_cleanup", "unknown_cleanup", "unverified_process"])("retains the source claim until %s settles", async kind => {
     const f = await checkpointFixture();
     await requestCheckpointContinuation(db, f.input);
     await db.update(heartbeatRuns).set({ status: "succeeded",
       ...(kind === "live_controller" ? { controllerLeaseExpiresAt: new Date(now.getTime() + 60_000) } : {}),
+      ...(kind === "undated_controller" ? { controllerBootId: randomUUID(), controllerLeaseExpiresAt: null } : {}),
       ...(kind === "unverified_process" ? { processPid: 999999, processGroupId: 999999, processStartedAt: now } : {}),
     }).where(eq(heartbeatRuns.id, f.run.id));
     if (kind === "pending_cleanup") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.run.id, provider: "local", status: "pending_cleanup" });
@@ -638,16 +639,16 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
     expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.run.id);
     expect(a.enqueueWakeup).not.toHaveBeenCalled();
-    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: null, processPid: null, processGroupId: null }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(heartbeatRuns).set({ controllerBootId: null, controllerLeaseExpiresAt: null, processPid: null, processGroupId: null }).where(eq(heartbeatRuns.id, f.run.id));
     await db.update(environmentLeases).set({ status: "released", releasedAt: now, cleanupStatus: "success" }).where(eq(environmentLeases.heartbeatRunId, f.run.id));
     await checkpointRecovery().recovery.sweepStaleIssueLocks();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(1);
   });
 
-  it("requires an exact remote termination receipt instead of probing remote PIDs locally", async () => {
+  it.each([true, false])("requires exact remote termination even when PID fields are retained: %s", async retainedPid => {
     const f = await checkpointFixture();
     await requestCheckpointContinuation(db, f.input);
-    await db.update(heartbeatRuns).set({ status: "succeeded", processPid: process.pid, processGroupId: process.pid, processStartedAt: now }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", processPid: retainedPid ? process.pid : null, processGroupId: retainedPid ? process.pid : null, processStartedAt: retainedPid ? now : null }).where(eq(heartbeatRuns.id, f.run.id));
     const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.run.id,
       provider: "ssh", providerLeaseId: "test-remote", status: "released", releasedAt: now, cleanupStatus: "success" }).returning();
     const receipt = { schema: "paperclip.remote-termination.v1", companyId: f.companyId, runId: f.run.id,
