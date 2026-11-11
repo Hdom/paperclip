@@ -1,3 +1,4 @@
+import { requestCheckpointContinuation } from "../services/heartbeat/checkpoint-continuation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -21,6 +22,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
   const adapterType = "task_context_test";
   const captured = new Map<string, AdapterExecutionContext>();
   const inspectPreparation = new Map<string, () => void>();
+  const checkpointTasks = new Set<string>();
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   let heartbeat: ReturnType<typeof heartbeatService>;
@@ -37,6 +39,14 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
       execute: async (input) => {
         inspectPreparation.get(input.agent.id)?.();
         captured.set(input.runId, input);
+        const issueId = input.context.issueId as string;
+        if (checkpointTasks.delete(issueId)) {
+          await requestCheckpointContinuation(db, { companyId: input.agent.companyId, issueId,
+            agentId: input.agent.id, runId: input.runId,
+            request: { version: 1, summary: "Saved checkpoint canary", nextAction: "Verify remaining canary" } });
+        } else if (input.context.retryReason === "checkpoint_continuation") {
+          await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+        }
         return { exitCode: 0, signal: null, timedOut: false, sessionId: "context-session", resultJson: {} };
       },
       testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }),
@@ -75,6 +85,31 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     expect(captured.has(run!.id)).toBe(true);
     return captured.get(run!.id)!;
   }
+
+  it("continues a saved checkpoint through the public heartbeat with timer wakes disabled", async () => {
+    const f = await seed();
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } } }).where(eq(agents.id, f.agentId));
+    checkpointTasks.add(f.issueId);
+    const source = await execute(f, {});
+    const scheduled = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "checkpoint_continuation" });
+    expect(await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 60_000))).toMatchObject({ promoted: 1 });
+    await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
+    await heartbeat.drainActiveRunExecutions();
+    const successor = captured.get(scheduled[0].id);
+    expect(successor).toBeDefined();
+    expect(successor!.context.executionContinuation).toMatchObject({
+      completedWork: expect.stringContaining("Saved checkpoint canary"),
+      objective: "Assignment description canary",
+    });
+    expect(JSON.stringify(successor!.context.executionContinuation)).toContain("Verify remaining canary");
+    const [finished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, scheduled[0].id));
+    expect(finished.status, finished.error ?? undefined).toBe("succeeded");
+    expect(finished.contextSnapshot?.checkpointContinuationRequest).toBeUndefined();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(issue.status).toBe("done");
+  });
 
   it("keeps assignment, wake, compact, and revision context aligned after secret redaction", async () => {
     const f = await seed();

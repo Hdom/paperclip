@@ -5,6 +5,7 @@ import {
 } from "./sandbox-callback-bridge.js";
 
 const contextRequests = [
+  { method: "POST", path: "/api/issues/task-1/checkpoint-continuation" },
   { method: "GET", path: "/api/assets/screenshot-1/content" },
   { method: "GET", path: "/api/companies/company-1/skills/skill-1" },
   { method: "GET", path: "/api/companies/company-1/skills/skill-1/files", query: "?path=references%2Fworkflow.md" },
@@ -13,6 +14,10 @@ const contextRequests = [
 ];
 
 const deniedRequests = [
+  { method: "GET", path: "/api/issues/task-1/checkpoint-continuation" },
+  { method: "PATCH", path: "/api/issues/task-1/checkpoint-continuation" },
+  { method: "POST", path: "/api/issues/task-1/checkpoint-continuation/extra" },
+  { method: "POST", path: "/api/heartbeat-runs/run-1/invoke" },
   { method: "POST", path: "/api/assets/screenshot-1/content" },
   { method: "DELETE", path: "/api/assets/screenshot-1/content" },
   { method: "GET", path: "/api/assets/screenshot-1/content/extra" },

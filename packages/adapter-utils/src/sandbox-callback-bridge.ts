@@ -170,6 +170,9 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/companies\/[^/]+\/email\/send$/ },
 
   // Issue lifecycle: read context, checkout, update, comment, document, release
+  // Explicit current-run checkpoint only; controller revalidates task/run authority.
+  // Recovery resolution and generic run invocation remain denied.
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/checkpoint-continuation$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/heartbeat-context$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/diagnostics\/wakes$/ },

@@ -12,6 +12,7 @@ import { readInboxMine } from "../services/inbox-mine-read.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { INBOX_MINE_ISSUE_STATUS_FILTER, latestFailedRunsByAgent } from "@paperclipai/shared";
 import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../services/heartbeat-run-privacy.js";
+import { checkpointContinuationSchema, requestCheckpointContinuation } from "../services/heartbeat/checkpoint-continuation.js";
 import { assertStageDecisionSnapshot, assertStageDecisionRequest, readPlanRevisionForDecision } from "../services/issue-stage-decision-guard.js";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
@@ -10217,6 +10218,21 @@ export function issueRoutes(
       actions: [...(active ? [active] : []), ...retainedHolds
         .filter(action => action.id !== active?.id).map(issueRecoveryActionReadModel)],
     });
+  });
+
+  router.post("/issues/:id/checkpoint-continuation", validate(checkpointContinuationSchema), async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId)
+      throw forbidden("Agent authentication required");
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return;
+    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    res.status(202).json(await requestCheckpointContinuation(db, {
+      companyId: req.actor.companyId, issueId: issue.id, agentId: req.actor.agentId, runId,
+      request: req.body,
+    }));
   });
 
   router.post("/issues/:id/retry", validate(taskRetrySchema), async (req, res) => {

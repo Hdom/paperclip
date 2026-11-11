@@ -309,3 +309,10 @@ through ordinary released selection. Native filesystem/shell tools are denied in
 Kimi work; scoped Paperclip tools retain control-plane authorization. This recipe
 is a test path, not a statement that live acceptance passed. Current evidence:
 [Kimi release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md).
+Checkpoint continuation (2026-11-11, `runs-adapters/runs`): an assigned legacy
+worker can register a saved checkpoint before ending successfully. Completion
+may create a bounded scheduled successor, visible in ordinary task/run history.
+Acceptance alone is not proof of execution. Existing execution controls still
+apply; timeout/cancellation do not qualify. This is source and mock-adapter test
+scope, not a live pilot qualification. Terminal-to-admission crash replay remains
+a qualification gap.

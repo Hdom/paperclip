@@ -7,6 +7,7 @@
 
 /** The retry reason a run carries, reduced to the kinds a gate cares about. */
 export type RetryReasonKind =
+  | "checkpoint_continuation"
   | "max_turn_continuation"
   | "disposition_repair"
   | "native_safe_replacement"
@@ -380,7 +381,7 @@ export function decideScheduledRetryGate(
       details: { issueId: facts.issueId, currentExecutionRunId: facts.issueExecutionRunId, currentCheckoutRunId: facts.issueCheckoutRunId ?? null } };
   }
 
-  const requiresInProgress = facts.retryReasonKind === "max_turn_continuation";
+  const requiresInProgress = facts.retryReasonKind === "max_turn_continuation" || facts.retryReasonKind === "checkpoint_continuation";
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
@@ -622,7 +623,7 @@ export function decideQueuedRunStaleness(
       details: { issueId: facts.issueId, currentExecutionRunId: facts.issueExecutionRunId, currentCheckoutRunId: facts.issueCheckoutRunId ?? null } };
   }
 
-  const requiresInProgress = facts.retryReasonKind === "max_turn_continuation";
+  const requiresInProgress = facts.retryReasonKind === "max_turn_continuation" || facts.retryReasonKind === "checkpoint_continuation";
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,

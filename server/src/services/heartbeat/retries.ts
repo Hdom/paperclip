@@ -5,6 +5,7 @@ import { notifyAttentionRetentionWork } from "../retention-work-notifications.js
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { CHECKPOINT_CONTINUATION_MAX_ATTEMPTS, checkpointContinuationAttempts, isOrdinaryLegacyCheckpointRun } from "./checkpoint-continuation.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
@@ -65,6 +66,7 @@ import { logActivity } from "../activity-log.js";
 import { readContinuationAttempt } from "../recovery/index.js";
 import { withRecoveryContext } from "../recovery/status-only-context.js";
 import {
+  CHECKPOINT_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
@@ -512,17 +514,28 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       (interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    const isCheckpoint = retryReason === CHECKPOINT_CONTINUATION_RETRY_REASON;
+    const checkpointRequest = parseObject(run.contextSnapshot?.checkpointContinuationRequest);
+    if (isCheckpoint && (run.status !== "succeeded" || !isOrdinaryLegacyCheckpointRun(run)
+        || checkpointRequest.version !== 1 || checkpointRequest.sourceRunId !== run.id
+        || !readNonEmptyString(checkpointRequest.summary) || !readNonEmptyString(checkpointRequest.nextAction))) {
+      return { outcome: "not_scheduled" as const, reason: "Checkpoint continuation requires a successful ordinary legacy run and its own durable request.", issueId: run.issueId };
+    }
     // Interrupted preparation spent no provider work: its own lane, bounded
     // like the native controller-generation cap (execution-recovery-attempt).
     const interruptedPreparationLane = retryReason === INTERRUPTED_PREPARATION_RETRY_REASON;
     const maxAttempts = Math.max(
       0,
       Math.floor(
-        opts?.maxAttempts ?? (interruptedPreparationLane
+        isCheckpoint ? CHECKPOINT_CONTINUATION_MAX_ATTEMPTS : opts?.maxAttempts ?? (interruptedPreparationLane
           ? INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
-    const consumedAttempts = executionRetryAttemptCount(run, retryReason);
+    const savedCheckpointAttempts = checkpointContinuationAttempts(run.contextSnapshot);
+    if (isCheckpoint && savedCheckpointAttempts === null) return { outcome: "not_scheduled" as const, reason: "Invalid checkpoint continuation counter.", issueId: run.issueId };
+    const consumedAttempts = isCheckpoint
+      ? (savedCheckpointAttempts ?? CHECKPOINT_CONTINUATION_MAX_ATTEMPTS)
+      : executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
     // An interrupted preparation never spends failures, but it never revives
     // a chain whose real failures already spent the failure budget either.
@@ -664,7 +677,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       isTransientWorkspacePreparationCode(run.errorCode) ||
       hasConversationContinuationPolicy(run.resultJson) ||
       (retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) ||
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+      isCheckpoint || retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
     if (requiresIssueGate) {
       const gate = await runDispatch.evaluateScheduledRetryGate({
@@ -726,7 +739,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const retryContextSnapshot: Record<string, unknown> = withRecoveryContext(
       {
         ...contextSnapshot,
-        executionRetryAccounting: accountingForScheduledRetry(run, retryReason, schedule.attempt),
+        ...(isCheckpoint
+          ? { checkpointContinuationAttempts: schedule.attempt }
+          : { executionRetryAccounting: accountingForScheduledRetry(run, retryReason, schedule.attempt) }),
         retryOfRunId: run.id,
         wakeReason,
         retryReason,
@@ -780,11 +795,19 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     delete retryContextSnapshot.skillVersions;
     delete retryContextSnapshot.skillSelectionSnapshot;
     delete retryContextSnapshot.shadowedSkills;
+    if (isCheckpoint) {
+      // A successor must explicitly register its own request. Keep checkpoint
+      // evidence for context without carrying executable intent forward.
+      retryContextSnapshot.previousCheckpoint = checkpointRequest;
+    }
+    // Failed-source requests must not become intent on infrastructure retries either.
+    delete retryContextSnapshot.checkpointContinuationRequest;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
       retryContextSnapshot,
     );
     const continuationRetryIdempotencyKey =
+      isCheckpoint ? `checkpoint-continuation:${run.companyId}:${run.id}` :
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
         ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
         : retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
@@ -912,7 +935,18 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           }
         }
 
-        if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
+        if (isCheckpoint) {
+          const [source] = await tx.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+          ));
+          if (!source || source.status !== "succeeded" || !isOrdinaryLegacyCheckpointRun(source)
+            || JSON.stringify(source.contextSnapshot?.checkpointContinuationRequest) !== JSON.stringify(checkpointRequest)
+            || checkpointContinuationAttempts(source.contextSnapshot) !== consumedAttempts) {
+            return { outcome: "not_scheduled", issueId, errorCode: "issue_execution_lock_changed",
+              reason: "Checkpoint source changed before admission", details: {} };
+          }
+        }
+        if (isCheckpoint || retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
           if (issueId) {
             await tx.execute(
               sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
@@ -985,6 +1019,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
                 status: issues.status,
                 assigneeAgentId: issues.assigneeAgentId,
                 executionRunId: issues.executionRunId,
+                checkoutRunId: issues.checkoutRunId,
               })
               .from(issues)
               .where(
@@ -1051,7 +1086,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               };
             }
 
-            if (lockedIssue.executionRunId !== run.id) {
+            if (lockedIssue.executionRunId !== run.id || (isCheckpoint && lockedIssue.checkoutRunId !== null && lockedIssue.checkoutRunId !== run.id)) {
               return {
                 outcome: "not_scheduled",
                 reason:

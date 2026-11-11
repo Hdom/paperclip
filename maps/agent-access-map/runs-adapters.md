@@ -341,6 +341,25 @@ ordinary run output access.
 The new bridge surface does not qualify retry, cancellation, workspace repair or
 session-control access. Deployed diagnostic usefulness remains unverified.
 
+Scoped checkpoint continuation update (2026-11-11): legacy assigned agents may
+`POST /api/issues/{id}/checkpoint-continuation` using their current running task's
+run ID. The strict versioned request records intent only; board callers, wrong
+company/agent/task, stale locks, native/recovery runs, malformed or exhausted
+counters are denied. Successful completion admits at most three successors
+through the existing retry and dispatch gates; each successor needs its own
+request. Timer wakes may remain disabled; on-demand wakes, Stop, pause, budget,
+review, dependencies and responsible-user authority remain controlling.
+The saved agent checkpoint enters low-trust continuation evidence, never the user
+objective. Source: [request owner](../../server/src/services/heartbeat/checkpoint-continuation.ts),
+[completion](../../server/src/services/heartbeat/run-completion.ts),
+[retry admission](../../server/src/services/heartbeat/retries.ts).
+HTTP and real-Postgres negative/concurrency tests are in
+[route tests](../../server/src/__tests__/issue-scheduled-retry-routes.test.ts) and
+[retry tests](../../server/src/services/heartbeat/retries.test.ts).
+No live provider or pilot execution is claimed. A crash after terminal persistence
+but before successor admission has no checkpoint-specific replay yet; do not
+claim restart-complete continuation from request acceptance.
+
 ## `session`
 
 Native OpenCode semantic tool requests wait under the existing durable Runner
