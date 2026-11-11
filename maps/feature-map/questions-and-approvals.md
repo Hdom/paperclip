@@ -42,6 +42,14 @@ Answer the question near the composer, or reopen its compact unanswered entry
 in the history. Open the plan preview before using the confirmation controls.
 Exercise both available task presentations when a change affects shared cards.
 
+For a pending native execution stage assigned to the signed-in person, open
+task properties and use **Decision note**, **Approve**, or **Request changes**.
+The note is required. Inspect the loaded plan before deciding; plan fetch errors
+block these controls. Verify both desktop and phone layouts. Change the plan or
+stage in another tab and confirm the old decision is rejected without recording
+a decision or advancing work. Reload and inspect the saved actor, note, and plan
+revision. These controls do not resolve a separate plan confirmation card.
+
 ### `agent-chat`
 
 With Agent Chat enabled, choose Chat and an agent (`/chats/:agentRef`). Answer,

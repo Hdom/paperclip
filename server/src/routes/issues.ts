@@ -1,3 +1,4 @@
+import { assertStageDecisionSnapshot, assertStageDecisionRequest, readPlanRevisionForDecision } from "../services/issue-stage-decision-guard.js";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
@@ -13627,6 +13628,7 @@ export function issueRoutes(
     },
     validateIssueMutationBody(updateIssueRouteSchema),
     async (req, res) => {
+      const guardedStageDecision = assertStageDecisionRequest(req.body);
       // Snapshot-guarded writes are policy-only. Do not admit task-control
       // actions that can stop execution before the service takes its row lock.
       if (req.body.expectedExecutionPolicy !== undefined && (
@@ -13722,6 +13724,10 @@ export function issueRoutes(
         commentClientRequestId,
         attachmentIds: commentAttachmentIds,
         reviewInteractionId: requestedReviewInteractionId,
+        expectedExecutionStageId,
+        expectedDecisionStatusVersion,
+        expectedDecisionLastDecisionId,
+        expectedPlanRevisionId,
         reviewRequest,
         reopen: reopenRequested,
         resume: resumeRequested,
@@ -13761,6 +13767,10 @@ export function issueRoutes(
         return;
       }
     }
+      const decisionActor = { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null };
+      if (guardedStageDecision) {
+        assertStageDecisionSnapshot(existing, guardedStageDecision, decisionActor);
+      }
       if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {
         throw unprocessable("Send conversation messages through the comments endpoint with a clientRequestId");
       }
@@ -14629,6 +14639,7 @@ export function issueRoutes(
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
       const shouldUseTransactionalIssueUpdate =
+        Boolean(guardedStageDecision) ||
         Boolean(commentAttachmentIds?.length) ||
         commentWithAdapterOverrides ||
         Boolean(decision) ||
@@ -14638,6 +14649,19 @@ export function issueRoutes(
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            if (guardedStageDecision) {
+              const locked = await svc.getByIdForUpdate(id, tx);
+              assertStageDecisionSnapshot(locked, guardedStageDecision, decisionActor, existing);
+              const currentPlanRevisionId = await readPlanRevisionForDecision(tx as unknown as Db, existing.companyId, id);
+              if (currentPlanRevisionId !== guardedStageDecision.expectedPlanRevisionId) {
+                throw conflict("The plan changed. Reload the task and review the current plan before deciding.", {
+                  code: "stage_decision_plan_changed",
+                  expectedPlanRevisionId: guardedStageDecision.expectedPlanRevisionId,
+                  currentPlanRevisionId,
+                });
+              }
+              if (!decision) throw conflict("The execution stage changed. Reload the task and decide again.");
+            }
             if (
               reviewPolicySensitiveMutationRequested &&
               !(await assertLockedReviewPolicyAllowsMutation(tx))
@@ -14686,6 +14710,26 @@ export function issueRoutes(
                 body: decision.body,
                 createdByRunId: actor.runId ?? null,
               });
+            }
+
+            if (guardedStageDecision && decision && decisionId) {
+              await logActivity(tx as unknown as Db, {
+                companyId: updated.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "issue.execution_decision",
+                entityType: "issue",
+                entityId: updated.id,
+                details: {
+                  decisionId,
+                  stageId: decision.stageId,
+                  outcome: decision.outcome,
+                  planRevisionId: guardedStageDecision.expectedPlanRevisionId,
+                  expectedDecisionStatusVersion: guardedStageDecision.expectedDecisionStatusVersion,
+                },
+              }, postCommitActivityPublications);
             }
 
             if (shouldRelayStop) {

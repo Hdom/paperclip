@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
@@ -221,6 +221,7 @@ export function documentService(db: Db) {
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
           return await db.transaction(async (tx) => {
+          if (key === "plan") await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issue.id} for update`);
           const now = new Date();
           const existing = await tx
             .select({
@@ -590,6 +591,7 @@ export function documentService(db: Db) {
     }) => {
       const key = normalizeDocumentKey(input.key);
       return db.transaction(async (tx) => {
+        if (key === "plan") await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${input.issueId} for update`);
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -784,6 +786,7 @@ export function documentService(db: Db) {
     deleteIssueDocument: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
+        if (key === "plan") await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)

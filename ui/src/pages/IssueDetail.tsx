@@ -102,6 +102,7 @@ import {
   extractIssueWorkModeChanges,
 } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
+import { focusStageDecisionNote, isStageDecisionPendingForUser } from "../lib/issue-execution-policy";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useIssueWorkProducts } from "../hooks/useIssueWorkProducts";
 import {
@@ -4306,18 +4307,28 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           )
         : undefined;
 
-      applyOptimisticIssueCacheUpdate(issueRefs, data);
+      // Stage decisions must not optimistically change status: that remounts
+      // the properties panel and destroys its pending guard and retry note.
+      if (data.expectedExecutionStageId === undefined) {
+        applyOptimisticIssueCacheUpdate(issueRefs, data);
+      }
 
       return { previousDetailQueries, previousList, selectedCompanyId };
     },
     onSuccess: ({
-      comment: _comment,
+      comment,
       changes: _changes,
       blockedByIssueIds: _blockedByIssueIds,
       ...nextIssue
     }, data) => {
       if (Object.prototype.hasOwnProperty.call(data, "projectId")) {
         trackRecentProject(nextIssue.projectId ?? "", nextIssue.companyId);
+      }
+      if (comment) {
+        // Stage decisions post their comment through this PATCH.
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.comments(issueId!),
+        });
       }
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
@@ -4624,10 +4635,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
   });
   const handleIssuePropertiesUpdate = useCallback(
+    // Only decision controls need a completion result. Keep ordinary property
+    // edits fire-and-forget (including hosts that await their event handler).
     (data: Record<string, unknown>) => {
+      if (data.expectedExecutionStageId !== undefined) {
+        return updateIssue.mutateAsync(data).then(() => true, () => false);
+      }
       updateIssue.mutate(data);
     },
-    [updateIssue.mutate],
+    [updateIssue.mutate, updateIssue.mutateAsync],
   );
 
   const updateChildIssue = useMutation({
@@ -7236,7 +7252,24 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       status={issue.status} externalConversationState={issue.externalConversationState}
       size={proposedTaskHeader ? "md" : "lg"}
       blockerAttention={issue.blockerAttention}
-      onChange={(status) => updateIssue.mutate({ status })}
+      onChange={(status) => {
+        if (status === "done" && isStageDecisionPendingForUser(issue.executionState, currentUserId)) {
+          // Approving needs its note in the same update: open the decision
+          // controls instead of sending a status change the server rejects.
+          if (isMobile) setMobilePropsOpen(true);
+          else openTaskSidePanel();
+          window.setTimeout(() => {
+            if (focusStageDecisionNote()) return;
+            pushToast({
+              title: "Add a decision note to approve",
+              body: "Use Approve under Execution in the task properties. The decision needs its note.",
+              tone: "info",
+            });
+          }, 150);
+          return;
+        }
+        updateIssue.mutate({ status });
+      }}
     />
   );
 
@@ -8560,7 +8593,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                         : undefined
                     }
                     onAddSubIssue={openNewSubIssue}
-                    onUpdate={(data) => updateIssue.mutate(data)}
+                    onUpdate={handleIssuePropertiesUpdate}
                     inline
                     mobile
                     hasActiveRun={resolvedHasActiveRun}
@@ -8626,7 +8659,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                             : undefined
                         }
                         onAddSubIssue={openNewSubIssue}
-                        onUpdate={(data) => updateIssue.mutate(data)}
+                        onUpdate={handleIssuePropertiesUpdate}
                         inline
                         hasActiveRun={resolvedHasActiveRun}
                         externalObjects={
