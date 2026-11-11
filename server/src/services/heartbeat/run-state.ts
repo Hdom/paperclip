@@ -315,6 +315,7 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
 // only the evidence used by eligibility; never retrieve provider diagnostics.
 const heartbeatRunExecutionEvidenceColumn = sql<Record<string, unknown> | null>`
   case when ${heartbeatRuns.resultJson} is null then null else jsonb_build_object(
+    'preDispatchScheduledRetryCancellation', ${heartbeatRuns.resultJson} -> 'preDispatchScheduledRetryCancellation',
     'startupCancellation', ${heartbeatRuns.resultJson} -> 'startupCancellation',
     'startupPreparationSettledAt', ${heartbeatRuns.resultJson} -> 'startupPreparationSettledAt',
     'stopReason', ${heartbeatRuns.resultJson} -> 'stopReason',

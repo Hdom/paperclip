@@ -817,6 +817,12 @@ export function createPostgresRunDispatchAdapter(
         ...(pauseSuppression ? {
           resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(pauseSuppression)}::jsonb`,
         } : {}),
+        ...(input.errorCode === "issue_disposition_repair_superseded" ? {
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+            preDispatchScheduledRetryCancellation: { version: 1, runId: input.runId,
+              previousStatus: "scheduled_retry", errorCode: input.errorCode },
+          })}::jsonb`,
+        } : {}),
         updatedAt: input.now,
       })
       .where(

@@ -7,6 +7,7 @@ import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifi
 import { resumeDeferredChatWake } from "../durable-chat-wakeup.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js";
+import { isPreDispatchRepairCancellationVerified } from "../pre-dispatch-repair-cancellation.js";
 import { stopHandoffWakesForSource } from "./handoff-wake.js";
 import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProcessStop, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
@@ -594,7 +595,10 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         )) : [];
     const cancelledPreparation = run.runtimeMode === "legacy" &&
       await isCancelledNativeStartup(db, run, preparationCoordinator);
-    if (run.runtimeMode !== "native" && !cancelledPreparation && !interruptedPreparation &&
+    // This only admits the saved-request scan; ordinary admission rechecks
+    // scheduler provenance and predecessor containment under the issue/run locks.
+    const suppressedRepair = await isPreDispatchRepairCancellationVerified(db, run);
+    if (run.runtimeMode !== "native" && !cancelledPreparation && !interruptedPreparation && !suppressedRepair &&
         parseObject(run.resultJson?.startupCancellation).beforeNativeSelection !== true &&
         !(await remoteExecutionHasStopped(db, run.companyId, run.id)) &&
         !(await recordedLocalExecutionStopped(db, run))) return;
