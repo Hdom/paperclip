@@ -1,0 +1,200 @@
+name: Fork exact-artifact runtime smoke
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths: [.github/workflows/fork-runtime-smoke.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: fork-runtime-smoke
+  cancel-in-progress: false
+jobs:
+  smoke:
+    if: github.repository == 'Hdom/paperclip'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.22.2'
+      - name: Download and verify exact successful build artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/Hdom/paperclip/actions/runs/42970866896 > source-run.json
+          jq -e '.conclusion == "success" and .head_sha == "ac009bf1c1be4dbff96a2cc0626f3de05dc66519" and .path == ".github/workflows/fork-linux-release.yml"' source-run.json
+          gh api repos/Hdom/paperclip/actions/artifacts/13834076411 > source-artifact.json
+          jq -e '.expired == false and .workflow_run.id == 42970866896 and .workflow_run.head_sha == "ac009bf1c1be4dbff96a2cc0626f3de05dc66519" and .digest == "sha256:43dcf6ea7c647181642cb148145e52fa68911a9cf33795c0fb1d0fe12b001532"' source-artifact.json
+          gh api repos/Hdom/paperclip/actions/artifacts/13834076411/zip > candidate.zip
+          echo '43dcf6ea7c647181642cb148145e52fa68911a9cf33795c0fb1d0fe12b001532  candidate.zip' | sha256sum -c -
+      - name: Verify inner checksums and extract unchanged payload
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, zipfile, tarfile
+          expected = {'SHA256SUMS', 'manifest.json', 'resolved-package-lock.json', 'paperclip-20c71960bb5e-linux-x64.tar.gz'}
+          with zipfile.ZipFile('candidate.zip') as z:
+              assert set(z.namelist()) == expected
+              z.extractall('candidate')
+          PY
+          cd candidate
+          sha256sum -c SHA256SUMS
+          echo '7bb16231a9bcb6042f2cb91e8723adac48ff295db9a5f996a49d0028bc1c3fc6  manifest.json' | sha256sum -c -
+          jq -e '.sourceCommit == "20c71960bb5e6219d455f32c7df48eaaa0fcc333" and .workflowCommit == "ac009bf1c1be4dbff96a2cc0626f3de05dc66519" and .packagingScriptSha256 == "fa1dbed21eccbc407a6d1aca42848a26acf2cbea509d33bec14db0d035806072" and .platform == "linux" and .architecture == "x64"' manifest.json
+          python3 - <<'PY'
+          import tarfile
+          with tarfile.open('paperclip-20c71960bb5e-linux-x64.tar.gz') as t:
+              assert all(m.name == 'payload' or m.name.startswith('payload/') for m in t.getmembers())
+              t.extractall('extracted', filter='data')
+          PY
+      - name: Bounded import, fresh startup, and restart
+        timeout-minutes: 14
+        run: |
+          timeout --signal=TERM --kill-after=20s 800s python3 - <<'PY'
+          import ctypes, json, os, pathlib, re, shutil, signal, subprocess, time, urllib.request
+          root = pathlib.Path.cwd()
+          evidence = root / 'evidence'; evidence.mkdir()
+          raw = root / 'raw-diagnostics'; raw.mkdir()
+          work = root / 'synthetic'; work.mkdir()
+          home = work / 'home'; home.mkdir()
+          data = work / 'data'
+          payload = root / 'candidate/extracted/payload'
+          node = shutil.which('node')
+          cli = payload / 'node_modules/paperclipai/dist/index.js'
+          server = payload / 'node_modules/@paperclipai/server/dist/index.js'
+          assert ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0  # adopt orphaned descendants for cleanup
+          env = dict(PATH=str(pathlib.Path(node).parent)+':/usr/bin:/bin', HOME=str(home), USER='runner', LANG='C.UTF-8',
+              PAPERCLIP_HOME=str(data), PAPERCLIP_INSTANCE_ID='default', PAPERCLIP_DISABLE_CWD_ENV_FILE='true',
+              PAPERCLIP_NO_BROWSER='true', PAPERCLIP_OPEN_ON_LISTEN='false', PAPERCLIP_UPDATE_CHECK='0',
+              PAPERCLIP_TELEMETRY_DISABLED='1', PAPERCLIP_DEPLOYMENT_MODE='local_trusted',
+              PAPERCLIP_DEPLOYMENT_EXPOSURE='private', PAPERCLIP_BIND='loopback', HOST='127.0.0.1', PORT='3107',
+              NO_PROXY='127.0.0.1,localhost', NODE_OPTIONS='--max-old-space-size=2048')
+          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          results = {}; owned = {}
+          def interrupted(signum, frame): raise SystemExit(128+signum)
+          signal.signal(signal.SIGTERM, interrupted)
+          signal.signal(signal.SIGINT, interrupted)
+          class StageDeadline(Exception): pass
+          def stage_timeout(signum, frame): raise StageDeadline()
+          signal.signal(signal.SIGALRM, stage_timeout)
+          def process_table():
+              rows = {}
+              for d in pathlib.Path('/proc').iterdir():
+                  if not d.name.isdigit(): continue
+                  try:
+                      fields=(d/'stat').read_text().rsplit(')',1)[1].split()
+                      rss=re.search(r'^VmRSS:\s+(\d+)', (d/'status').read_text(), re.M)
+                      rows[int(d.name)] = (int(fields[1]), fields[19], int(rss.group(1)) if rss else 0, fields[0])
+                  except (FileNotFoundError, ProcessLookupError, PermissionError): pass
+              return rows
+          def track():
+              rows=process_table(); ids={os.getpid()}; changed=True
+              while changed:
+                  new={pid for pid,row in rows.items() if row[0] in ids}
+                  changed=not new.issubset(ids); ids |= new
+              ids.discard(os.getpid())
+              for pid in ids: owned[pid]=rows[pid][1]
+              return sum(rows[pid][2] for pid in ids)
+          def cleanup(p):
+              track()
+              try: os.killpg(p.pid, signal.SIGTERM)
+              except ProcessLookupError: pass
+              deadline=time.monotonic()+12
+              while time.monotonic()<deadline:
+                  track()
+                  if p.poll() is not None: break
+                  time.sleep(.2)
+              rows=process_table()
+              for pid,start in list(owned.items()):
+                  if pid in rows and rows[pid][1]==start:
+                      try: os.kill(pid, signal.SIGKILL)
+                      except ProcessLookupError: pass
+              p.wait(timeout=5)
+              deadline=time.monotonic()+5
+              while time.monotonic()<deadline:
+                  try:
+                      while os.waitpid(-1, os.WNOHANG)[0]: pass
+                  except ChildProcessError: pass
+                  track(); rows=process_table()
+                  live=[pid for pid,start in owned.items() if pid in rows and rows[pid][1]==start and rows[pid][3]!='Z']
+                  if not live: owned.clear(); return
+                  for pid in live:
+                      try: os.kill(pid, signal.SIGKILL)
+                      except ProcessLookupError: pass
+                  time.sleep(.1)
+              raise RuntimeError('Owned subprocess cleanup incomplete')
+          def get(url):
+              with opener.open('http://127.0.0.1:3107'+url,timeout=3) as response:
+                  assert response.status==200
+                  return response.read()
+          def ready():
+              h=json.loads(get('/api/health'))
+              assert h['status']=='ok' and h['commit']=='20c71960bb5e6219d455f32c7df48eaaa0fcc333'
+          def check_http():
+              ready()
+              html=get('/').decode()
+              assets=set(re.findall(r'/assets/[^\s"<>]+',html))
+              assert assets, 'HTML has no bundled assets'
+              for asset in assets: get(asset)
+              json.loads(get('/api/companies'))
+              json.loads(get('/api/instance/task-drain'))
+              return {'bundled_assets':len(assets)}
+          def exercise(name,args,seconds,readiness):
+              begin=time.monotonic(); peak=0; passed=False; details={}
+              with open(raw/(name+'.log'),'wb') as log:
+                  p=subprocess.Popen(['/usr/bin/time','-v','-o',str(raw/(name+'.time')),node,*args],
+                      cwd=work,env=env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+                  signal.alarm(seconds)
+                  try:
+                      while time.monotonic()-begin<seconds:
+                          peak=max(peak,track())
+                          if p.poll() is not None:
+                              passed=(p.returncode==0 and not readiness); break
+                          if readiness:
+                              try:
+                                  ready(); details=check_http(); passed=True; break
+                              except (OSError, ValueError, AssertionError) as error: details['last_readiness_error']=str(error)
+                          time.sleep(1)
+                  except StageDeadline:
+                      details['deadline_exceeded']=True
+                  finally:
+                      signal.alarm(0)
+                      results[name]={'passed':passed,'elapsed_seconds':round(time.monotonic()-begin,2),
+                          'peak_sampled_descendant_rss_kib':peak,'exit_before_cleanup':p.poll(),**details}
+                      cleanup(p)
+                      results[name]['cleanup_complete']=True
+              print(json.dumps({name:results[name]}),flush=True)
+              return passed
+          try:
+              print('BOUNDARY: starting full server index import, not app.js import',flush=True)
+              imported=exercise('index-import',['--input-type=module','-e',
+                  'console.log("IMPORT_BEGIN"); await import('+json.dumps(server.as_uri())+'); console.log("IMPORT_COMPLETE"); process.exit(0)'],240,False)
+              print('BOUNDARY: starting fresh synthetic CLI onboarding',flush=True)
+              started=exercise('fresh-start',[str(cli),'onboard','--data-dir',str(data),'--bind','loopback','--yes','--no-install-service','--run'],300,True)
+              restarted=False
+              if started:
+                  print('BOUNDARY: restarting same synthetic instance',flush=True)
+                  restarted=exercise('restart',[str(cli),'run','--data-dir',str(data),'--bind','loopback','--no-repair'],180,True)
+              results['limits']={'node_old_space_mib':2048,'enforced_total_4gib_cap':False,
+                  'rss_note':'Sampled sum of descendant RSS; shared pages may be counted more than once',
+                  'source_run':42970866896,'artifact_id':13834076411,
+                  'source_commit':'20c71960bb5e6219d455f32c7df48eaaa0fcc333',
+                  'scope':'Synthetic runtime smoke only; no real models, production or deployment'}
+              assert imported and started and restarted, 'Runtime smoke did not pass every required stage'
+          finally:
+              (evidence/'summary.json').write_text(json.dumps(results,indent=2))
+              for log in raw.iterdir():
+                  lines=log.read_text(errors='replace').splitlines()
+                  (evidence/log.name).write_text('\n'.join('[redacted credential-related line]' if re.search(r'token|secret|password|credential|api[_ -]?key|invite|authorization|bearer',line,re.I) else line for line in lines)+'\n')
+          PY
+      - name: Retain synthetic diagnostics, never instance data or credentials
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-runtime-smoke-${{ github.run_id }}
+          path: evidence/*
+          if-no-files-found: warn
+          retention-days: 7
