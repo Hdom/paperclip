@@ -1,0 +1,107 @@
+name: Fork Linux release
+run-name: Fork Linux build ${{ inputs.source_sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full reviewed commit SHA in Hdom/paperclip
+        required: true
+        type: string
+        default: 20c71960bb5e6219d455f32c7df48eaaa0fcc333
+      draft_release:
+        description: Also create a draft GitHub Release (never deploys)
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: fork-linux-${{ inputs.source_sha }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.repository == 'Hdom/paperclip'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PAPERCLIP_BUILD_COMMIT: ${{ inputs.source_sha }}
+      PAPERCLIP_TELEMETRY_ENABLED: 'false'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Validate immutable source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: '[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]'
+      - name: Checkout fork packaging tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          path: tooling
+      - name: Checkout reviewed application source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+          path: source
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.22.2'
+      - name: Pinned build tools
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+          node --version; pnpm --version; rustc --version
+          free -h; df -h .
+      - name: Install locked dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+      - name: Build all workspaces
+        working-directory: source
+        run: /usr/bin/time -v pnpm build
+      - name: Typecheck all workspaces
+        working-directory: source
+        run: /usr/bin/time -v pnpm typecheck
+      - name: Handoff regression tests
+        working-directory: source
+        run: >-
+          pnpm exec vitest run
+          server/src/__tests__/heartbeat-handoff-crash-child.test.ts
+          server/src/__tests__/heartbeat-handoff-execution-wait.test.ts
+          server/src/__tests__/issue-wake-diagnostics-routes.test.ts
+          server/src/__tests__/server-startup-feedback-export.test.ts
+      - name: Assemble and relocate native Linux payload
+        run: node tooling/scripts/fork-package-linux.mjs "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/fork-release/release" "$PAPERCLIP_BUILD_COMMIT"
+      - name: Upload verified candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-linux-x64-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/fork-release/release/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+  draft-release:
+    needs: build
+    if: inputs.draft_release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: paperclip-linux-x64-${{ inputs.source_sha }}
+          path: release
+      - name: Create draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          cd release
+          sha256sum -c SHA256SUMS
+          gh release create "fork-${SOURCE_SHA:0:12}-${GITHUB_RUN_ID}" ./* \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --draft \
+            --title "Fork Linux candidate ${SOURCE_SHA:0:12}" \
+            --notes "Native Linux x64 candidate from $SOURCE_SHA. Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. No deployment performed. See manifest for qualification limits. Node 24 required."
+
+
