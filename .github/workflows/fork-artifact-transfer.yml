@@ -1,0 +1,130 @@
+name: Fork artifact transfer
+# Only this fork-specific helper file triggers automatic runs. No deployment.
+on:
+  push:
+    branches: [master]
+    paths: [.github/workflows/fork-artifact-transfer.yml]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful Fork Linux release run
+        type: string
+        default: '42970866896'
+        required: true
+      artifact_id:
+        description: Exact artifact ID from that run
+        type: string
+        default: '13834076411'
+        required: true
+      expected_tool_commit:
+        description: Full workflow commit SHA
+        type: string
+        default: ac009bf1c1be4dbff96a2cc0626f3de05dc66519
+        required: true
+      expected_zip_sha256:
+        description: GitHub artifact ZIP digest, without sha256 prefix
+        type: string
+        default: 43dcf6ea7c647181642cb148145e52fa68911a9cf33795c0fb1d0fe12b001532
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  transfer:
+    if: github.repository == 'Hdom/paperclip'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_RUN_ID: ${{ inputs.source_run_id || '42970866896' }}
+      ARTIFACT_ID: ${{ inputs.artifact_id || '13834076411' }}
+      EXPECTED_TOOL_COMMIT: ${{ inputs.expected_tool_commit || 'ac009bf1c1be4dbff96a2cc0626f3de05dc66519' }}
+      EXPECTED_ZIP_SHA256: ${{ inputs.expected_zip_sha256 || '43dcf6ea7c647181642cb148145e52fa68911a9cf33795c0fb1d0fe12b001532' }}
+    steps:
+      - name: Verify source identity and download exact ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_TOOL_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_ZIP_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > source-run.json
+          jq -e --arg sha "$EXPECTED_TOOL_COMMIT" '.conclusion == "success" and .head_sha == $sha and .path == ".github/workflows/fork-linux-release.yml"' source-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > source-artifact.json
+          jq -e --argjson run "$SOURCE_RUN_ID" --arg sha "$EXPECTED_TOOL_COMMIT" --arg digest "sha256:$EXPECTED_ZIP_SHA256" '.expired == false and .workflow_run.id == $run and .workflow_run.head_sha == $sha and .digest == $digest' source-artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > candidate.zip
+          echo "$EXPECTED_ZIP_SHA256  candidate.zip" | sha256sum -c -
+      - name: Split without changing any original bytes
+        run: |
+          set -euo pipefail
+          split -b 400M -d -a 2 candidate.zip part-
+          test "$(find . -maxdepth 1 -name 'part-*' -type f | wc -l)" -le 6
+          sha256sum part-* > PARTS_SHA256SUMS
+          echo "$EXPECTED_ZIP_SHA256  candidate.zip" > ORIGINAL_SHA256SUMS
+          cat part-* | sha256sum | grep -F "$EXPECTED_ZIP_SHA256"
+          jq -n --arg repository "$GITHUB_REPOSITORY" --arg run "$SOURCE_RUN_ID" --arg artifact "$ARTIFACT_ID" --arg tool "$EXPECTED_TOOL_COMMIT" --arg digest "$EXPECTED_ZIP_SHA256" --arg transferRun "$GITHUB_RUN_ID" '{repository:$repository,sourceRun:$run,artifactId:$artifact,toolCommit:$tool,originalZipSha256:$digest,transferRun:$transferRun,operation:"byte-preserving ZIP split; no rebuild or deployment"}' > transfer.json
+      - name: Upload small transfer metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-transfer-${{ github.run_id }}-metadata
+          path: |
+            PARTS_SHA256SUMS
+            ORIGINAL_SHA256SUMS
+            transfer.json
+          retention-days: 3
+          if-no-files-found: error
+      - name: Upload part 00
+        if: hashFiles('part-00') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-transfer-${{ github.run_id }}-00
+          path: part-00
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload part 01
+        if: hashFiles('part-01') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-transfer-${{ github.run_id }}-01
+          path: part-01
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload part 02
+        if: hashFiles('part-02') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-transfer-${{ github.run_id }}-02
+          path: part-02
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload part 03
+        if: hashFiles('part-03') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-transfer-${{ github.run_id }}-03
+          path: part-03
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload part 04
+        if: hashFiles('part-04') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-transfer-${{ github.run_id }}-04
+          path: part-04
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload part 05
+        if: hashFiles('part-05') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-transfer-${{ github.run_id }}-05
+          path: part-05
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
