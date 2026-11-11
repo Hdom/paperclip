@@ -24,29 +24,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api repos/Hdom/paperclip/actions/runs/42970866896 > source-run.json
-          jq -e '.conclusion == "success" and .head_sha == "ac009bf1c1be4dbff96a2cc0626f3de05dc66519" and .path == ".github/workflows/fork-linux-release.yml"' source-run.json
-          gh api repos/Hdom/paperclip/actions/artifacts/13834076411 > source-artifact.json
-          jq -e '.expired == false and .workflow_run.id == 42970866896 and .workflow_run.head_sha == "ac009bf1c1be4dbff96a2cc0626f3de05dc66519" and .digest == "sha256:43dcf6ea7c647181642cb148145e52fa68911a9cf33795c0fb1d0fe12b001532"' source-artifact.json
-          gh api repos/Hdom/paperclip/actions/artifacts/13834076411/zip > candidate.zip
-          echo '43dcf6ea7c647181642cb148145e52fa68911a9cf33795c0fb1d0fe12b001532  candidate.zip' | sha256sum -c -
+          gh api repos/Hdom/paperclip/actions/runs/43069710104 > source-run.json
+          jq -e '.conclusion == "success" and .head_sha == "c09883e63bf7ff16b8c9ce29518c4474cfa22dfd" and .path == ".github/workflows/fork-linux-release.yml"' source-run.json
+          gh api repos/Hdom/paperclip/actions/artifacts/13880170703 > source-artifact.json
+          jq -e '.expired == false and .workflow_run.id == 43069710104 and .workflow_run.head_sha == "c09883e63bf7ff16b8c9ce29518c4474cfa22dfd" and .digest == "sha256:fe9fc91ba7259543e0c685b48dff82a66838b556ce14201ca040339ca8fba2b0"' source-artifact.json
+          gh api repos/Hdom/paperclip/actions/artifacts/13880170703/zip > candidate.zip
+          echo 'fe9fc91ba7259543e0c685b48dff82a66838b556ce14201ca040339ca8fba2b0  candidate.zip' | sha256sum -c -
       - name: Verify inner checksums and extract unchanged payload
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import pathlib, zipfile, tarfile
-          expected = {'SHA256SUMS', 'manifest.json', 'resolved-package-lock.json', 'paperclip-20c71960bb5e-linux-x64.tar.gz'}
+          expected = {'SHA256SUMS', 'manifest.json', 'resolved-package-lock.json', 'paperclip-6fa9ab4d8455-linux-x64.tar.gz'}
           with zipfile.ZipFile('candidate.zip') as z:
               assert set(z.namelist()) == expected
               z.extractall('candidate')
           PY
           cd candidate
           sha256sum -c SHA256SUMS
-          echo '7bb16231a9bcb6042f2cb91e8723adac48ff295db9a5f996a49d0028bc1c3fc6  manifest.json' | sha256sum -c -
-          jq -e '.sourceCommit == "20c71960bb5e6219d455f32c7df48eaaa0fcc333" and .workflowCommit == "ac009bf1c1be4dbff96a2cc0626f3de05dc66519" and .packagingScriptSha256 == "fa1dbed21eccbc407a6d1aca42848a26acf2cbea509d33bec14db0d035806072" and .platform == "linux" and .architecture == "x64"' manifest.json
+          echo '99a7a3b651d69b264f1ed233a47c93473e44a974496f4adfb652ec236b0fecc6  manifest.json' | sha256sum -c -
+          jq -e '.sourceCommit == "6fa9ab4d8455bfd216f9a56d254ff09b6c428f7b" and .workflowCommit == "c09883e63bf7ff16b8c9ce29518c4474cfa22dfd" and .packagingScriptSha256 == "fa1dbed21eccbc407a6d1aca42848a26acf2cbea509d33bec14db0d035806072" and .platform == "linux" and .architecture == "x64"' manifest.json
           python3 - <<'PY'
           import tarfile
-          with tarfile.open('paperclip-20c71960bb5e-linux-x64.tar.gz') as t:
+          with tarfile.open('paperclip-6fa9ab4d8455-linux-x64.tar.gz') as t:
               assert all(m.name == 'payload' or m.name.startswith('payload/') for m in t.getmembers())
               t.extractall('extracted', filter='data')
           PY
@@ -56,14 +56,14 @@ jobs:
           mkdir -p scripts/fork-runtime-fixture
           cd scripts/fork-runtime-fixture
           for file in codex fake-codex.mjs driver.py verify.py run.py; do
-            curl --fail --silent --show-error --location --proto '=https' --max-time 30 "https://raw.githubusercontent.com/Hdom/paperclip/cd080bca8210f6ffeca43a99036ea6288456fb07/scripts/fork-runtime-fixture/$file" -o "$file"
+            curl --fail --silent --show-error --location --proto '=https' --max-time 30 "https://raw.githubusercontent.com/Hdom/paperclip/e764b372b6d4f01049677c6db6dc4f24f01a8495/scripts/fork-runtime-fixture/$file" -o "$file"
           done
           sha256sum -c <<'SUMS'
           53067df410ed0ef7243e12c7174be41015a18378cceb49a910b6a2779a6fbec4  codex
-          0491d88709f19ffed974fd75b878389e65abde374d74c7c7d4654786884105fd  fake-codex.mjs
+          1e902d4f5970b78989040d3c74977ee5de5bd08ad55ad4253a92735a9540529e  fake-codex.mjs
           1c1ff1f0806ab9b76b0c0a461b944efd1c9745be1625c8859ed76af46cc8dc62  driver.py
-          13ce15474e73525d3a917ee852c8de7483d2af184915edfc4bdd2d6b81884c76  verify.py
-          9fccbf55c97dadb93e5d7d75791f096bd4ee3a4ff6c3338163d1f14e8c81fd89  run.py
+          0982c4338c767859a0254f6e278ce1ca8c549b3ac6192de40854c331ddb416c3  verify.py
+          e07d77eb8c871c386bec50c205208e6f636429305411ff0aec8b93adbcb447f9  run.py
           SUMS
           chmod 0755 codex
       - name: Bounded import, startup, restart, and synthetic handoff
@@ -175,7 +175,7 @@ jobs:
                   return response.read()
           def ready():
               h=json.loads(get('/api/health'))
-              assert h['status']=='ok' and h['commit']=='20c71960bb5e6219d455f32c7df48eaaa0fcc333'
+              assert h['status']=='ok' and h['commit']=='6fa9ab4d8455bfd216f9a56d254ff09b6c428f7b'
           def check_http():
               ready()
               html=get('/').decode()
@@ -204,8 +204,8 @@ jobs:
                       if passed and handoff:
                           passed=False
                           fixture_env={**env,'PAPERCLIP_API_URL':'http://127.0.0.1:3107',
-                              'HANDOFF_ROOT':str(work),'HANDOFF_SOURCE_COMMIT':'20c71960bb5e6219d455f32c7df48eaaa0fcc333',
-                              'HANDOFF_ARTIFACT_ID':'13834076411'}
+                              'HANDOFF_ROOT':str(work),'HANDOFF_SOURCE_COMMIT':'6fa9ab4d8455bfd216f9a56d254ff09b6c428f7b',
+                              'HANDOFF_ARTIFACT_ID':'13880170703'}
                           (work/'handoff-workspace').mkdir()
                           with open(raw/'handoff-fixture.log','wb') as fixture_log:
                               fixture=subprocess.Popen(['/usr/bin/python3',str(root/'scripts/fork-runtime-fixture/run.py')],
@@ -254,8 +254,8 @@ jobs:
                   handed_off=exercise('handoff',[str(cli),'run','--data-dir',str(data),'--bind','loopback','--no-repair'],300,True,True)
               results['limits']={'node_old_space_mib':2048,'enforced_total_4gib_cap':False,
                   'rss_note':'Sampled sum of descendant RSS; shared pages may be counted more than once',
-                  'source_run':42970866896,'artifact_id':13834076411,
-                  'source_commit':'20c71960bb5e6219d455f32c7df48eaaa0fcc333',
+                  'source_run':43069710104,'artifact_id':13880170703,
+                  'source_commit':'6fa9ab4d8455bfd216f9a56d254ff09b6c428f7b',
                   'scope':'Synthetic runtime smoke only; no real models, production or deployment'}
               assert imported and started and restarted and handed_off, 'Runtime smoke did not pass every required stage'
           finally:
