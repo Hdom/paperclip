@@ -1,3 +1,4 @@
+import { supervisedWorkerStopPending } from "../worker-supervision.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
 import { recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { environmentLeases } from "@paperclipai/db";
@@ -476,6 +477,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       delayMs?: number;
     },
   ) {
+    if (await supervisedWorkerStopPending(db, run)) return { outcome: "not_scheduled" as const,
+      reason: "Worker check-in uncertainty requires verified stop evidence before another dispatch.",
+      issueId: run.issueId ?? readNonEmptyString(run.contextSnapshot?.issueId) };
     const preparation = parseObject(run.resultJson?.executionRecovery);
     if (typeof preparation.preparationSettledAt === "string" && await isInterruptedNativePreparation(db, run)) {
       const children = await db.select().from(heartbeatRuns).where(and(

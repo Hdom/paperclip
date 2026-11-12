@@ -1,3 +1,4 @@
+import { readWorkerSupervision } from "@paperclipai/shared";
 import {
   classifySilenceLevel,
   evaluateSuppression,
@@ -29,7 +30,7 @@ export type BuildRunOutputSilenceDeps = {
 export type BuildRunOutputSilenceRunInput = Pick<
   RunSnapshot,
   "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
->;
+> & { workerSupervision?: unknown };
 
 export function createBuildRunOutputSilence(deps: BuildRunOutputSilenceDeps) {
   return async function buildRunOutputSilence(
@@ -41,7 +42,7 @@ export function createBuildRunOutputSilence(deps: BuildRunOutputSilenceDeps) {
       deps.reader.findOpenStaleRunEvaluation(run.companyId, run.id),
     ]);
     const { dismissedFalsePositive, quietUntilDecision } = decisionState;
-    const isRunningRun = run.status === "running";
+    const isRunningRun = run.status === "running" && !readWorkerSupervision(run.workerSupervision, run.id);
     const silenceAgeMsValue = isRunningRun ? silenceAgeMs(run, now) : null;
     const level = classifySilenceLevel({
       isRunningRun,

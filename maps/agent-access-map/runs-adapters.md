@@ -800,3 +800,9 @@ Policy: existing agent configuration permission plus `tools:manage_profiles`, cu
 Evidence: `verified` — the production-authenticated [integration suite](../../server/src/__tests__/connection-management.integration.test.ts) saves a personal account and binds it to the fresh standard agent; provider response is a fixture.
 Verification: `passed` — binding persistence and loss of profile-management authority tested with actual agent credentials. Other adapter/provider combinations remain source-reviewed.
 Gaps: live provider setup is outside this delivery.
+Worker check-in supervision (`runs-adapters/runs`): opt-in legacy Codex CLI
+runs use authenticated current-run check-ins and a 180-second missed-check-in
+threshold without a total runtime cap. Missing check-ins retain ownership;
+verified stop and ordinary admission remain required before another dispatch.
+See [the contract](../../doc/worker-check-in-supervision.md). Source/integration
+verification is separate from deployed or real-model qualification.

@@ -74,14 +74,16 @@ export function executionControlSchedule(db: Db) {
   };
   return {
     async finalization() {
-      const [native, legacy, abandonedOwner] = await Promise.all([
+      const [native, legacy, worker, abandonedOwner] = await Promise.all([
         db.select({ at: nativeRunFinalizations.controlDeadlineAt }).from(nativeRunFinalizations)
           .where(isNotNull(nativeRunFinalizations.controlDeadlineAt)).orderBy(asc(nativeRunFinalizations.controlDeadlineAt)).limit(1),
         db.select({ at: heartbeatRuns.executionControlDeadlineAt }).from(heartbeatRuns)
           .where(isNotNull(heartbeatRuns.executionControlDeadlineAt)).orderBy(asc(heartbeatRuns.executionControlDeadlineAt)).limit(1),
+        db.select({ at: heartbeatRuns.workerCheckInDeadlineAt }).from(heartbeatRuns)
+          .where(isNotNull(heartbeatRuns.workerCheckInDeadlineAt)).orderBy(asc(heartbeatRuns.workerCheckInDeadlineAt)).limit(1),
         nextAbandonedNativeOwnerReleaseAt(db),
       ]);
-      return deadline([native[0]?.at, legacy[0]?.at, abandonedOwner]);
+      return deadline([native[0]?.at, legacy[0]?.at, worker[0]?.at, abandonedOwner]);
     },
     async workspaceRecovery() {
       const at = await nextWorkspaceRecoveryAt(db);

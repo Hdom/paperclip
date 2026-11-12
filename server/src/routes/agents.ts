@@ -7,6 +7,8 @@ import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
 import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial, normalizeAgentPermissions } from "../lib/agent-permissions.js";
+import { workerCheckInSchema } from "@paperclipai/shared";
+import { checkInWorker } from "../services/worker-supervision.js";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
@@ -7284,6 +7286,18 @@ export function agentRoutes(
       ),
       req.actor.type === "board" ? getActorInfo(req).actorId : null,
     ));
+  });
+
+  router.post("/heartbeat-runs/:runId/check-in", validate(workerCheckInSchema), async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId)
+      throw forbidden("Worker authentication required");
+    const runId = readHeartbeatRunId(req);
+    if (!req.actor.runId) { res.status(401).json({ error: "Agent run id required" }); return; }
+    if (req.actor.runId !== runId) throw forbidden("Check-in must belong to the authenticated run");
+    const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
+    if (!existing || !(await assertRunReadAllowed(req, res, existing))) return;
+    res.json(await checkInWorker(db, { companyId: req.actor.companyId, agentId: req.actor.agentId,
+      runId, request: req.body }));
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {

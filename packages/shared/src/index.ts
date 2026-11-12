@@ -2916,3 +2916,5 @@ export {
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
 export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
+
+export { WORKER_CHECK_IN_TIMEOUT_MS, WORKER_CHECK_IN_INTERVAL_MS, workerSupervisionConfigSchema, workerCheckInSchema, workerSupervisionStateSchema, readWorkerSupervision, type WorkerSupervisionState } from "./worker-supervision.js";

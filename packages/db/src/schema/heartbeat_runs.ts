@@ -47,6 +47,9 @@ export const heartbeatRuns = pgTable(
     activeIdentityContextId: uuid("active_identity_context_id"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
+    // Controller-owned, opt-in liveness only. Neither a stop receipt nor retry authority.
+    workerSupervision: jsonb("worker_supervision").$type<Record<string, unknown>>(),
+    workerCheckInDeadlineAt: timestamp("worker_check_in_deadline_at", { withTimezone: true }),
     // Set only after provider execution settles; never a timeout on thinking.
     executionControlDeadlineAt: timestamp("execution_control_deadline_at", { withTimezone: true }),
     // Transactional delivery marker. Null on historical rows; publication never replays provider work.
@@ -224,6 +227,8 @@ export const heartbeatRuns = pgTable(
       table.responsibleUserId,
       table.createdAt,
     ),
+    workerCheckInDeadlineIdx: index("heartbeat_runs_worker_check_in_deadline_idx")
+      .on(table.workerCheckInDeadlineAt).where(sql`${table.workerCheckInDeadlineAt} IS NOT NULL`),
     companyLivenessIdx: index("heartbeat_runs_company_liveness_idx").on(
       table.companyId,
       table.livenessState,

@@ -1,4 +1,5 @@
 import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai/shared";
+import { workerCheckInSchema, workerSupervisionStateSchema } from "@paperclipai/shared";
 import { checkpointContinuationSchema, CHECKPOINT_CONTINUATION_MAX_ATTEMPTS } from "../services/heartbeat/checkpoint-continuation.js";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
@@ -1710,6 +1711,7 @@ function resolveOperationAuthLevel(
   if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "authenticated";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
   if (key === "POST /api/issues/{id}/checkpoint-continuation") return "agent_run";
+  if (key === "POST /api/heartbeat-runs/{runId}/check-in") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
   if (
@@ -4921,6 +4923,17 @@ registry.registerPath({
     body: jsonBody(checkoutIssueSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/check-in",
+  tags: ["agents"],
+  summary: "Report health for the current supervised worker execution",
+  description: "Only the authenticated current agent run may report a fresh monotonic sequence for its controller-issued generation. Opt-in legacy Codex CLI check-ins reset a 180-second liveness deadline, without a fixed total runtime limit. An identical sequence is idempotent and does not extend the deadline. Missing check-ins mark possible disconnection; they do not terminate execution, release ownership or authorize retry. Stop, budget and verified-stop gates remain independent.",
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }), body: jsonBody(workerCheckInSchema) },
+  responses: { 200: r.ok(workerSupervisionStateSchema.extend({ accepted: z.literal(true), duplicate: z.boolean() })),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({

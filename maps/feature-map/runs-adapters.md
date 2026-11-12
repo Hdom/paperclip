@@ -317,3 +317,10 @@ apply; timeout/cancellation do not qualify. This is source and mock-adapter test
 scope, not a live pilot qualification. Terminal-to-admission crash replay is
 covered by durable completion proof and existing recovery admission; unresolved
 execution cleanup remains held rather than starting another worker.
+
+Worker check-in supervision (`runs-adapters/runs`): opt-in legacy Codex CLI
+runs use authenticated current-run check-ins and a 180-second missed-check-in
+threshold without a total runtime cap. Missing check-ins retain ownership;
+verified stop and ordinary admission remain required before another dispatch.
+See [the contract](../../doc/worker-check-in-supervision.md). Source/integration
+verification is separate from deployed or real-model qualification.

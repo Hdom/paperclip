@@ -154,6 +154,8 @@ export interface GitWorktreeBranchIncoherenceEvidence {
 }
 
 export interface HeartbeatRun {
+  workerSupervision?: import("../worker-supervision.js").WorkerSupervisionState | null;
+  workerCheckInDeadlineAt?: string | null;
   /** Persisted native driver identity; older servers may omit this field. */
   driverKind?: string | null;
   execution?: import("./execution-projection.js").ExecutionProjection | null;

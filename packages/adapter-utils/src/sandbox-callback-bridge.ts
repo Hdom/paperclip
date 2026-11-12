@@ -159,6 +159,7 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/heartbeat-runs$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/live-runs$/ },
   { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+$/ },
+  { method: "POST", path: /^\/api\/heartbeat-runs\/[^/]+\/check-in$/ },
   { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+\/(?:events|log|workspace-operations|issues)$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/(?:runs|recovery-actions)$/ },
 

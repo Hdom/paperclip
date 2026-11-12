@@ -1744,3 +1744,14 @@ existing recovery path replays the recorded request only with controller-written
 completion proof and the unchanged execution claim. Unsettled execution/cleanup
 remains held. A revoked claim, failed/timeout outcome or refused gate never grants
 a fresh continuation through recovery.
+
+**Worker check-ins.**
+
+When the controller enables check-in supervision, run
+`node "$CODEX_HOME/skills/paperclip/scripts/worker-check-in.mjs"` explicitly while
+healthy and making progress, about every 60 seconds. The helper sends a strict
+version 1 generation/sequence request to
+`POST /api/heartbeat-runs/:runId/check-in`. Check-ins reset a 180-second silence
+threshold and impose no total runtime cap. Do not run a background health loop.
+A missed check-in is possible disconnection, never stop or retry authority.
+Existing Stop, budget, ownership, workspace and verified-termination gates apply.

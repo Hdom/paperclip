@@ -501,6 +501,17 @@ describe("openapi routes", () => {
     }
   });
 
+  it("documents current-run check-ins without client clocks or stop authority", () => {
+    const operation = (buildOpenApiSpec() as any).paths["/api/heartbeat-runs/{runId}/check-in"].post;
+    expect(operation.security).toEqual([{ AgentRunAuth: [] }]);
+    const schema = operation.requestBody.content["application/json"].schema;
+    expect(schema.additionalProperties).toBe(false);
+    expect(Object.keys(schema.properties)).toEqual(["version", "generation", "sequence"]);
+    expect(schema.required).toEqual(["version", "generation", "sequence"]);
+    expect(schema.properties.sequence.minimum).toBe(1);
+    expect(operation.responses[409]).toBeDefined();
+  });
+
   it("documents checkpoint intent with task-bound agent authority and a strict bounded contract", () => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths["/api/issues/{id}/checkpoint-continuation"].post;
@@ -1591,7 +1602,7 @@ describe("heartbeat run ID OpenAPI contract", () => {
         checked++;
       }
     }
-    expect(checked).toBe(12);
+    expect(checked).toBe(13);
   });
 });
 
