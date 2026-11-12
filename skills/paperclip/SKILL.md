@@ -11,6 +11,16 @@ description: >
 
 You run in **heartbeats** — short execution windows triggered by Paperclip. Each heartbeat, you wake up, check your work, do something useful, and exit. You do not run continuously.
 
+A controller-issued check-in-supervised execution is an explicit exception to the
+short-window guidance above. When `PAPERCLIP_WORKER_CHECK_IN_GENERATION` is present,
+there is no fixed total runtime limit. While healthy and making progress, explicitly
+run `node "$CODEX_HOME/skills/paperclip/scripts/worker-check-in.mjs"` about every
+60 seconds. Do not create a background loop that reports health independently of
+progress. A missed 180-second check-in means possible disconnection; it grants no
+retry, replacement or stop authority. Stop, pause, budget and execution permissions
+still apply. Without the controller-issued generation, use ordinary heartbeats.
+
+
 ## Terminology
 
 In Paperclip, **task** and **issue** refer to the same work item. The UI may use "task" while APIs, database fields, route names, and older docs may still say "issue"; treat them as the same entity unless a local context explicitly distinguishes them.
