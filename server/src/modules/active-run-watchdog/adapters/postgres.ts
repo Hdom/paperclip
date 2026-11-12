@@ -6,7 +6,7 @@ import { notifyNativeStatusReassessment } from "../../../services/native-status-
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
-import { and, asc, desc, eq, gt, gte, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -69,7 +69,6 @@ function toRunSnapshot(row: typeof heartbeatRuns.$inferSelect): RunSnapshot {
     createdAt: row.createdAt,
     sourceIssueId: issueContextId(row.contextSnapshot),
     resultJson: row.resultJson,
-    workerSupervision: row.workerSupervision,
     wakeupRequestId: row.wakeupRequestId,
     processPid: row.processPid,
     processGroupId: row.processGroupId,
@@ -115,7 +114,6 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
           input.companyId ? eq(heartbeatRuns.companyId, input.companyId) : undefined,
           input.runId ? eq(heartbeatRuns.id, input.runId) : undefined,
           eq(heartbeatRuns.status, "running"),
-          isNull(heartbeatRuns.workerSupervision),
           sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${input.suspicionBefore.toISOString()}::timestamptz`,
         ),
       )

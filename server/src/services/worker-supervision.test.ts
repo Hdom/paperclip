@@ -62,9 +62,9 @@ suite("worker check-in supervision", () => {
     for (let n = 1; n <= 20; n++) { await ping(f, n, n * 120); expect((await reconcileWorkerCheckIns(db, at(n * 120))).missed).toBe(0); }
     const run = await current(f.runId); expect(run.status).toBe("running"); expect(run.lastOutputAt).toBeNull();
     const reader = createPostgresWatchdogAdapter(db);
-    expect(await reader.findCandidateSilentRuns({ suspicionBefore: at(2400) })).toEqual([]);
+    expect((await reader.findCandidateSilentRuns({ suspicionBefore: at(2400) })).map(run => run.id)).toContain(f.runId);
     const summary = await createBuildRunOutputSilence({ reader, suspicionThresholdMs: 300_000, criticalThresholdMs: 900_000 })({ ...run, lastOutputSeq: 0 }, at(2400));
-    expect(summary.level).toBe("not_applicable"); expect(readWorkerSupervision(run.workerSupervision, run.id)?.sequence).toBe(20);
+    expect(summary.level).toBe("critical"); expect(readWorkerSupervision(run.workerSupervision, run.id)?.sequence).toBe(20);
   });
 
   it("does not renew on replay, stale sequences, foreign generations or client clock fields", async () => {

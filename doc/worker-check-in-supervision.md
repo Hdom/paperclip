@@ -1,5 +1,12 @@
 # Worker check-in supervision
 
+Correct accidental smoke-test limits with existing configuration first. Local
+and SSH CLI adapters already interpret `adapterConfig.timeoutSec = 0` (or an
+omitted value) as no adapter wall-clock limit. Remove a separate launcher deadline
+in that launcher. Neither correction requires this feature or a code deployment.
+Keep the ordinary output-inactivity monitor and source-resolved cleanup independent
+of total runtime. This optional feature adds explicit durable liveness reporting.
+
 Opt in a new local or SSH legacy Codex CLI execution with
 `runtimeConfig.workerSupervision = {"mode":"check_in"}` and explicit
 `adapterConfig.engine = "cli"`, `runner = "legacy"`. Native, sandbox/plugin and other engines are rejected
@@ -15,10 +22,10 @@ controller generation. It does not create a background heartbeat: process
 existence or arbitrary stdout/stderr is not a healthy check-in.
 
 For opted-in executions, adapter elapsed-runtime termination and the Codex
-output-inactivity killer are disabled. The platform output-silence watchdog
-also defers to the durable check-in owner, so a quiet but checking-in worker is
-not stopped by the 15-minute critical-output threshold. There is no total
-runtime cap in this mode. Explicit Stop, cancellation, pause, budget and current
+output-inactivity killer are disabled. The existing platform output-silence diagnostics and source-resolved cleanup
+remain intact. Its 15-minute critical-output threshold is a diagnostic threshold,
+not a fixed total-runtime termination limit. There is no adapter total runtime
+cap in this mode. Explicit Stop, cancellation, pause, budget and current
 execution authority retain their existing owners and behavior.
 
 `POST /api/heartbeat-runs/:runId/check-in` accepts only version 1, the exact

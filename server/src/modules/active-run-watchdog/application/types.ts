@@ -1,7 +1,6 @@
 export type RunStatus = string;
 
 export type RunSnapshot = {
-  workerSupervision?: unknown;
   id: string;
   companyId: string;
   agentId: string;
