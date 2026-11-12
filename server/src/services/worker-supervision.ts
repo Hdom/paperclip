@@ -177,7 +177,9 @@ export async function reconcileWorkerCheckIns(db: Db, now = new Date()) {
 export async function supervisedWorkerStopPending(db: Db, run: Run): Promise<boolean> {
   const state = readWorkerSupervision(run.workerSupervision, run.id);
   if (!state) return run.workerSupervision != null;
-  if (!state.missedAt && state.controllerSettledAt) return false;
+  // Unsuccessful settlement can mean only that the SSH client stopped.
+  // A still-live remote worker must not gain a retry before its first deadline.
+  if (!state.missedAt && state.controllerSettledAt && run.status === "succeeded") return false;
   if (adapterExecutionControls.has(run.id)) return true;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));

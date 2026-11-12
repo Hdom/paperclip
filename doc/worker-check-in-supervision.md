@@ -4,8 +4,12 @@ Correct accidental smoke-test limits with existing configuration first. Local
 and SSH CLI adapters already interpret `adapterConfig.timeoutSec = 0` (or an
 omitted value) as no adapter wall-clock limit. Remove a separate launcher deadline
 in that launcher. Neither correction requires this feature or a code deployment.
-Keep the ordinary output-inactivity monitor and source-resolved cleanup independent
-of total runtime. This optional feature adds explicit durable liveness reporting.
+The ordinary output-inactivity monitor can be disabled through the supported
+agent update API with `adapterConfig.outputInactivityTimeoutMs = null`; zero or
+an omitted value selects the existing 30-minute default. Disabling it alone
+removes the inactivity kill but supplies no positive health or automatic safe
+recovery. Preserve source-resolved cleanup and physical-stop gates. This optional
+feature adds explicit durable liveness reporting.
 
 Opt in a new local or SSH legacy Codex CLI execution with
 `runtimeConfig.workerSupervision = {"mode":"check_in"}` and explicit
@@ -43,8 +47,11 @@ its grace window. The existing deadline coordinator owns the concrete obligation
 there is no new periodic idle scan.
 
 Controller settlement is not a physical stop receipt. If check-ins were missed,
-or controller settlement was lost, retries and recovery require existing
-canonical local or remote stop proof. Released SSH leases, local SSH-client exit,
+controller settlement was lost, or execution failed, was cancelled, timed out or
+was interrupted before its first missed deadline, retries and recovery require
+existing canonical local or remote stop proof. Ordinary successful settlement
+without missed health retains its existing completion behavior and independent
+recovery gates. Released SSH leases, local SSH-client exit,
 PID absence and job-written markers remain insufficient. Stop uncertainty and
 workspace/action-outcome recovery remain separate gates even after health resumes.
 A check-in never authorizes duplicate execution.

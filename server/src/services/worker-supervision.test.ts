@@ -139,6 +139,40 @@ suite("worker check-in supervision", () => {
     expect(await supervisedWorkerStopPending(db, await current(f.runId))).toBe(false);
   });
 
+  it.each(["failed", "cancelled", "timed_out", "interrupted"] as const)("requires verified stop after %s when the controller settles before the first missed check-in", async status => {
+    const f = await fixture(); await ping(f, 1, 1);
+    await settleWorkerSupervision(db, f.runId, f.companyId, f.state.generation, at(2));
+    await db.update(heartbeatRuns).set({ status, finishedAt: at(2) }).where(eq(heartbeatRuns.id, f.runId));
+    const identity = { id: randomUUID(), companyId: f.companyId, heartbeatRunId: f.runId,
+      provider: "ssh", providerLeaseId: "synthetic-early-settlement" };
+    await db.insert(environmentLeases).values({ ...identity, status: "released", releasedAt: at(2), cleanupStatus: null });
+    expect((await current(f.runId)).workerSupervision).toMatchObject({ missedAt: null, controllerSettledAt: at(2).toISOString() });
+    expect(await supervisedWorkerStopPending(db, await current(f.runId))).toBe(true);
+    expect(await legacyExecutionNeedsReconciliationWithEvidence(db, await current(f.runId))).toBe(true);
+    const handoff = vi.fn(async () => true);
+    const retries = createHeartbeatRetries(db, { hasCaseHandoffForRun: handoff } as any);
+    expect(await retries.scheduleBoundedRetryForRun(await current(f.runId), f.agent)).toMatchObject({
+      outcome: "not_scheduled", reason: expect.stringContaining("verified stop") });
+    expect(handoff).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
+    await db.update(environmentLeases).set({ cleanupStatus: "success", metadata: {
+      remoteExecutionTermination: { ...remoteTerminationReceipt(identity, { providerLeaseId: identity.providerLeaseId, state: "stopped" }), runId: randomUUID() }
+    } }).where(eq(environmentLeases.id, identity.id));
+    expect(await supervisedWorkerStopPending(db, await current(f.runId))).toBe(true);
+    // Synthetic receipt contract only; this is not a supported plain-SSH receipt producer.
+    await db.update(environmentLeases).set({ metadata: {
+      remoteExecutionTermination: remoteTerminationReceipt(identity, { providerLeaseId: identity.providerLeaseId, state: "stopped" })
+    } }).where(eq(environmentLeases.id, identity.id));
+    expect(await supervisedWorkerStopPending(db, await current(f.runId))).toBe(false);
+  });
+
+  it("preserves ordinary successful settlement without missed check-ins", async () => {
+    const f = await fixture(); await ping(f, 1, 1);
+    await settleWorkerSupervision(db, f.runId, f.companyId, f.state.generation, at(2));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: at(2) }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await supervisedWorkerStopPending(db, await current(f.runId))).toBe(false);
+  });
+
   it("holds real completion/recovery and bounded retry persistence after missing health", async () => {
     const f = await fixture(); await reconcileWorkerCheckIns(db, at(180));
     await settleWorkerSupervision(db, f.runId, f.companyId, f.state.generation, at(181));
