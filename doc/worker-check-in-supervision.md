@@ -10,7 +10,7 @@ permissions, timer wakes or the separately blocked historical predecessor.
 The controller snapshots a generation and a 180-second check-in deadline when
 execution is admitted. Healthy workers explicitly run
 `node "$CODEX_HOME/skills/paperclip/scripts/worker-check-in.mjs"` about every 60 seconds
-while making progress. The helper uses the existing run-bound credential and
+while making progress. The helper uses the existing signed run-bound JWT credential and
 controller generation. It does not create a background heartbeat: process
 existence or arbitrary stdout/stderr is not a healthy check-in.
 
@@ -25,7 +25,7 @@ execution authority retain their existing owners and behavior.
 controller generation and the next positive safe-integer sequence. Server time
 sets the next deadline. A duplicate sequence returns its original deadline;
 stale/out-of-order sequences, client timestamps, foreign runs, changed task
-ownership, cancellation and terminal runs are rejected. Authentication alone
+ownership, cancellation and terminal runs are rejected. Static agent keys with a supplied run header cannot check in. Authentication alone
 cannot change the generation or enable supervision.
 
 A missed deadline records `suspected_disconnected`, one warning and an audit

@@ -170,9 +170,9 @@ suite("worker check-in supervision", () => {
       { engine: kind === "acp" ? "acp" : "cli" }, { now, transport: kind === "sandbox" ? "sandbox" : "local" })).rejects.toThrow("local or SSH");
   });
 
-  it.each(["valid", "board", "missing_run", "other_run", "other_agent", "foreign_company", "extra_fields"])("HTTP check-in boundary: %s", async kind => {
+  it.each(["valid", "board", "agent_key", "missing_run", "other_run", "other_agent", "foreign_company", "extra_fields"])("HTTP check-in boundary: %s", async kind => {
     const f = await fixture();
-    const actor: any = kind === "board" ? { type: "board", source: "local_implicit", userId: "board", isInstanceAdmin: true } : { type: "agent", agentId: kind === "other_agent" ? randomUUID() : f.agentId, companyId: kind === "foreign_company" ? randomUUID() : f.companyId, runId: kind === "missing_run" ? null : kind === "other_run" ? randomUUID() : f.runId, source: "agent_jwt" };
+    const actor: any = kind === "board" ? { type: "board", source: "local_implicit", userId: "board", isInstanceAdmin: true } : { type: "agent", agentId: kind === "other_agent" ? randomUUID() : f.agentId, companyId: kind === "foreign_company" ? randomUUID() : f.companyId, runId: kind === "missing_run" ? null : kind === "other_run" ? randomUUID() : f.runId, source: kind === "agent_key" ? "agent_key" : "agent_jwt" };
     const app = express(); app.use(express.json()); app.use((req, _res, next) => { req.actor = actor; next(); }); app.use("/api", agentRoutes(db, {})); app.use(errorHandler);
     const response = await request(app).post(`/api/heartbeat-runs/${f.runId}/check-in`).send({ version: 1, generation: f.state.generation, sequence: 1, ...(kind === "extra_fields" ? { timeoutMs: 1 } : {}) });
     if (kind === "valid") expect(response.status, JSON.stringify(response.body)).toBe(200);

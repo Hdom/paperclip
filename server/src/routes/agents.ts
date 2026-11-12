@@ -7289,8 +7289,9 @@ export function agentRoutes(
   });
 
   router.post("/heartbeat-runs/:runId/check-in", validate(workerCheckInSchema), async (req, res) => {
-    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId)
-      throw forbidden("Worker authentication required");
+    if (req.actor.type !== "agent" || req.actor.source !== "agent_jwt"
+      || !req.actor.agentId || !req.actor.companyId)
+      throw forbidden("Signed run-bound worker authentication required");
     const runId = readHeartbeatRunId(req);
     if (!req.actor.runId) { res.status(401).json({ error: "Agent run id required" }); return; }
     if (req.actor.runId !== runId) throw forbidden("Check-in must belong to the authenticated run");

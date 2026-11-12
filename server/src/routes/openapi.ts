@@ -4930,7 +4930,7 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/check-in",
   tags: ["agents"],
   summary: "Report health for the current supervised worker execution",
-  description: "Only the authenticated current agent run may report a fresh monotonic sequence for its controller-issued generation. Opt-in legacy Codex CLI check-ins reset a 180-second liveness deadline, without a fixed total runtime limit. An identical sequence is idempotent and does not extend the deadline. Missing check-ins mark possible disconnection; they do not terminate execution, release ownership or authorize retry. Stop, budget and verified-stop gates remain independent.",
+  description: "Only a signed run-bound agent JWT for the current execution may report a fresh monotonic sequence; static agent keys with run headers are refused. Report a fresh monotonic sequence for its controller-issued generation. Opt-in legacy Codex CLI check-ins reset a 180-second liveness deadline, without a fixed total runtime limit. An identical sequence is idempotent and does not extend the deadline. Missing check-ins mark possible disconnection; they do not terminate execution, release ownership or authorize retry. Stop, budget and verified-stop gates remain independent.",
   request: { params: z.object({ runId: heartbeatRunIdParamSchema }), body: jsonBody(workerCheckInSchema) },
   responses: { 200: r.ok(workerSupervisionStateSchema.extend({ accepted: z.literal(true), duplicate: z.boolean() })),
     400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
