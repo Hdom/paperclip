@@ -501,6 +501,23 @@ describe("openapi routes", () => {
     }
   });
 
+  it("documents checkpoint intent with task-bound agent authority and a strict bounded contract", () => {
+    const spec = buildOpenApiSpec() as any;
+    const operation = spec.paths["/api/issues/{id}/checkpoint-continuation"].post;
+    expect(operation.security).toEqual([{ AgentRunAuth: [] }]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true, taskBound: true });
+    const request = operation.requestBody.content["application/json"].schema;
+    expect(request.additionalProperties).toBe(false);
+    expect(request.required).toEqual(["version", "summary", "nextAction"]);
+    expect(Object.keys(request.properties)).toEqual(["version", "summary", "nextAction"]);
+    expect(request.properties.version.enum).toEqual([1]);
+    for (const field of ["summary", "nextAction"]) {
+      expect(request.properties[field]).toMatchObject({ minLength: 1, maxLength: 4000 });
+    }
+    expect(operation.responses[202].content["application/json"].schema.properties.maxAttempts.enum).toEqual([3]);
+    for (const status of [400, 401, 403, 404, 409]) expect(operation.responses[status]).toBeDefined();
+  });
+
   it("removes Pipelines discovery while retaining Cases and Routines", () => {
     const spec = buildOpenApiSpec() as any;
     const paths = Object.keys(spec.paths);

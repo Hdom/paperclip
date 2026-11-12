@@ -1,4 +1,5 @@
 import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai/shared";
+import { checkpointContinuationSchema, CHECKPOINT_CONTINUATION_MAX_ATTEMPTS } from "../services/heartbeat/checkpoint-continuation.js";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
@@ -1708,6 +1709,7 @@ function resolveOperationAuthLevel(
   // Agents may read their own commentary, or all of it with commentary:view; the routes enforce that.
   if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "authenticated";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
+  if (key === "POST /api/issues/{id}/checkpoint-continuation") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
   if (
@@ -4919,6 +4921,27 @@ registry.registerPath({
     body: jsonBody(checkoutIssueSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/checkpoint-continuation",
+  tags: ["issues"],
+  summary: "Register a bounded checkpoint continuation",
+  description: "Requires the assigned agent's current running ordinary legacy task run and existing issue read/mutate authority. Records intent only: completion, process settlement and normal dispatch admission remain required. An identical request is idempotent; changed intent, lost ownership or exhausted continuation budget conflicts. The controller permits at most three successors and does not enable timer wakes or generic recovery.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(checkpointContinuationSchema),
+  },
+  responses: {
+    202: r.ok(z.object({
+      accepted: z.literal(true),
+      sourceRunId: z.string().uuid(),
+      maxAttempts: z.literal(CHECKPOINT_CONTINUATION_MAX_ATTEMPTS),
+    }).strict()),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+    404: r.notFound, 409: r.conflict,
+  },
 });
 
 registry.registerPath({
