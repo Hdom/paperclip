@@ -1,3 +1,4 @@
+import { hasSuccessfulLegacyControllerSettlement } from "./legacy-controller-settlement.js";
 import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -96,7 +97,7 @@ export async function isPreDispatchRepairCancellationVerified(db: Db, run: Run):
     if (current.runtimeMode !== "legacy" || !current.finishedAt
       || !["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(current.status)
       || (current.controllerLeaseExpiresAt && current.controllerLeaseExpiresAt > new Date())
-      || (current.controllerBootId && !current.controllerLeaseExpiresAt)
+      || (current.controllerBootId && !current.controllerLeaseExpiresAt && !await hasSuccessfulLegacyControllerSettlement(db, current))
       || current.resultJson?.workspaceRestoreFailure || hasRequiredWorkspaceRecovery(current.resultJson)
       || leases.some(lease => !lease.releasedAt || ["active", "retained", "pending_cleanup"].includes(lease.status)
         || (lease.cleanupStatus !== null && lease.cleanupStatus !== "success"))) return false;

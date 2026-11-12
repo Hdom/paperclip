@@ -3,6 +3,7 @@ import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { activityLog, agentWakeupRequests, environmentLeases, environments, heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db/schema/index";
 import type { Db } from "@paperclipai/db/client";
 import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasSuccessfulLegacyControllerSettlement } from "./legacy-controller-settlement.js";
 
 /** Offline maintenance only. No HTTP route or agent-facing command imports this
  * module. Root is the attesting authority; provider JSON is not a signature.
@@ -63,7 +64,9 @@ async function snapshot(db: Db, input: Pick<SshHostStopPreparation, "companyId" 
   const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
     inArray(heartbeatRuns.id, leases.map(l => l.heartbeatRunId!)))).orderBy(heartbeatRuns.id);
   if (runs.length !== new Set(leases.map(l => l.heartbeatRunId)).size || runs.some(r => !terminal.includes(r.status) || !r.finishedAt ||
-      (r.controllerLeaseExpiresAt && r.controllerLeaseExpiresAt > new Date()) || (r.controllerBootId && !r.controllerLeaseExpiresAt))) reject();
+      (r.controllerLeaseExpiresAt && r.controllerLeaseExpiresAt > new Date()))) reject();
+  for (const run of runs) if (run.controllerBootId && !run.controllerLeaseExpiresAt &&
+      !await hasSuccessfulLegacyControllerSettlement(db, run)) reject();
   const coordinators = await db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
     inArray(nativeRunFinalizations.runId, runs.map(r => r.id))));
   if (coordinators.some(c => c.leaseOwner || c.failureDetail?.successorRunId)) reject();
@@ -100,7 +103,7 @@ export async function recordSshHostStop(db: Db, prepared: SshHostStopPreparation
     await tx.execute(sql`set local statement_timeout = '10s'`);
     // Offline maintenance locks out all acquisitions and run/request changes,
     // including a second importer. No read-then-write authority gap.
-    await tx.execute(sql`lock table environments, environment_leases, heartbeat_runs, native_run_finalizations, agent_wakeup_requests in share row exclusive mode`);
+    await tx.execute(sql`lock table environments, environment_leases, heartbeat_runs, heartbeat_run_events, native_run_finalizations, agent_wakeup_requests in share row exclusive mode`);
     assertFenced();
     const state = await snapshot(tx as unknown as Db, prepared);
     if (state.snapshot !== prepared.snapshot) reject();

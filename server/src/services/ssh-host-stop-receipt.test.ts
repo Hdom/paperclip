@@ -5,13 +5,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agentWakeupRequests, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, agents, companies, createDb, environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { prepareSshHostStop, recordSshHostStop, validateSshHostStopObservation, type SshHostStopObservation } from "./ssh-host-stop-receipt.js";
 import { heartbeatService } from "./heartbeat.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { isPreDispatchRepairCancellationVerified } from "./pre-dispatch-repair-cancellation.js";
+import { hasSuccessfulLegacyControllerSettlement } from "./legacy-controller-settlement.js";
 
 async function asRoot<T>(fn: () => Promise<T>) {
   const mock = vi.spyOn(process, "getuid").mockReturnValue(0);
@@ -90,6 +91,13 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation",
       fingerprint: repairId, status: "resolved", outcome: "blocked", returnOwnerAgentId: f.agentId, nextAction: "Await verified cleanup",
       evidence: { runId: repairId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } });
+    // Match real normal terminalization: retain boot identity, clear expiry,
+    // then record the server's durable post-cleanup measurement event.
+    for (const id of f.runIds) {
+      await db.update(heartbeatRuns).set({ controllerBootId: randomUUID(), controllerLeaseExpiresAt: null }).where(eq(heartbeatRuns.id, id));
+      await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: id, agentId: f.agentId, eventType: "lifecycle", stream: "system", level: "info", message: "task.run.measured",
+        payload: { phase: "task.run.measured", outcome: "succeeded", durationMs: 60000, durableSettlement: true } });
+    }
     const [repair] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, repairId));
     expect(await isPreDispatchRepairCancellationVerified(db, repair)).toBe(false);
     const prepared = await asRoot(() => prepareSshHostStop(db, { operationId: f.prepared.operationId, companyId: f.companyId, environmentId: f.environmentId,
@@ -120,6 +128,26 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, occupied.id));
     }
   }, 30000);
+  it.each(["canonical", "missing", "wrong_run", "wrong_agent", "before_finish", "provider_source", "wrong_stream", "wrong_type", "wrong_level", "wrong_phase", "wrong_outcome", "no_settlement", "invalid_duration", "live_lease", "failed_source"])("requires positive canonical controller settlement (%s)", async kind => {
+    const f = await seed();
+    const [run] = await db.update(heartbeatRuns).set({ controllerBootId: randomUUID(),
+      controllerLeaseExpiresAt: kind === "live_lease" ? new Date(Date.now() + 60000) : null,
+      status: kind === "failed_source" ? "failed" : "succeeded",
+    }).where(eq(heartbeatRuns.id, f.runIds[0]!)).returning();
+    const other = kind === "wrong_agent" ? await seed() : null;
+    if (kind !== "missing") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: kind === "wrong_run" ? f.runIds[1]! : run.id,
+      agentId: other?.agentId ?? f.agentId, seq: 1, eventType: kind === "wrong_type" ? "provider.event" : "lifecycle", stream: kind === "wrong_stream" ? "stdout" : "system",
+      level: kind === "wrong_level" ? "warn" : "info", message: "task.run.measured", sourceEventId: kind === "provider_source" ? "provider-1" : null,
+      createdAt: kind === "before_finish" ? new Date(run.finishedAt!.getTime()-1) : new Date(),
+      payload: { phase: kind === "wrong_phase" ? "adapter.finished" : "task.run.measured", outcome: kind === "wrong_outcome" ? "failed" : "succeeded",
+        durableSettlement: kind !== "no_settlement", durationMs: kind === "invalid_duration" ? "60000" : 60000 } });
+    expect(await hasSuccessfulLegacyControllerSettlement(db, run)).toBe(kind === "canonical");
+    const attempt = () => asRoot(() => prepareSshHostStop(db, { operationId: randomUUID(), companyId: f.companyId, environmentId: f.environmentId,
+      leaseIds: f.leaseIds, requestIds: f.requestIds }, f.fenced));
+    if (kind === "canonical") await expect(attempt()).resolves.toHaveProperty("snapshot");
+    else await expect(attempt()).rejects.toThrow();
+    expect((await leases(f)).some(hasRemoteTerminationReceipt)).toBe(false);
+  });
   it("serializes concurrent imports without duplicate audit or dispatch", async () => {
     const f = await seed();
     const results = await asRoot(() => Promise.all([recordSshHostStop(db, f.prepared, f.proof, f.fenced), recordSshHostStop(db, f.prepared, f.proof, f.fenced)]));

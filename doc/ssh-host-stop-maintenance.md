@@ -10,6 +10,12 @@ explicit-user continuation remains the reconciliation and admission owner. The
 tool does not resolve recovery actions, infer prior action outcomes, consume
 saved input, reset retry budgets or create a wake.
 
+Successful legacy terminalization normally retains its controller boot ID and
+clears lease expiry. Only the exact server post-cleanup `task.run.measured`
+settlement event can explain that historical shape. Missing expiry without this
+positive event remains a hold, as do failed/active or contradictory sources.
+Controller settlement never replaces exact remote stop receipts.
+
 ## Trust boundary
 
 A trusted desktop operator independently observes an authenticated host-manager
