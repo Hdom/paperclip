@@ -520,6 +520,7 @@ describe("sandbox managed runtime", () => {
   }, 30_000);
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -702,9 +703,17 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(targetPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("syncs workspace and assets through a provider-neutral sandbox client", async () => {
+  it.each([false, true])("syncs workspace and assets through a provider-neutral sandbox client (protected %s)", async protectedMode => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-managed-"));
     cleanupDirs.push(rootDir);
+    if (protectedMode) {
+      const scratch = path.join(rootDir, "controller-scratch"); await mkdir(scratch, { mode: 0o700 });
+      vi.stubEnv("PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS", "1"); vi.stubEnv("PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG", "");
+      vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS", JSON.stringify([rootDir]));
+      vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS", JSON.stringify([path.join(rootDir, "local-workspace")]));
+      vi.stubEnv("PAPERCLIP_CONTROLLER_ASSET_SNAPSHOT_ROOT", scratch); vi.stubEnv("TMPDIR", scratch);
+    }
+
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
     const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
     const localAssetsDir = path.join(rootDir, "local-assets");

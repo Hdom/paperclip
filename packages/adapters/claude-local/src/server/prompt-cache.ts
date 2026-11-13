@@ -1,3 +1,5 @@
+import { readControllerSourceFile } from "@paperclipai/adapter-utils/controller-source-materialization";
+import { assertControllerSourcePathAllowed } from "@paperclipai/adapter-utils/controller-source-protection";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -45,6 +47,7 @@ async function hashPathContents(
   relativePath: string,
   seenDirectories: Set<string>,
 ): Promise<void> {
+  await assertControllerSourcePathAllowed(candidate);
   const stat = await fs.lstat(candidate);
 
   if (stat.isSymbolicLink()) {
@@ -77,7 +80,7 @@ async function hashPathContents(
 
   if (stat.isFile()) {
     hash.update(`file:${relativePath}\n`);
-    hash.update(await fs.readFile(candidate));
+    hash.update(await readControllerSourceFile(candidate));
     hash.update("\n");
     return;
   }

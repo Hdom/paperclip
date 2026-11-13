@@ -36,6 +36,16 @@ Configuration shape (all values below are placeholders; never put a PEM into thi
 }
 ```
 
+## Guarded asset materialization
+
+Protected mode checks resolved auth/config files and skill roots **before** materialization. The Linux reader validates the opened descriptor before reading, rejects hardlinks and special files, and refuses files that change during the read. Codex's first staging pass and shared snapshots are bounded to 64 MiB per file, 256 MiB total, 10,000 entries and depth 64. Failed staging removes partial output.
+
+Approved shared credential and skill links are materialized into private regular files. SSH asset preparation and sandbox archive creation send those checked, symlink-free snapshots without dereferencing links in the transport. Direct dereferenced transport mappings remain refused. Existing feature-off behavior is preserved.
+
+Before enabling protection, create a service-owned mode-0700 scratch root, default `/var/lib/paperclip/controller-assets`, or set root-controlled `PAPERCLIP_CONTROLLER_ASSET_SNAPSHOT_ROOT` to a dedicated absolute path. Include it in `PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS` and keep it disjoint from every `PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS` entry. Configure the controller's `TMPDIR` to an approved private scratch root too, so intermediate archives and provider assets remain inside approved readable paths. Keep App signing keys, config and ledger out of all scratch and materialization roots. Do not add a broad ancestor to an allowlist to bypass a refusal.
+
+These safeguards cover the reviewed Codex/Claude materialization and asset-transfer paths. They remain an application-enforced boundary and do not establish strong OS isolation. Production activation requires checked source/write/scratch roots, a clean process drain, pinned remote targets, the current reviewed release, and live GitHub permission/enrollment verification before the real run.
+
 ## Coordinator first-run operation
 
 From its currently owned, active project task, the Coordinator requests `POST /runtime-tools/github/project` with an empty JSON object. It uses the existing GitHub runtime capability (`github_credentials` scope), not a Board credential. Browser sessions are rejected. Native session transports bind the call to their current run. The remote callback bridge permits only this exact additional POST path. Caller-supplied owner, project, repository, installation, role, permission, or credential fields cannot select authority.

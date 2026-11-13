@@ -1,3 +1,5 @@
+import { CONTROLLER_ASSET_LIMITS, createControllerSourceStagingDirectory, readControllerSourceFile } from "@paperclipai/adapter-utils/controller-source-materialization";
+import { assertControllerSourcePathAllowed, controllerExecutionProtected } from "@paperclipai/adapter-utils/controller-source-protection";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -212,7 +214,7 @@ export async function codexHomeHasUsableAuth(home: string): Promise<boolean> {
   const authPath = path.join(home, "auth.json");
   if (!(await pathExists(authPath))) return false;
   try {
-    const raw = await fs.readFile(authPath, "utf8");
+    const raw = await readControllerSourceFile(authPath, "utf8");
     const parsed = JSON.parse(raw);
     return hasUsableAuthPayload(parsed);
   } catch {
@@ -225,7 +227,7 @@ async function codexHomeHasMatchingApiKeyAuth(home: string, apiKey: string): Pro
   const existing = await fs.lstat(authPath).catch(() => null);
   if (!existing || existing.isSymbolicLink()) return false;
   try {
-    const raw = await fs.readFile(authPath, "utf8");
+    const raw = await readControllerSourceFile(authPath, "utf8");
     const parsed = JSON.parse(raw);
     return readApiKeyFromAuthPayload(parsed) === apiKey.trim();
   } catch {
@@ -292,7 +294,8 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (existing) return;
   await ensureParentDir(target);
-  await fs.copyFile(source, target);
+  if (controllerExecutionProtected()) await fs.writeFile(target, await readControllerSourceFile(source), { mode: 0o600, flag: "wx" });
+  else await fs.copyFile(source, target);
 }
 
 function tomlString(value: string): string {
@@ -370,7 +373,7 @@ export async function writeManagedCodexMcpConfig(input: {
 }): Promise<{ configPath: string; warnings: string[] }> {
   const configPath = path.join(input.codexHome, "config.toml");
   await fs.mkdir(input.codexHome, { recursive: true });
-  const existing = await fs.readFile(configPath, "utf8").catch((error) => {
+  const existing = await readControllerSourceFile(configPath, "utf8").catch((error) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
     throw error;
   });
@@ -445,14 +448,27 @@ function isResolvedPathInside(candidate: string, root: string): boolean {
  * Dangling symlinks (`ENOENT`) and self-referential links that do trip `ELOOP`
  * are silently skipped, as are non-file/dir entries (sockets, devices).
  */
+interface ProtectedCodexStageBudget { bytes: number; entries: number }
+function consumeProtectedCodexStageBudget(budget: ProtectedCodexStageBudget | undefined, bytes: number, depth: number) {
+  if (!budget) return;
+  if (++budget.entries > CONTROLLER_ASSET_LIMITS.entries || depth > CONTROLLER_ASSET_LIMITS.depth || bytes > CONTROLLER_ASSET_LIMITS.snapshotBytes - budget.bytes)
+    throw new Error("Controller signing-key protection refused oversized Codex asset materialization");
+  budget.bytes += bytes;
+}
+
 async function stageContainedSubtree(
   sourceDir: string,
   targetDir: string,
   containmentRoot: string,
   activePath: Set<string>,
+  budget?: ProtectedCodexStageBudget,
+  depth = 0,
 ): Promise<void> {
+  consumeProtectedCodexStageBudget(budget, 0, depth);
   await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
+  await assertControllerSourcePathAllowed(sourceDir);
   const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  if (budget && entries.length > CONTROLLER_ASSET_LIMITS.entries - budget.entries) throw new Error("Controller signing-key protection refused oversized Codex asset materialization");
   for (const entry of entries) {
     const entrySource = path.join(sourceDir, entry.name);
     const entryTarget = path.join(targetDir, entry.name);
@@ -463,6 +479,7 @@ async function stageContainedSubtree(
       throw error;
     });
     if (!resolved) continue;
+    await assertControllerSourcePathAllowed(resolved);
     // Allowlist containment: never dereference a link that escapes this skill's
     // real root (host files outside CODEX_SYNC_ALLOWLIST) into the upload.
     if (!isResolvedPathInside(resolved, containmentRoot)) continue;
@@ -476,10 +493,12 @@ async function stageContainedSubtree(
       // `back -> .`-style link) would otherwise recurse forever.
       if (activePath.has(resolved)) continue;
       activePath.add(resolved);
-      await stageContainedSubtree(resolved, entryTarget, containmentRoot, activePath);
+      await stageContainedSubtree(resolved, entryTarget, containmentRoot, activePath, budget, depth + 1);
       activePath.delete(resolved);
     } else if (entryStat.isFile()) {
-      const bytes = await fs.readFile(resolved);
+      consumeProtectedCodexStageBudget(budget, entryStat.size, depth + 1);
+      const bytes = await readControllerSourceFile(resolved);
+      if (budget && bytes.length !== entryStat.size) throw new Error("Controller signing-key protection refused changed Codex source bytes");
       const mode = entryStat.mode & 0o111 ? 0o700 : 0o600;
       await fs.writeFile(entryTarget, bytes, { mode });
       await fs.chmod(entryTarget, mode);
@@ -513,10 +532,14 @@ async function stageContainedSubtree(
 async function stageDirectorySecure(
   sourceDir: string,
   targetDir: string,
+  budget?: ProtectedCodexStageBudget,
 ): Promise<void> {
+  consumeProtectedCodexStageBudget(budget, 0, 0);
   await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
   const realSourceDir = await fs.realpath(sourceDir);
+  await assertControllerSourcePathAllowed(sourceDir);
   const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  if (budget && entries.length > CONTROLLER_ASSET_LIMITS.entries - budget.entries) throw new Error("Controller signing-key protection refused oversized Codex asset materialization");
   for (const entry of entries) {
     const entrySource = path.join(sourceDir, entry.name);
     const entryTarget = path.join(targetDir, entry.name);
@@ -527,6 +550,7 @@ async function stageDirectorySecure(
       throw error;
     });
     if (!resolved) continue;
+    await assertControllerSourcePathAllowed(resolved);
     // A top-level child that resolves to the skills dir itself or an ancestor
     // of it (`back -> .` / `back -> ..`) is degenerate: using it as a root would
     // re-stage the whole home under `skills/`. Skip it.
@@ -539,9 +563,11 @@ async function stageDirectorySecure(
     if (entryStat.isDirectory()) {
       // This child skill establishes its own containment root: nested links may
       // not escape it, and the root seeds the cycle-detection active path.
-      await stageContainedSubtree(resolved, entryTarget, resolved, new Set([resolved]));
+      await stageContainedSubtree(resolved, entryTarget, resolved, new Set([resolved]), budget, 1);
     } else if (entryStat.isFile()) {
-      const bytes = await fs.readFile(resolved);
+      consumeProtectedCodexStageBudget(budget, entryStat.size, 1);
+      const bytes = await readControllerSourceFile(resolved);
+      if (budget && bytes.length !== entryStat.size) throw new Error("Controller signing-key protection refused changed Codex source bytes");
       const mode = entryStat.mode & 0o111 ? 0o700 : 0o600;
       await fs.writeFile(entryTarget, bytes, { mode });
       await fs.chmod(entryTarget, mode);
@@ -560,8 +586,10 @@ async function stageCodexHomeEntry(
   sourceHome: string,
   stagedHome: string,
   entry: string,
+  budget?: ProtectedCodexStageBudget,
 ): Promise<void> {
   const source = path.join(sourceHome, entry);
+  await assertControllerSourcePathAllowed(source);
   // `fs.stat` follows symlinks, so a dangling link (e.g. a removed auth source)
   // reports ENOENT and is skipped exactly like a genuinely absent file.
   const stat = await fs.stat(source).catch((error) => {
@@ -574,14 +602,16 @@ async function stageCodexHomeEntry(
   if (stat.isDirectory()) {
     // Recursively copy with mode normalization — nested regular files land
     // `0600` and dangling/circular symlinks are skipped.
-    await stageDirectorySecure(source, target);
+    await stageDirectorySecure(source, target, budget);
     return;
   }
 
   // `fs.readFile` follows the symlink into the shared source and returns the
   // resolved bytes (the live single-use auth token), which we write as a plain
   // regular file so copy-back and in-sandbox auth read real bytes.
-  const bytes = await fs.readFile(source);
+  consumeProtectedCodexStageBudget(budget, stat.size, 0);
+  const bytes = await readControllerSourceFile(source);
+  if (budget && bytes.length !== stat.size) throw new Error("Controller signing-key protection refused changed Codex source bytes");
   // Stage every regular file `0600`, not just `auth.json`. The staged dir is a
   // 0700 mkdtemp and each file is read back only by the owner (Codex in-sandbox +
   // copy-back), so nothing needs group/other read. This is least privilege and,
@@ -620,19 +650,24 @@ export async function stageCodexHomeForSync(
   options: StageCodexHomeForSyncOptions = {},
 ): Promise<string> {
   const runIdPart = nonEmpty(options.runId ?? undefined);
-  const stagedHome = await fs.mkdtemp(
-    path.join(os.tmpdir(), `paperclip-codex-home-sync-${runIdPart ? `${runIdPart}-` : ""}`),
-  );
+  const budget = controllerExecutionProtected() ? { bytes: 0, entries: 0 } : undefined;
+  await assertControllerSourcePathAllowed(effectiveCodexHome);
+  const stagedHome = controllerExecutionProtected()
+    ? await createControllerSourceStagingDirectory()
+    : await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-codex-home-sync-${runIdPart ? `${runIdPart}-` : ""}`));
   try {
     for (const filename of options.additionalFiles ?? []) {
       if (!/^paperclip-observability-[A-Za-z0-9_-]+\.config\.toml$/.test(filename)) throw new Error("Invalid managed observability profile");
       const source = path.join(effectiveCodexHome, filename);
       const stat = await fs.lstat(source);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (typeof process.getuid === "function" && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) throw new Error("Managed observability profile must be an owned private regular file");
-      await fs.writeFile(path.join(stagedHome, filename), await fs.readFile(source), { mode: 0o600, flag: "wx" });
+      consumeProtectedCodexStageBudget(budget, stat.size, 0);
+      const bytes = await readControllerSourceFile(source);
+      if (budget && bytes.length !== stat.size) throw new Error("Controller signing-key protection refused changed Codex source bytes");
+      await fs.writeFile(path.join(stagedHome, filename), bytes, { mode: 0o600, flag: "wx" });
     }
     for (const entry of CODEX_SYNC_ALLOWLIST) {
-      await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry);
+      await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry, budget);
     }
     return stagedHome;
   } catch (error) {
@@ -712,7 +747,7 @@ export async function seedManagedCodexHome(
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
     if (existing && !existing.isSymbolicLink()) {
-      const targetBytes = await fs.readFile(authPath).catch(() => null);
+      const targetBytes = await readControllerSourceFile(authPath).catch(() => null);
       const targetIdentity = targetBytes ? readSubscriptionAccountId(targetBytes) : null;
       if (targetIdentity) {
         // Any source read failure — absent or unreadable — keeps the usable

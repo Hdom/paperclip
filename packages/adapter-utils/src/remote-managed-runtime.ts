@@ -1,3 +1,4 @@
+import { createControllerSourceSnapshot } from "./controller-source-materialization.js";
 import { controllerExecutionProtected } from "./controller-source-protection.js";
 import path from "node:path";
 import { GIT_ARCHIVE_EXCLUDES, PROJECT_REPOSITORIES_DIR } from "./git-workspace-sync.js";
@@ -174,15 +175,19 @@ export async function prepareRemoteManagedRuntime(input: {
     for (const asset of input.assets ?? []) {
       const remoteDir = path.posix.join(runtimeRootDir, asset.key);
       assetDirs[asset.key] = remoteDir;
-      await syncDirectoryToSsh({
-        spec: input.spec,
-        localDir: asset.localDir,
-        remoteDir,
-        followSymlinks: asset.followSymlinks,
-        exclude: asset.exclude,
-        onProgress: input.onProgress,
-        progressLabel: asset.key,
-      });
+      const snapshot = controllerExecutionProtected() && asset.followSymlinks
+        ? await createControllerSourceSnapshot(asset.localDir) : null;
+      try {
+        await syncDirectoryToSsh({
+          spec: input.spec,
+          localDir: snapshot?.directory ?? asset.localDir,
+          remoteDir,
+          followSymlinks: snapshot ? false : asset.followSymlinks,
+          exclude: asset.exclude,
+          onProgress: input.onProgress,
+          progressLabel: asset.key,
+        });
+      } finally { await snapshot?.cleanup(); }
     }
   } catch (error) {
     if (preparedWorkspace && baselineSnapshot) {

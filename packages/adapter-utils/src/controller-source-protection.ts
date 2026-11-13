@@ -68,6 +68,15 @@ export async function assertControllerSourcePathAllowed(file: string, writing = 
   } catch { throw refused(); }
 }
 
+/** Agent restore mappings must never be able to replace a controller-owned snapshot. */
+export async function assertControllerSourceSnapshotRoot(file: string): Promise<void> {
+  if (!controllerExecutionProtected()) throw refused();
+  await assertControllerSourcePathAllowed(file);
+  const snapshot = await canonical(file);
+  const roots = await Promise.all(pathList("PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS", true).map(canonical));
+  if (roots.some(root => inside(root, snapshot) || inside(snapshot, root))) throw refused();
+}
+
 /** Controller Git must not execute commands from agent-introduced configuration. */
 export async function assertControllerGitWorkspaceSafe(cwd: string): Promise<void> {
   if (!controllerExecutionProtected()) return;
