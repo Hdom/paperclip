@@ -821,3 +821,12 @@ provider, and keep the agent assigned with `continuationPolicy: "wake_assignee"`
 so the answer resumes verification. A handoff comment asking the user to comment
 back or reassign the task is not a confirmation card. The card records the user's
 answer; verify the provider's gate and publish result before continuing.
+
+
+## Controller-managed project GitHub Apps (optional fork feature)
+
+If the operator configured this agent as the project Coordinator, create a fresh project's repository through `POST /runtime-tools/github/project` from that project's currently owned task run. The controller fixes the Hdom owner and the two worker installations. Send an empty object; do not choose a repository, installation, role, or permission in the request. Use the environment's GitHub runtime broker capability, never a Board key, personal token, or App private key. Bind the returned repository URL through the normal project workspace API before handing code work to Implementer or Reviewer. An enrollment permission refusal is a blocker; do not request broader administration or enroll an unrelated repository.
+
+Configured Implementer and Reviewer agents use the existing Git/gh launchers. The controller issues the role's one-repository installation token at operation time. Personal OAuth GitHub MCP tools and host credentials are not substitutes for these App identities. An archived or hidden pilot task cannot provision or acquire a project App token. The feature does not make historical company records invisible to agents; follow the operator's separate context-access policy before starting a real project.
+
+See `references/api-reference.md` for the scoped provisioning request. Do not start a real project run until the operator confirms that live App setup and integration verification are complete.

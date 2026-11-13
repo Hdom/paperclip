@@ -1755,3 +1755,30 @@ version 1 generation/sequence request to
 threshold and impose no total runtime cap. Do not run a background health loop.
 A missed check-in is possible disconnection, never stop or retry authority.
 Existing Stop, budget, ownership, workspace and verified-termination gates apply.
+
+
+## Controller-managed project GitHub Apps (optional fork feature)
+
+`POST /runtime-tools/github/project` provisions only the configured Coordinator's current project. It requires the GitHub run capability and rejects browser authentication. No scope arguments are accepted. The result contains repository metadata only. The private repository is named `Hdom/paperclip-<project UUID>`. The Coordinator attaches that returned URL to the project workspace with the existing workspace API. Normal Git/gh command launchers then acquire the Implementer or Reviewer token for that repository.
+
+A shell request can keep capability values in memory, outside process arguments and files:
+
+```sh
+node --input-type=module <<'JS'
+const env = process.env;
+const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
+const capability = env.PAPERCLIP_GITHUB_BROKER_TOKEN;
+const auth = env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || capability;
+if (!base || !auth) throw new Error('GitHub project broker is unavailable');
+const headers = { authorization: 'Bearer ' + auth, 'content-type': 'application/json' };
+if (capability) headers['x-paperclip-github-capability'] = capability;
+const response = await fetch(base.replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/project', {
+  method: 'POST', headers, body: '{}', redirect: 'error'
+});
+const result = await response.json();
+if (!response.ok) throw new Error(result.error || 'Project provisioning was blocked');
+console.log(JSON.stringify({ repositoryId: result.repositoryId, repositoryUrl: result.repositoryUrl, status: result.status }));
+JS
+```
+
+Do not retry uncertain creation by using `gh repo create`. The controller ledger prevents duplicate creation and reports the reconciliation blocker. Do not supply a PAT or grant Administration to work around enrollment refusal. Previously delivered installation tokens may remain usable until their one-hour expiry; this flow does not provide strong isolation between shared worker processes.

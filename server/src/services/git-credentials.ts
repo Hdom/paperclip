@@ -1,3 +1,5 @@
+import { loadProjectAppsConfig, projectAppRole } from "./github-project-apps.js";
+import { resolveProjectAppCredential } from "./github-project-app-runtime.js";
 import {
   companySecrets,
   heartbeatRuns,
@@ -371,6 +373,12 @@ export async function resolveManagedGitHubIdentitySelection(
   grant?: typeof connectionGrants.$inferSelect;
   error?: string;
 }> {
+  const projectApps = await loadProjectAppsConfig();
+  if (projectApps && context.agentId && projectAppRole(projectApps, companyId, context.agentId)) {
+    // Suppress host fallback and OAuth-backed GitHub MCP dispatch for these roles.
+    // Stored connections and unrelated agents retain their existing authority.
+    return { configured: true, identitySource: "dedicated", error: "Use this role's project GitHub App through Git or gh" };
+  }
   const connections = await db.select().from(toolConnections).where(and(
     eq(toolConnections.companyId, companyId),
     or(
@@ -542,6 +550,8 @@ export async function resolveManagedGitHubCredential(
     explicitGrantId?: string;
   },
 ): Promise<{ configured: boolean; identitySource?: "personal" | "dedicated"; credential?: GitCredential; error?: string }> {
+  const projectApp = await resolveProjectAppCredential(db, companyId, context);
+  if (projectApp) return projectApp;
   const selection = await resolveManagedGitHubIdentitySelection(db, companyId, context);
   if (!selection.configured) return { configured: false };
   if (!selection.grant) return { configured: true, identitySource: selection.identitySource, error: selection.error };

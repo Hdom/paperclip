@@ -1554,6 +1554,7 @@ describe("sandbox callback bridge", () => {
     const allowed: Array<{ method: string; path: string }> = [
       { method: "POST", path: "/api/companies/co-1/agent-commentary" },
       { method: "POST", path: "/runtime-tools/github/credentials" },
+      { method: "POST", path: "/runtime-tools/github/project" },
       { method: "GET", path: "/api/agents/me" },
       { method: "GET", path: "/api/agents/me/inbox-lite" },
       { method: "GET", path: "/api/agents/me/inbox/mine" },
