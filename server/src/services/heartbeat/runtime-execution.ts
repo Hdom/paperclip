@@ -9,6 +9,7 @@ import { describeFailedAttachment } from "../native-runtime/remote-warm-session-
 
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
 import { INTERACTION_DELIVERY_DENIED, preparedRunInteractionDeliveryDenied } from "../agent-interaction-delivery.js";
+import { assertControllerSafeExecutionTarget } from "../controller-execution-protection.js";
 import { startWorkerSupervision, settleWorkerSupervision } from "../worker-supervision.js";
 import type { WorkerSupervisionState } from "@paperclipai/shared";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
@@ -247,6 +248,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { issueRef, issueContext, context, issueId, taskKey, executionContinuation } = input.task;
   const { nativeRuntimeResolution, nativeExecution, nativeRunnerInstanceId, adapter, runtimeForAdapter, getNativeFreshSessionHandoff, getFreshSessionHandoff, runOptions } = input.runtime;
   const { persistedExecutionWorkspace, executionWorkspace, executionTarget, workspaceOperationRecorder, nativeWorkspaceSync, workspaceRestoreSource, remoteExecution } = input.workspace;
+  assertControllerSafeExecutionTarget(executionTarget);
   const remoteWorkspaceAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
   const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, observability, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
   const { runtimeSessionParamsForAdapter, configuredModel, sessionConfigMetadata, goalCheckpointSession } = input.session;

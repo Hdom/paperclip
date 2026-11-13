@@ -81,11 +81,17 @@ function appJwt(appId: number, privateKey: string) {
 }
 
 export function createProjectAppBroker(config: ProjectAppsConfig, options: {
-  fetch?: typeof fetch; timeoutMs?: number;
+  fetch?: typeof fetch; timeoutMs?: number; beforeMutation?: () => Promise<void>; assertActive?: () => void;
 } = {}) {
   const fetchImpl = options.fetch ?? fetch;
   // No configurable API origin: production credentials can only be sent to GitHub.
-  async function request(token: string, endpoint: string, method = "GET", body?: unknown) {
+  async function request(token: string, endpoint: string, method = "GET", body?: unknown, acceptedStatuses: number[] = []) {
+    if (method === "POST" || method === "PUT") {
+      await options.beforeMutation?.();
+      // Synchronous native-transport fence immediately before dispatch. Cleanup
+      // DELETE remains available after Stop so controller tokens can be revoked.
+      options.assertActive?.();
+    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 10000);
     let refusedStatus: number | undefined;
@@ -95,8 +101,8 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10", "Content-Type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-      if (!response.ok) { refusedStatus = response.status; throw new Error("provider refused"); }
-      if (response.status === 204) return null;
+      if (!response.ok && !acceptedStatuses.includes(response.status)) { refusedStatus = response.status; throw new Error("provider refused"); }
+      if (response.status === 204 || acceptedStatuses.includes(response.status)) return null;
       if (Number(response.headers.get("content-length")) > 131072) throw new Error("oversized");
       const reader = response.body?.getReader();
       if (!reader) throw new Error("empty response");
@@ -121,10 +127,15 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
   }
   async function installation(role: ProjectAppRole) {
     const app = config.apps[role];
-    const value = await request(await jwt(role), `/app/installations/${app.installationId}`);
+    const signed = await jwt(role);
+    const registration = await request(signed, "/app");
+    if (!registration || registration.id !== app.appId || registration.owner?.login !== config.owner || registration.owner?.type !== "User" ||
+        !samePermissions(registration.permissions, PROJECT_APP_PERMISSIONS[role]))
+      throw forbidden(`GitHub ${role} App registration is not owned by the approved personal account or has unapproved permissions`);
+    const value = await request(signed, `/app/installations/${app.installationId}`);
     if (value?.id !== app.installationId || value.app_id !== app.appId ||
         value.account?.login !== config.owner || value.target_type !== "User" || value.suspended_at ||
-        value.repository_selection !== "selected" || typeof value.app_slug !== "string" ||
+        value.repository_selection !== "selected" || typeof value.app_slug !== "string" || value.app_slug !== registration.slug ||
         !samePermissions(value.permissions, PROJECT_APP_PERMISSIONS[role]))
       throw forbidden(`GitHub ${role} installation does not match the approved owner, selected repositories, or exact permissions`);
     if (role !== "coordinator") await verifyWorkerSelection(role);
@@ -238,7 +249,7 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
           // a 403/404 is a blocker, never a reason to add Administration or a user token.
           for (const role of ["implementer", "reviewer"] as const) {
             await reauthorize();
-            await request(coordinatorToken, `/user/installations/${config.apps[role].installationId}/repositories/${value.repositoryId}`, "PUT");
+            await request(coordinatorToken, `/user/installations/${config.apps[role].installationId}/repositories/${value.repositoryId}`, "PUT", undefined, [304]);
             // Prove the fixed worker installation can issue the exact one-repository token.
             const verified = await issue(role, value.repositoryId);
             await revoke(verified.token);

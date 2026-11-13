@@ -1,5 +1,7 @@
 import { formatCommandForDisplay } from "./workspace-command-display.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { assertControllerGitWorkspaceSafe } from "@paperclipai/adapter-utils/controller-source-protection";
+import { assertControllerHostProcessAllowed } from "./controller-execution-protection.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { restoreGitWorkspaceContents } from "./git-workspace-contents.js";
 import { savedGitWorkspaceRestoration, ensureSavedGitCommit, GitCacheRestorationFailure } from "./git-workspace-restoration.js";
@@ -898,6 +900,8 @@ async function executeProcess(input: {
   stdoutBytes: number;
   stderrBytes: number;
 }> {
+  if (path.basename(input.command) === "git" && input.cwd) await assertControllerGitWorkspaceSafe(input.cwd);
+  else assertControllerHostProcessAllowed();
   const proc = await new Promise<{
     stdout: ProcessOutputAccumulator;
     stderr: ProcessOutputAccumulator;
@@ -3141,6 +3145,7 @@ async function runWorkspaceCommand(input: {
   label: string;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }) {
+  assertControllerHostProcessAllowed();
   const shell = resolveShell();
   const proc = await executeProcess({
     command: shell,
@@ -6320,6 +6325,7 @@ function createProvisioningRuntimeServiceRecord(
 }
 
 async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): Promise<LocalRuntimeServiceStart> {
+  assertControllerHostProcessAllowed();
   const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
   const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
   const identity = resolveRuntimeServiceReuseIdentity({
@@ -7165,6 +7171,7 @@ async function startLocalRuntimeService(
   input: StartLocalRuntimeServiceInput,
   options?: { deferReadiness?: boolean },
 ): Promise<LocalRuntimeServiceStart> {
+  assertControllerHostProcessAllowed();
   const runtimeProvisionCommand = asString(input.runtimeProvisionCommand, "").trim();
   const provisioningRecord = input.preparedProvisioningRecord === undefined
     ? await prepareRuntimeProvisioning(input)

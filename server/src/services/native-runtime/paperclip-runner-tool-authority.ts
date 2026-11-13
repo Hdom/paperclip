@@ -12,6 +12,7 @@ import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestTool } from "./native-skill-test-scope.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
 import { requiredQualityReviewSchema, type RequestCheckboxConfirmationOption } from "@paperclipai/shared";
+import { assertControllerHostWorkspaceAccessAllowed } from "../controller-execution-protection.js";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { caseHandoffService } from "../case-handoffs.js";
@@ -686,6 +687,7 @@ export class PaperclipRunnerToolAuthority {
       if (!parsed.success) return { outcome: "failed", code: "runner_bridge_invalid_arguments", message: "Arguments do not match this tool's advertised schema." };
       const input = parsed.data as Record<string, any>;
       if (call.tool.startsWith("workspace_")) {
+        assertControllerHostWorkspaceAccessAllowed();
         const authorize = async () => { const current = await this.#boundContext({ tool: call.tool });
           if (current.actor.adapterConfig?.dotWorkspaceAccess !== true) throw forbidden("Dot workspace access was disabled");
           await this.binding.assertBridgeAuthority?.();

@@ -29,7 +29,7 @@ export async function projectAppSandbox() {
   const enrolled = new Map<ProjectAppRole, Set<number>>([["implementer", new Set()], ["reviewer", new Set()]]);
   const tokens = new Map<string, { role: ProjectAppRole; repositoryId?: number }>();
   const revoked: string[] = [];
-  const faults = { extraPermission: false, allRepositories: false, adminRefused: false, createDrop: false, driftScope: false, longExpiry: false, slow: false, redirect: "" };
+  const faults = { extraPermission: false, allRepositories: false, adminRefused: false, createDrop: false, driftScope: false, longExpiry: false, slow: false, redirect: "", foreignAppOwner: false, alreadyEnrolled: false };
   let repositorySequence = 900;
   const server = createServer(async (req, res) => {
     let bodyText = ""; for await (const chunk of req) bodyText += chunk;
@@ -37,19 +37,22 @@ export async function projectAppSandbox() {
     const bearer = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
     let role: ProjectAppRole | undefined;
     const installed = (Object.keys(config.apps) as ProjectAppRole[]).find(r => req.url === `/app/installations/${config.apps[r].installationId}` || req.url === `/app/installations/${config.apps[r].installationId}/access_tokens`);
-    if (installed) {
+    if (installed || req.url === "/app") {
       const [header, payload, signature] = bearer.split(".");
       const claims = JSON.parse(Buffer.from(payload!, "base64url").toString());
-      expect(claims.iss).toBe(String(config.apps[installed].appId));
-      expect(verify("RSA-SHA256", Buffer.from(`${header}.${payload}`), publicKeys.get(config.apps[installed].appId)!, Buffer.from(signature!, "base64url"))).toBe(true);
-      role = installed;
+      const jwtRole = installed ?? (Object.keys(config.apps) as ProjectAppRole[]).find(r => String(config.apps[r].appId) === claims.iss)!;
+      expect(claims.iss).toBe(String(config.apps[jwtRole].appId));
+      expect(verify("RSA-SHA256", Buffer.from(`${header}.${payload}`), publicKeys.get(config.apps[jwtRole].appId)!, Buffer.from(signature!, "base64url"))).toBe(true);
+      role = jwtRole;
     } else role = tokens.get(bearer)?.role;
     requests.push({ method: req.method!, url: req.url!, body, role });
     const json = (value: unknown, status = 200) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); };
     if (faults.redirect) { res.writeHead(302, { location: faults.redirect }); res.end(); return; }
     if (faults.slow) { setTimeout(() => { if (!res.destroyed) json({}); }, 150); return; }
     if (!role) { json({ message: "forbidden" }, 403); return; }
-    if (installed && req.method === "GET") {
+    if (req.url === "/app" && req.method === "GET") {
+      json({ id: config.apps[role].appId, slug: `paperclip-${role}`, owner: { login: faults.foreignAppOwner ? "foreign-owner" : "Hdom", type: "User" }, permissions: PROJECT_APP_PERMISSIONS[role] });
+    } else if (installed && req.method === "GET") {
       json({ id: config.apps[role].installationId, app_id: config.apps[role].appId, app_slug: `paperclip-${role}`, account: { login: "Hdom" }, target_type: "User", suspended_at: null,
         repository_selection: faults.allRepositories ? "all" : "selected", permissions: { ...PROJECT_APP_PERMISSIONS[role], ...(faults.extraPermission ? { administration: "write" } : {}) } });
     } else if (installed && req.method === "POST") {
@@ -81,7 +84,7 @@ export async function projectAppSandbox() {
       const match = /^\/user\/installations\/(\d+)\/repositories\/(\d+)$/.exec(req.url)!;
       const worker = (["implementer", "reviewer"] as const).find(r => config.apps[r].installationId === Number(match[1]));
       expect(worker).toBeTruthy(); enrolled.get(worker!)!.add(Number(match[2]));
-      res.writeHead(204); res.end();
+      res.writeHead(faults.alreadyEnrolled ? 304 : 204); res.end();
     } else if (req.url === "/installation/token" && req.method === "DELETE") {
       revoked.push(bearer); tokens.delete(bearer); res.writeHead(204); res.end();
     } else json({}, 404);
@@ -93,7 +96,7 @@ export async function projectAppSandbox() {
     expect(String(url).startsWith("https://api.github.com/")).toBe(true);
     return realFetch(origin + new URL(String(url)).pathname, init);
   };
-  return { config, configPath, directory, requests, repositories, enrolled, tokens, revoked, faults, fetchImpl,
+  return { config, configPath, directory, requests, repositories, enrolled, tokens, revoked, faults, fetchImpl, directFetch: realFetch,
     broker: createProjectAppBroker(config, { fetch: fetchImpl }),
     async cleanup() { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); },
   };

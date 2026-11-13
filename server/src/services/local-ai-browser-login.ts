@@ -1,3 +1,4 @@
+import { assertControllerHostProcessAllowed } from "./controller-execution-protection.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -48,6 +49,7 @@ sys.exit(os.waitstatus_to_exitcode(status))
 
 /** Run the same browser-code login used by sandbox connections on the local host. */
 export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google", home: string): LocalBrowserLoginState {
+  assertControllerHostProcessAllowed();
   if (provider === "google") return startAntigravityBrowserLogin(home);
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };

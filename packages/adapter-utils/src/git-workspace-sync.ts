@@ -1,3 +1,4 @@
+import { assertControllerGitWorkspaceSafe } from "./controller-source-protection.js";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
@@ -214,6 +215,7 @@ export async function readManagedWorkspaceRepositories(localDir: string, options
 }
 
 export async function readGitWorkspaceSnapshot(localDir: string, includeRepositories = true, options: { signal?: AbortSignal } = {}): Promise<GitWorkspaceSnapshot | null> {
+  await assertControllerGitWorkspaceSafe(localDir);
   const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
   // Only repository discovery may report an ordinary directory. A failed
   // snapshot of a confirmed repository must never fall back to directory sync.

@@ -1,3 +1,4 @@
+import { assertControllerSafeEnvironment } from "./controller-execution-protection.js";
 import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
 import type { Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
@@ -247,6 +248,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   // bridge, so the surface stays inert until the host injects a real recorder.
   duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
 }): Promise<AdapterExecutionTarget | null> {
+  assertControllerSafeEnvironment(input.environment);
   if (input.environment.driver === "local") {
     return {
       kind: "local",

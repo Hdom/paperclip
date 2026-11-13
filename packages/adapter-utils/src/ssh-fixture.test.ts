@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildSshSpawnTarget,
   buildSshEnvLabFixtureConfig,
@@ -521,6 +521,32 @@ describe("ssh env-lab fixture", () => {
       }),
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
   });
+
+  it("protects controller Git metadata during real SSH plain-workspace synchronization", async () => {
+    const root = await createFixtureRootDir(), localDir = path.join(root, "source"), protectedDir = path.join(root, "keys");
+    await mkdir(localDir); await mkdir(protectedDir); await writeFile(path.join(localDir, "file.txt"), "before");
+    const started = await startSshEnvLabFixtureOrSkip(path.join(root, "state.json"), "protected metadata synchronization");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    vi.stubEnv("PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS", "1");
+    vi.stubEnv("PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG", "");
+    vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS", JSON.stringify([localDir]));
+    vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS", JSON.stringify([localDir]));
+    vi.stubEnv("PAPERCLIP_CONTROLLER_PROTECTED_PATHS", JSON.stringify([protectedDir]));
+    try {
+      const prepared = await prepareRemoteManagedRuntime({ spec: { ...config, remoteCwd: started.workspaceDir }, runId: "protected-sync", adapterKey: "test", workspaceLocalDir: localDir, workspaceFileMode: "all" });
+      const remote = prepared.workspaceRemoteDir;
+      await mkdir(path.join(remote, ".git"), { recursive: true });
+      await writeFile(path.join(remote, ".git/config"), "[core]\n fsmonitor = touch /tmp/should-never-execute\n");
+      await mkdir(path.join(remote, "nested/.git"), { recursive: true });
+      await writeFile(path.join(remote, "nested/.git/config"), "malicious nested metadata");
+      await writeFile(path.join(remote, "file.txt"), "approved work");
+      await prepared.restoreWorkspace();
+      expect(await readFile(path.join(localDir, "file.txt"), "utf8")).toBe("approved work");
+      await expect(stat(path.join(localDir, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(path.join(localDir, "nested/.git"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { vi.unstubAllEnvs(); }
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("syncs a local directory into the remote fixture workspace", async () => {
     const rootDir = await createFixtureRootDir();

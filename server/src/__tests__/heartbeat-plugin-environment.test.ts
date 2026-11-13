@@ -82,6 +82,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
   afterEach(async () => {
     for (const heartbeat of heartbeats.splice(0)) await heartbeat.drainActiveRunExecutions();
     adapterExecute.mockClear();
+    vi.unstubAllEnvs();
     while (tempRoots.length > 0) {
       const root = tempRoots.pop();
       if (root) await rm(root, { recursive: true, force: true }).catch(() => undefined);
@@ -93,7 +94,8 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     await stopDb?.();
   });
 
-  it("refuses a plugin Runner-task run without a managed AI connection before any plugin call", async () => {
+  it.each([false, true])("refuses a plugin Runner-task run without a managed AI connection before any plugin call (protected %s)", async protectedMode => {
+    vi.stubEnv("PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS", protectedMode ? "1" : "");
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), sourceId = randomUUID();
     const environmentId = randomUUID(), pluginId = randomUUID(), pluginKey = `test.tasks.${pluginId}`;
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-heartbeat-")); tempRoots.push(root);

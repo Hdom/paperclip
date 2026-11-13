@@ -40,6 +40,17 @@ describe("controller GitHub project App broker", () => {
     await expect(sandbox.broker.workerCredential("reviewer", projectId, async () => {})).rejects.toThrow("unrelated repository");
     expect([...sandbox.tokens.values()].some(t => t.role === "reviewer")).toBe(false);
   });
+  it("rejects foreign-owned App registrations even when installed on Hdom", async () => {
+    sandbox.faults.foreignAppOwner = true;
+    await expect(sandbox.broker.provision(randomUUID(), async () => {})).rejects.toThrow("App registration");
+    expect(sandbox.repositories.size).toBe(0);
+  });
+  it("accepts enrollment 304 only after verifying the exact scoped worker token", async () => {
+    sandbox.faults.alreadyEnrolled = true;
+    await expect(sandbox.broker.provision(randomUUID(), async () => {})).resolves.toHaveProperty("status", "ready");
+    expect(sandbox.requests.filter(r => r.method === "PUT")).toHaveLength(2);
+    expect([...sandbox.tokens.values()]).toEqual([]);
+  });
   it("reports enrollment admin rejection without widening access or leaking the provider body", async () => {
     sandbox.faults.adminRefused = true;
     const projectId = randomUUID();

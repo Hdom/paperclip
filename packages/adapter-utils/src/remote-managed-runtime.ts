@@ -1,3 +1,4 @@
+import { controllerExecutionProtected } from "./controller-source-protection.js";
 import path from "node:path";
 import { GIT_ARCHIVE_EXCLUDES, PROJECT_REPOSITORIES_DIR } from "./git-workspace-sync.js";
 import {
@@ -151,10 +152,11 @@ export async function prepareRemoteManagedRuntime(input: {
         exclude: preparedWorkspace.gitBacked
           ? [
               ...GIT_ARCHIVE_EXCLUDES,
+              ...(controllerExecutionProtected() ? ["*/.git", "*/.git/*"] : []),
               ".paperclip-runtime",
               ...(projectRepositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : preparedWorkspace.excludedPaths ?? []),
             ]
-          : [".paperclip-runtime", ...(preparedWorkspace.excludedPaths ?? []), ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
+          : [".paperclip-runtime", ...(preparedWorkspace.excludedPaths ?? []), ...(controllerExecutionProtected() ? [".git", ".git/*", "*/.git", "*/.git/*"] : []), ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
       })
     : null;
   const repositoryBaselines: Array<{ path: string; baselineSnapshot: DirectorySnapshot }> = [];
@@ -162,7 +164,7 @@ export async function prepareRemoteManagedRuntime(input: {
     repositoryBaselines.push({
       path: repository,
       baselineSnapshot: await captureDirectorySnapshot(path.join(input.workspaceLocalDir, repository), {
-        exclude: [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"],
+        exclude: [...GIT_ARCHIVE_EXCLUDES, ...(controllerExecutionProtected() ? ["*/.git", "*/.git/*"] : []), ".paperclip-runtime"],
       }),
     });
   }

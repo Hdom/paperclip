@@ -10,7 +10,8 @@ import { errorHandler } from "../middleware/index.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import { resolveManagedGitHubIdentitySelection, filterResolvedGitHubConnectionsForRun } from "../services/git-credentials.js";
-import { resolveProjectAppCredential } from "../services/github-project-app-runtime.js";
+import { provisionRunProjectRepository, resolveProjectAppCredential } from "../services/github-project-app-runtime.js";
+import { createNativeGitHubAccess } from "../services/native-runtime/native-github-access.js";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { projectAppSandbox } from "./helpers/project-app-sandbox.js";
@@ -116,6 +117,66 @@ const support = await getEmbeddedPostgresTestSupport();
     const result = await resolveGitHubOperationCredentials(db, input);
     expect(result.status).toBe("unavailable"); expect(result.env).toEqual({});
     expect(await resolveProjectAppCredential(db, input.companyId, { agentId: input.agentId })).toMatchObject({ configured: true });
+  });
+  it.each([
+    { executionCancellation: { state: "requested", requestedAt: new Date().toISOString() } },
+    { startupCancellation: { requestedAt: new Date().toISOString() } },
+    { reassignmentStopRequested: true },
+    { nativeCancellation: { scope: "run", dispatchState: "pending" } },
+    { nativeCancellation: { scope: "run", dispatchState: "acknowledged" } },
+  ])("denies durable unsettled Stop $executionCancellation $startupCancellation $reassignmentStopRequested $nativeCancellation", async resultJson => {
+    const input = await run("coordinator");
+    await db.update(heartbeatRuns).set({ resultJson }).where(eq(heartbeatRuns.id, input.runId));
+    expect((await request(app()).post("/runtime-tools/github/project").set("Authorization", `Bearer ${capability(input)}`).send({})).status).toBe(403);
+    expect(sandbox.requests).toHaveLength(0);
+    const worker = await run("reviewer", input.projectId);
+    await db.update(heartbeatRuns).set({ resultJson }).where(eq(heartbeatRuns.id, worker.runId));
+    expect(await resolveGitHubOperationCredentials(db, worker)).toMatchObject({ status: "unavailable", env: {} });
+    expect(sandbox.requests).toHaveLength(0);
+  });
+  it("rechecks a persisted Stop before mutation when the status remains running during preflight", async () => {
+    const input = await run("coordinator");
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fetch>) => {
+      const response = await sandbox.fetchImpl(...args);
+      if (String(args[0]) === "https://api.github.com/app")
+        await db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, input.runId));
+      return response;
+    });
+    expect((await request(app()).post("/runtime-tools/github/project").set("Authorization", `Bearer ${capability(input)}`).send({})).status).toBe(403);
+    expect(sandbox.requests.some(r => r.method === "POST" || r.method === "PUT")).toBe(false);
+  });
+  it.each(["release", "stop"] as const)("fences native %s during provider I/O before any further mutation while DB still says running", async control => {
+    const input = await run("coordinator");
+    let enter!: () => void, unblock!: () => void, finish!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { unblock = resolve; });
+    const completed = new Promise<void>(resolve => { finish = resolve; });
+    let first = true;
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fetch>) => {
+      const response = await sandbox.fetchImpl(...args);
+      if (first && String(args[0]) === "https://api.github.com/app") { first = false; enter(); await gate; }
+      return response;
+    });
+    const access = await createNativeGitHubAccess({
+      scope: { companyId: input.companyId, agentId: input.agentId, issueId: input.issueId }, target: null,
+      cwd: sandbox.directory, env: { PATH: process.env.PATH }, resolveCredentials: binding => resolveGitHubOperationCredentials(db, binding),
+      provisionProject: async (binding, assertActive) => {
+        try { return await provisionRunProjectRepository(db, binding, assertActive); }
+        finally { finish(); }
+      },
+    });
+    try {
+      const release = access.activate(input);
+      const reply = sandbox.directFetch(`${access.env.PAPERCLIP_GITHUB_BROKER_URL}/runtime-tools/github/project`, {
+        method: "POST", headers: { authorization: `Bearer ${access.env.PAPERCLIP_GITHUB_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: "{}",
+      }).then(response => response.status, () => 0);
+      await entered;
+      const stopping = control === "stop" ? access.stop() : Promise.resolve(release());
+      unblock(); await completed; await stopping;
+      expect(await reply).toBe(control === "release" ? 403 : 0);
+      expect(sandbox.requests.some(r => r.method === "POST" || r.method === "PUT")).toBe(false);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId)))[0]!.status).toBe("running");
+    } finally { unblock(); await access.stop(); }
   });
   it("revokes and withholds a worker token if its run stops during the network operation", async () => {
     const coordinator = await run("coordinator");

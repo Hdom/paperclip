@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
   createDb,
   environmentLeases,
   environments,
+  projects,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -224,4 +226,24 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     });
     expect(captured.apiUrl).toEqual(expect.stringMatching(/^https?:\/\//));
   });
+  it.each(["default", "project", "task"])("refuses %s Local placement through public heartbeat before dispatch", async selection => {
+    const companyId = randomUUID(), agentId = randomUUID(), localId = randomUUID(), projectId = randomUUID(), issueId = randomUUID();
+    const tempDir = await mkdtemp(join(tmpdir(), "protected-heartbeat-")), marker = join(tempDir, "spawned");
+    await db.insert(companies).values({ id: companyId, name: "Protected", issuePrefix: "KEY", requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(environments).values({ id: localId, companyId, name: "Local", driver: "local", status: "active", config: {} });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Blocked Local", role: "engineer", status: "idle", adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'executed')`] }, runtimeConfig: {}, permissions: {} });
+    await db.insert(projects).values({ id: projectId, companyId, name: "No dispatch", executionWorkspacePolicy: selection === "project" ? { enabled: true, defaultMode: "shared_workspace", environmentId: localId } : null });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Refuse Local", assigneeAgentId: agentId, executionWorkspaceSettings: selection === "task" ? { mode: "shared_workspace", environmentId: localId } : null });
+    vi.stubEnv("PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS", "1");
+    try {
+      const queued = await heartbeat.invoke(agentId, "on_demand", { issueId }, "manual");
+      expect(queued).not.toBeNull();
+      const finished = await waitForRunToFinish(heartbeat, queued!.id);
+      expect(finished?.status).toBe("failed");
+      expect(JSON.stringify(finished)).toMatch(/signing-key protection/);
+      expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, queued!.id))).toHaveLength(0);
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { vi.unstubAllEnvs(); await rm(tempDir, { recursive: true, force: true }); }
+  });
+
 });

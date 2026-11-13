@@ -41,7 +41,7 @@ async function broker(resolveCredentials = vi.fn(async (binding: ReturnType<type
   status: "available", env: { GH_TOKEN: `fixture-${binding.runId}` },
 })), remote = false, bridgeUnavailable = false, onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
 duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; recorder?: DuplexObservabilityRecorder },
-provisionProject?: (binding: ReturnType<typeof run>) => Promise<unknown>) {
+provisionProject?: (binding: ReturnType<typeof run>, assertActive: () => void) => Promise<unknown>) {
   const root = await mkdtemp(path.join(tmpdir(), "native-github-reuse-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "real-bin");
@@ -273,7 +273,7 @@ it.each([false, true])("routes project provisioning through only the active immu
   expect((await request(b, {}, "/runtime-tools/github/project")).status).toBe(403);
   const release = b.activate(run("native-project"));
   expect(await (await request(b, { body: JSON.stringify({ runId: "forged", installationId: 999 }) }, "/runtime-tools/github/project")).json()).toMatchObject({ runId: "native-project" });
-  expect(provisionProject.mock.calls).toEqual([[run("native-project")]]);
+  expect(provisionProject.mock.calls.map(([binding]) => binding)).toEqual([run("native-project")]);
   expect(b.resolveCredentials).not.toHaveBeenCalled();
   release();
   expect((await request(b, {}, "/runtime-tools/github/project")).status).toBe(403);

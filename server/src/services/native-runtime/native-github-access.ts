@@ -9,6 +9,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
+import { forbidden } from "../../errors.js";
 
 type Binding = { companyId: string; agentId: string; issueId: string; runId: string };
 type LauncherInput = Parameters<typeof prepareGitHubOperationLaunchers>[0];
@@ -24,7 +25,7 @@ export async function createNativeGitHubAccess(input: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   resolveCredentials: (binding: Binding) => Promise<unknown>;
-  provisionProject?: (binding: Binding) => Promise<unknown>;
+  provisionProject?: (binding: Binding, assertActive: () => void) => Promise<unknown>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }, startBridge = startAdapterExecutionTargetPaperclipBridge) {
   const duplexRequested = adapterExecutionTargetEnablesSandboxDuplexBridge(input.target);
@@ -62,9 +63,12 @@ export async function createNativeGitHubAccess(input: {
       return;
     }
     try {
+      const assertActive = () => {
+        if (active !== binding || stopped) throw forbidden("GitHub run ended before project mutation dispatch");
+      };
       // Bind at receipt; body/headers cannot select a run or responsible user.
       const result = provisioning
-        ? await input.provisionProject!({ ...binding })
+        ? await input.provisionProject!({ ...binding }, assertActive)
         : await input.resolveCredentials({ ...binding });
       if (active !== binding || stopped) {
         reply(403, { error: "GitHub run ended during credential acquisition" });
