@@ -13,6 +13,9 @@ def check():
  s=i['executionState'];assert i['status']=='in_review' and i['assigneeAgentId'] is None and i['assigneeUserId']=='local-board'
  assert s['status']=='pending' and s['currentStageId']==f['humanId'] and s['currentStageType']=='approval' and s['currentParticipant']['type']=='user'
  ev=[json.loads(x) for x in (P/'agent-events.jsonl').read_text().splitlines()]
+ checks=[e for e in ev if e.get('event')=='checkout_invariant_passed']
+ assert [e['role'] for e in checks]==['Planner','Coordinator','Planner','Coordinator']
+ assert [e['status'] for e in checks]==['in_progress','in_review','in_progress','in_review']
  reads=[e for e in ev if e.get('role')=='Coordinator' and e.get('method')=='GET' and e.get('path','').endswith('/documents/plan')]
  assert [e['data']['latestRevisionNumber'] for e in reads]==[1,2]
  doc=get(path+'/documents/plan');assert doc['latestRevisionNumber']==2 and doc['latestRevisionId']==reads[-1]['data']['latestRevisionId'] and 'validation details' in doc['body']

@@ -242,6 +242,7 @@ export function documentService(db: Db) {
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
           return await db.transaction(async (tx) => {
+          if (key === "plan") await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issue.id} for update`);
           await notifyStatusCardIssueChange(tx, issue.companyId);
           const now = new Date();
           const existing = await tx
@@ -629,6 +630,7 @@ export function documentService(db: Db) {
     }) => {
       const key = normalizeDocumentKey(input.key);
       return db.transaction(async (tx) => {
+        if (key === "plan") await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${input.issueId} for update`);
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -838,6 +840,7 @@ export function documentService(db: Db) {
     deleteIssueDocument: async (issueId: string, rawKey: string, actorAgentId?: string | null) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
+        if (key === "plan") await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)

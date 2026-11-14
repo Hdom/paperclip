@@ -130,6 +130,7 @@ import {
   extractIssueWorkModeChanges,
 } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
+import { isStageDecisionPendingForUser } from "../lib/issue-execution-policy";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useIssueWorkProducts } from "../hooks/useIssueWorkProducts";
 import {
@@ -3239,6 +3240,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
+  const [stageDecisionRequest, setStageDecisionRequest] = useState<{ issueId: string; requestId: number } | null>(null);
+  const stageDecisionRequestSequence = useRef(0);
+  const handleStageDecisionOpened = useCallback((requestId: number) => {
+    setStageDecisionRequest((current) => current?.requestId === requestId ? null : current);
+  }, []);
   const [artifactsOpenRequest, setArtifactsOpenRequest] = useState<{
     issueId: string;
     requestId: number;
@@ -4548,13 +4554,19 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const updateIssueMutation = useUpdateIssueMutation({
     companyId: selectedCompanyId,
     onSuccess: ({
-      comment: _comment,
+      comment,
       changes: _changes,
       blockedByIssueIds: _blockedByIssueIds,
       ...nextIssue
     }, { data }) => {
       if (Object.prototype.hasOwnProperty.call(data, "projectId")) {
         trackRecentProject(nextIssue.projectId ?? "", nextIssue.companyId);
+      }
+      if (comment) {
+        // Stage decisions post their comment through this PATCH.
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.comments(issueId!),
+        });
       }
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
@@ -4842,10 +4854,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
   });
   const handleIssuePropertiesUpdate = useCallback(
+    // Only decision controls need a completion result. Keep ordinary property
+    // edits fire-and-forget (including hosts that await their event handler).
     (data: Record<string, unknown>) => {
+      if (data.expectedExecutionStageId !== undefined) {
+        return updateIssue.mutateAsync(data).then(() => true, () => false);
+      }
       updateIssue.mutate(data);
     },
-    [updateIssue.mutate],
+    [updateIssue.mutate, updateIssue.mutateAsync],
   );
 
   const updateChildIssue = useMutation({
@@ -6284,6 +6301,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         : undefined,
       onAddSubIssue: openNewSubIssue,
       onUpdate: handleIssuePropertiesUpdate,
+      stageDecisionRequestId: !isMobile && stageDecisionRequest?.issueId === panelIssue.id ? stageDecisionRequest.requestId : undefined,
+      onStageDecisionOpened: handleStageDecisionOpened,
       hasActiveRun: resolvedHasActiveRun,
       externalObjects: externalObjectsState.isEnabled
         ? externalObjectsState.groups
@@ -6378,6 +6397,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     fileViewerEnabled,
     resolvedTasksTab,
     artifactsOpenRequest,
+    stageDecisionRequest,
+    handleStageDecisionOpened,
     handleArtifactsOpened,
     isMobile,
   ]);
@@ -7614,7 +7635,17 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       {...taskStatusIconProps(issue)}
       size={proposedTaskHeader ? "md" : "lg"}
       blockerAttention={issue.blockerAttention}
-      onChange={(status) => updateIssue.mutate({ status })}
+      onChange={(status) => {
+        if (status === "done" && isStageDecisionPendingForUser(issue.executionState, currentUserId)) {
+          // Approving needs its note in the same update: open the decision
+          // controls instead of sending a status change the server rejects.
+          if (isMobile) setMobilePropsOpen(true);
+          else openTaskSidePanel();
+          setStageDecisionRequest({ issueId: issue.id, requestId: ++stageDecisionRequestSequence.current });
+          return;
+        }
+        updateIssue.mutate({ status });
+      }}
     />
   );
 
@@ -8968,7 +8999,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                         : undefined
                     }
                     onAddSubIssue={openNewSubIssue}
-                    onUpdate={(data) => updateIssue.mutate(data)}
+                    onUpdate={handleIssuePropertiesUpdate}
+                    stageDecisionRequestId={isMobile && stageDecisionRequest?.issueId === issue.id ? stageDecisionRequest.requestId : undefined}
+                    onStageDecisionOpened={handleStageDecisionOpened}
                     inline
                     mobile
                     hasActiveRun={resolvedHasActiveRun}
@@ -9034,7 +9067,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                             : undefined
                         }
                         onAddSubIssue={openNewSubIssue}
-                        onUpdate={(data) => updateIssue.mutate(data)}
+                        onUpdate={handleIssuePropertiesUpdate}
+                        stageDecisionRequestId={isMobile && stageDecisionRequest?.issueId === issue.id ? stageDecisionRequest.requestId : undefined}
+                    onStageDecisionOpened={handleStageDecisionOpened}
                         inline
                         hasActiveRun={resolvedHasActiveRun}
                         externalObjects={

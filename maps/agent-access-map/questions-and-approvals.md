@@ -296,6 +296,34 @@ Review: `operation-reviewed`.
 
 Review exact saved plan, then distinguish ordinary execution from Agent Chat handoff.
 
+### `decide-native-execution-stage`
+
+API: `present` — PATCH /api/issues/{id} with status and a non-empty comment in
+one request. Guarded decisions also carry expectedExecutionStageId,
+expectedDecisionStatusVersion, expectedDecisionLastDecisionId (nullable), and
+expectedPlanRevisionId (null means no plan).
+
+Agent access: `restricted` — the guard requires the current stage participant.
+The human UI uses the signed-in user's session. An agent cannot decide a stage
+assigned to a human. Existing stage-participant and mutation rules remain.
+
+Policy: Pending stage, actor, issue status version, unchanged execution policy
+and state, and exact latest plan revision are rechecked under the issue lock.
+Plan mutation paths use the same lock. Guarded decisions cannot mix unrelated
+issue mutations. A transaction records the decision and revision audit.
+Separate plan confirmations and accepted-plan decomposition are unchanged.
+
+Evidence: `source-only` — fork adaptation of upstream PR 13986; see
+[design and verification scope](../../doc/plans/2026-11-11-human-approval-controls.md).
+This map does not claim a live production run.
+
+Verification: `not-run` — use disposable cases for both outcomes, wrong audience,
+no plan, plan fetch failure, changed/recycled stage, two tabs, and concurrent plan
+edit/create/restore/delete. Inspect persisted state and audit after reload.
+
+Gaps: This operation is not a replacement for the plan-confirmation operation
+below. Browser and transaction-test results belong in the change report.
+
 ### `publish-and-revise`
 
 API: `present` — GET /api/issues/{id}/documents/plan; PUT /api/issues/{id}/documents/plan with the current base revision; POST /api/issues/{id}/interactions with the exact saved plan revision.

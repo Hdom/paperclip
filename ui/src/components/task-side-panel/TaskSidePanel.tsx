@@ -113,7 +113,7 @@ export interface TaskSidePanelProps {
   childIssues?: Issue[];
   issueLinkState?: unknown;
   onAddSubIssue?: () => void;
-  onUpdate: (data: Record<string, unknown>) => void;
+  onUpdate: (data: Record<string, unknown>) => void | Promise<boolean>;
   inline?: boolean;
   mobile?: boolean;
   hasActiveRun?: boolean;
@@ -125,6 +125,8 @@ export interface TaskSidePanelProps {
   checkingMonitorNow?: boolean;
   fileTabsEnabled: boolean;
   documentDeepLink?: { requestId: number; documentKey: string } | null;
+  stageDecisionRequestId?: number;
+  onStageDecisionOpened?: (requestId: number) => void;
   /** A new durable output asks the host to reveal this tab once. */
   artifactsOpenRequestId?: number;
   onArtifactsOpened?: (requestId: number) => void;
@@ -284,6 +286,8 @@ function TaskSidePanelForScope({
   checkingMonitorNow = false,
   fileTabsEnabled,
   documentDeepLink,
+  stageDecisionRequestId,
+  onStageDecisionOpened,
   artifactsOpenRequestId,
   onArtifactsOpened,
   onRequestClose,
@@ -488,6 +492,16 @@ function TaskSidePanelForScope({
     if (coordinatorWorkspaceEnabled) userInteractedRef.current = true;
     controller.openTab(taskPanelDocumentTab(documentDeepLink.documentKey, label, target?.revisionId, documentIssueId));
   }, [controller.openTab, documentDeepLink, documents, planDocument, location.hash, issue.id]);
+
+  const handledStageDecisionRequestRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (stageDecisionRequestId === undefined || handledStageDecisionRequestRef.current === stageDecisionRequestId) return;
+    handledStageDecisionRequestRef.current = stageDecisionRequestId;
+    userInteractedRef.current = true;
+    autoPlanHandledRef.current = true;
+    setLauncherOpen(false);
+    controller.openTab(taskPanelPropertiesTab());
+  }, [stageDecisionRequestId, controller.openTab]);
 
   // Existing URL-backed workspace links remain the external integration API.
   useEffect(() => {
@@ -816,6 +830,8 @@ function TaskSidePanelForScope({
         issueLinkState={issueLinkState}
         onAddSubIssue={onAddSubIssue}
         onUpdate={onUpdate}
+        stageDecisionRequestId={stageDecisionRequestId}
+        onStageDecisionOpened={onStageDecisionOpened}
         inline={inline}
         hasActiveRun={hasActiveRun}
         externalObjects={externalObjects}

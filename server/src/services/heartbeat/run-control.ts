@@ -7,6 +7,7 @@ import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifi
 import { resumeDeferredChatWake } from "../durable-chat-wakeup.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js";
+import { stopHandoffWakesForSource } from "./handoff-wake.js";
 import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProcessStop, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
@@ -1293,6 +1294,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         // Queue admission may bind execution before adopting an old checkout.
         const ownsTask = issue && issue.assigneeAgentId === currentRun.agentId && !issue.assigneeUserId &&
           (issue.executionRunId ? issue.executionRunId === runId : issue.checkoutRunId === runId);
+        if (options.resultJson?.cancelledByActorType === "user") {
+          await stopHandoffWakesForSource(tx as unknown as Db, run!.companyId, handoffIssueId, runId);
+        }
         await cancelCaseHandoffsForIssue(tx as unknown as Db, { companyId: run!.companyId, issueId: handoffIssueId,
           sourceRunId: runId, includeUnboundTerminalIntent: Boolean(fenced && ownsTask), reason, publications });
         return true;

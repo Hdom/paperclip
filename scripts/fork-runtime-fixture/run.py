@@ -11,8 +11,8 @@ os.environ['HANDOFF_WORKSPACE']=str(W)
 assert os.environ.get('PAPERCLIP_API_URL')=='http://127.0.0.1:3107'
 assert not P.exists(), 'Evidence target must be fresh'
 assert W.is_dir(), 'Runtime owner must prepare disposable workspace'
-assert os.environ.get('HANDOFF_SOURCE_COMMIT')=='20c71960bb5e6219d455f32c7df48eaaa0fcc333'
-assert os.environ.get('HANDOFF_ARTIFACT_ID')=='13834076411'
+assert os.environ.get('HANDOFF_SOURCE_COMMIT')=='592e08a5da9ece1083ffeea913686ae8ae01728b'
+assert os.environ.get('HANDOFF_ARTIFACT_ID')=='13886309184'
 # Hard overall wall ceiling includes cleanup; reserve25seconds for teardown.
 signal.signal(signal.SIGALRM,lambda *_:os._exit(124))
 signal.alarm(240)
