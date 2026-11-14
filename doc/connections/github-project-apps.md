@@ -52,7 +52,9 @@ These safeguards cover the reviewed Codex/Claude materialization and asset-trans
 
 ## Existing Paperclip UI
 
-Open **Agent → Tools → GitHub identity** to see the assigned App role, verified bot, status, and effective authority. An instance administrator with connection-management permission can open **Manage GitHub App** there. **Secrets → Controller signing keys** opens the same controls and shows encrypted storage and pinned versions.
+The upstream Refine-v2 agent layout deliberately removed Tools from the sidebar. The App identity entry point uses its replacement, Allowed connectors. The existing Tools URL remains compatible; no Tools navigation item is restored.
+
+Open **Agent → Permissions / Trust → Allowed connectors → GitHub identity** to see the assigned App role, verified bot, status, and effective authority. An instance administrator with connection-management permission can open **Manage GitHub App** there. **Secrets → Controller signing keys** opens the same controls and shows encrypted storage and pinned versions.
 
 The dialog supports explicit access verification, role assignment, issuance pause/resume, prepared-file migration and cleanup, write-only replacement-key validation/rotation, and verification/activation of a retained encrypted version. Assignment and issuance changes require a review and confirmation. Key/version and migration changes have separate confirmations. Stale revisions, active affected runs, permission drift, or failed verification refuse the change. Former role agents remain blocked from personal fallback until explicitly released. Pausing retains managed identity selection and prevents new credentials; it does not revoke a token already delivered.
 

@@ -114,6 +114,34 @@ export function GitHubProjectAppManager({ companyId, agentId, label = "Manage Gi
   </>;
 }
 
+export function AgentGitHubAppIdentity({ companyId, agentId }: { companyId: string; agentId: string }) {
+  const query = useGitHubProjectApps(companyId);
+  if (query.isPending) return <p role="status" className="text-xs text-muted-foreground">Checking GitHub App identity…</p>;
+  if (query.isError) return <div className="flex flex-col gap-2">
+    <p role="alert" className="text-xs text-destructive">Could not load GitHub App identity. Existing access is unchanged.</p>
+    <Button variant="outline" size="sm" onClick={() => void query.refetch()}>Retry GitHub App status</Button>
+  </div>;
+  const data = query.data;
+  if (!data?.available) return null;
+  const current = data.roles.find(row => row.agentId === agentId);
+  const blocked = data.blockedAgentIds.includes(agentId);
+  if (!current && !blocked && !data.canManage) return null;
+  const paused = blocked || (Boolean(current) && !data.enabled);
+  return <section aria-label="GitHub identity" className="flex min-w-0 flex-col gap-2">
+    <h4 className="text-sm font-medium">GitHub identity</h4>
+    {paused ? <>
+      <p className="text-sm">Managed GitHub access paused</p>
+      <p className="text-xs text-muted-foreground">New project tokens are blocked. Personal GitHub credentials are not substituted.</p>
+    </> : current ? <>
+      <p className="text-sm break-words">{current.role} GitHub App{current.login ? ` · ${current.login}` : ""}</p>
+      <p className="text-xs text-muted-foreground">{current.status}. {current.role === "coordinator" ? "Creates and enrolls project repositories. Its token stays on the controller." : "Uses short-lived tokens limited to the current project repository."}</p>
+    </> : <p className="text-xs text-muted-foreground">No GitHub App role is assigned to this agent.</p>}
+    {data.canManage ? <GitHubProjectAppManager companyId={companyId} agentId={agentId} label={current || blocked ? "Manage GitHub App" : "Use a GitHub App"} />
+      : <p className="text-xs text-muted-foreground">Managed by an administrator</p>}
+  </section>;
+}
+
+
 export function ControllerSigningKeysSection({ companyId }: { companyId: string }) {
   const query = useGitHubProjectApps(companyId);
   if (!query.data?.available || !query.data.canManage) return null;

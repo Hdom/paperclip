@@ -35,4 +35,4 @@ test(resolve(root, "server"), ["src/__tests__/heartbeat-plugin-environment.test.
 test(root, ["packages/db/src/worker-supervision-upgrade.test.ts"]);
 test(root, ["packages/adapter-utils/src/controller-source-protection.test.ts", "packages/adapter-utils/src/controller-source-materialization.test.ts",
   "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"]);
-test(root, ["ui/src/pages/AgentToolsTab.test.tsx", "ui/src/components/GitHubProjectAppControls.test.tsx"]);
+test(root, ["ui/src/pages/AgentToolsTab.test.tsx", "ui/src/components/GitHubProjectAppControls.test.tsx", "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx", "ui/src/components/AgentContextualSidebar.test.tsx", "ui/src/pages/agent-detail-navigation.test.ts"]);
