@@ -21,6 +21,10 @@ class Safety(unittest.TestCase):
   for prompted in [True,False]:
    channel=Channel(prompted);code,out,err=transport.collect(channel,'PRIVATE_CANARY','PROMPT','READY',1)
    self.assertEqual(code,0);self.assertEqual(out,b'public-result');self.assertNotIn(b'PRIVATE_CANARY',out+err);self.assertEqual(channel.sent,[b'PRIVATE_CANARY\n'] if prompted else []);self.assertTrue(channel.closed)
+ def test_guest_readiness_prevents_late_prompt_from_receiving_password(self):
+  channel=Channel(False);channel.stderr=b'PROMPT'
+  code,out,err=transport.collect(channel,'PRIVATE_CANARY','PROMPT','READY',1)
+  self.assertEqual(code,0);self.assertEqual(channel.sent,[]);self.assertNotIn(b'PRIVATE_CANARY',out+err)
  def test_desktop_transport_restricts_scope_and_preserves_literal_arguments(self):
   for guest,args in [(112,['/bin/true']),(999,['/bin/true']),(113,['relative']),(124,['/bin/evil\n'])]:
    with self.assertRaises(ValueError):transport.build_command(guest,args,'PROMPT','READY')

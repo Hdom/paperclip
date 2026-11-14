@@ -16,10 +16,10 @@ def collect(channel,password,prompt,ready,timeout=90):
   if channel.recv_ready():stdout.extend(channel.recv(65536))
   if channel.recv_stderr_ready():stderr.extend(channel.recv_stderr(65536))
   if len(stdout)>2_000_000 or len(stderr)>2_000_000:raise RuntimeError('Operator output limit exceeded')
-  if not sent and prompt.encode() in stderr:
-   channel.sendall((password+'\n').encode());sent=True
   if not started and ready.encode() in stdout:
    channel.shutdown_write();started=True
+  if not sent and not started and prompt.encode() in stderr:
+   channel.sendall((password+'\n').encode());sent=True
   if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
    code=channel.recv_exit_status()
    if not started:raise RuntimeError('Approved guest command did not start')
