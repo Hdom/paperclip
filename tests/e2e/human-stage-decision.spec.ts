@@ -31,16 +31,21 @@ for (const mobile of [false, true]) {
     await json(await request.patch(`/api/issues/${issue.id}`, { data: { status: "in_review", comment: "Ready for human approval." } }));
     await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
     await expect(page.getByText(issue.title, { exact: true }).first()).toBeVisible();
-    const properties = page.getByRole("tab", { name: "Properties", exact: true });
+    // Current task detail opens with its sidebar collapsed. Open the saved
+    // plan through the user's entry point before switching to Properties.
+    await page.getByRole("link", { name: /^Open Plan revision 1(?: in task sidebar)?$/ }).click();
+    await expect(page.getByRole("tabpanel", { name: "Fixture plan", exact: true })).toBeVisible();
+    await expect(page.getByText("Exact revision one: local browser fixture only.", { exact: true })).toBeVisible();
     const openDecision = async () => {
       const dismiss = page.getByRole("button", { name: "Dismiss announcement" });
       if (await dismiss.isVisible()) await dismiss.click();
       if (mobile) {
         const closePanel = page.getByRole("button", { name: "Close side panel", exact: true });
         if (await closePanel.isVisible()) await closePanel.click();
-        await page.getByRole("button", { name: "Change status (current: In Review)", exact: true }).click();
-        await page.getByRole("button", { name: /^Done(?: Done)?$/ }).click();
-      } else if (await properties.count()) await properties.last().click();
+        await expect(page.getByRole("dialog", { name: "Task side panel", exact: true })).not.toBeVisible();
+      }
+      await page.getByRole("button", { name: "Change status (current: In Review)", exact: true }).first().click();
+      await page.getByRole("button", { name: /^Done(?: Done)?$/ }).click();
     };
     await openDecision();
     const note = page.getByRole("textbox", { name: "Decision note", exact: true }).locator("visible=true");
@@ -52,7 +57,7 @@ for (const mobile of [false, true]) {
       await page.getByRole("button", { name: "Switch tabs, 2 open", exact: true }).click();
       await page.getByRole("button", { name: "Fixture plan", exact: true }).click();
       await page.getByRole("button", { name: "Close side panel", exact: true }).click();
-      await page.getByRole("link", { name: "Open Plan revision 1", exact: true }).click();
+      await page.getByRole("link", { name: /^Open Plan revision 1(?: in task sidebar)?$/ }).click();
       await expect(page.getByRole("tabpanel", { name: "Fixture plan", exact: true })).toBeVisible();
       await expect(note).toHaveCount(0);
       await page.getByRole("button", { name: "Close side panel", exact: true }).click();
