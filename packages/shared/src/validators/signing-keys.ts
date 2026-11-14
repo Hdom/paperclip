@@ -7,4 +7,3 @@ export const signingKeyCreateSchema = confirmation.extend({ name: z.string().tri
 export const signingKeyRotateSchema = confirmation.extend({ ...expected, privateKey: z.string().min(1).max(16384) }).strict();
 export const signingKeyUpdateSchema = confirmation.extend({ ...expected, name: z.string().trim().min(1).max(200).optional(),
   description: z.string().max(4000).nullable().optional(), status: z.enum(["active", "disabled", "archived"]).optional() }).strict();
-

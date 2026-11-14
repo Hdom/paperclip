@@ -66,7 +66,7 @@ for (const mobile of [false, true]) {
     await expect(page.getByText("Managed GitHub access paused", { exact: true })).toBeVisible();
     await expect(page.getByText("Connect my GitHub", { exact: true })).toHaveCount(0);
     await page.goto(`/${company.issuePrefix}/company/settings/secrets`);
-    if (mobile) await page.getByLabel("Page section", { exact: true }).selectOption("signing-keys");
+    if (mobile) await page.getByLabel("Secrets section", { exact: true }).selectOption("signing-keys");
     else await page.getByRole("tab", { name: "Signing keys", exact: true }).click();
     await expect(page.getByRole("table")).toBeVisible();
     await page.getByRole("button", { name: "GitHub App implementer signing key", exact: true }).click();
