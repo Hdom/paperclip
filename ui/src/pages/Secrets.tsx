@@ -2350,7 +2350,7 @@ export function Secrets() {
               <Tabs value={secretDetailTab} onValueChange={setSecretDetailTab} className="flex-1 min-h-0 flex flex-col">
                 <div className="border-b border-border px-4">
                   <PageTabBar
-          ariaLabel="Secrets section"
+                    ariaLabel="Secret details section"
                     items={[
                       { value: "details", label: "Details" },
                       { value: "usage", label: usageQuery.data ? `Usage (${usageQuery.data.bindings.length})` : "Usage" },
@@ -2489,7 +2489,7 @@ export function Secrets() {
               <Tabs value={secretDetailTab} onValueChange={setSecretDetailTab} className="flex-1 min-h-0 flex flex-col">
                 <div className="border-b border-border px-4">
                   <PageTabBar
-          ariaLabel="Secrets section"
+                    ariaLabel="Secret definition section"
                     items={[
                       { value: "details", label: "Details" },
                       { value: "coverage", label: "Coverage" },
