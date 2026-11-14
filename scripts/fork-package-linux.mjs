@@ -2,15 +2,16 @@
 // Fork-only native payload packaging. Requires a clean, already built and
 // typechecked source checkout. Never activates an install or publishes packages.
 import fs from 'node:fs';
+import { preparePackageCache } from './fork-package-cache.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 
-const [sourceArg, outputArg, sha] = process.argv.slice(2);
-if (!sourceArg || !outputArg || !/^[a-f0-9]{40}$/.test(sha ?? '')) {
-  throw new Error('Usage: node fork-package-linux.mjs SOURCE_CHECKOUT EMPTY_OUTPUT_DIR FULL_SOURCE_SHA');
+const [sourceArg, outputArg, sha, npmCacheArg, ...unexpected] = process.argv.slice(2);
+if (!sourceArg || !outputArg || unexpected.length || !/^[a-f0-9]{40}$/.test(sha ?? '')) {
+  throw new Error('Usage: node fork-package-linux.mjs SOURCE_CHECKOUT EMPTY_OUTPUT_DIR FULL_SOURCE_SHA [PUBLIC_NPM_CACHE_DIR]');
 }
 if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x64 only');
 const source = fs.realpathSync(sourceArg);
@@ -129,7 +130,7 @@ const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'paperclip-fork-package-')
 // This is hygiene, not an OS sandbox: run only reviewed sources/dependencies.
 env.HOME = path.join(staging, 'home');
 fs.mkdirSync(env.HOME);
-env.npm_config_cache = path.join(staging, 'npm-cache');
+env.npm_config_cache = npmCacheArg ? preparePackageCache(npmCacheArg, source, output) : path.join(staging, 'npm-cache');
 const packs = path.join(staging, 'packages');
 const payload = path.join(staging, 'payload');
 fs.mkdirSync(packs);

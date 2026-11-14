@@ -1,18 +1,25 @@
+import { runQualificationTasks } from "./fork-qualification-pool.mjs";
 // Exact-source qualification. Each server suite has a fresh process so large
 // native module graphs do not accumulate across unrelated test files.
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const env = { ...process.env };
 delete env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL;
 const vitest = resolve(root, "node_modules/vitest/vitest.mjs");
-function test(cwd, files, extra = []) {
+const tasks = [];
+function test(cwd, files, extra = []) { tasks.push({ cwd, files, extra }); }
+function execute({ cwd, files, extra }) {
   console.log(`Qualifying ${files.join(", ")}`);
-  const result = spawnSync(process.execPath, [vitest, "run", "--silent", "--maxWorkers=1", "--testTimeout=60000", ...extra, ...files],
-    { cwd, env, stdio: "inherit", timeout: 10 * 60 * 1000 });
-  if (result.error || result.status !== 0) throw new Error(`Qualification failed: ${files.join(", ")} (${result.status ?? result.signal ?? "process error"})`);
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [vitest, "run", "--silent", "--maxWorkers=1", "--testTimeout=60000", ...extra, ...files],
+      { cwd, env, stdio: "inherit", timeout: 10 * 60 * 1000 });
+    child.once("error", reject);
+    child.once("close", (status, signal) => status === 0 ? resolve() : reject(new Error(`Qualification failed: ${files.join(", ")} (${status ?? signal ?? "process error"})`)));
+  });
 }
+
 for (const file of [
   "src/services/heartbeat/retries.test.ts", "src/services/heartbeat/run-completion.test.ts",
   "src/__tests__/heartbeat-task-context.test.ts", "src/__tests__/issue-scheduled-retry-routes.test.ts",
@@ -36,3 +43,15 @@ test(root, ["packages/db/src/worker-supervision-upgrade.test.ts"]);
 test(root, ["packages/adapter-utils/src/controller-source-protection.test.ts", "packages/adapter-utils/src/controller-source-materialization.test.ts",
   "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"]);
 test(root, ["ui/src/pages/AgentToolsTab.test.tsx", "ui/src/pages/secrets/SigningKeysTab.test.tsx", "ui/src/components/GitHubProjectAppControls.test.tsx", "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx", "ui/src/components/AgentContextualSidebar.test.tsx", "ui/src/pages/agent-detail-navigation.test.ts"]);
+
+
+// Preserve the baseline inventory plus explicitly reviewed signing-key suites.
+// Only scheduling changes; every suite retains a fresh process and serial cases.
+if (process.argv.includes("--list")) {
+  console.log(JSON.stringify(tasks.map(task => ({ ...task, cwd: task.cwd === root ? "." : task.cwd.slice(root.length + 1) }))));
+  process.exit(0);
+}
+const results = await runQualificationTasks(tasks, execute, 2);
+for (const result of results) console.log(JSON.stringify({ files: tasks[result.index].files, ok: result.ok, durationMs: result.durationMs }));
+const failures = results.filter(result => !result.ok);
+if (failures.length) throw new AggregateError(failures.map(result => result.error), `${failures.length} qualification tasks failed; every task was attempted`);
