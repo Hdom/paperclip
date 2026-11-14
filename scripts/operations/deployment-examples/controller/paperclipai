@@ -1,0 +1,5 @@
+#!/bin/sh
+# paperclipai managed install shim v1
+set -eu
+export PATH='/usr/bin':"${PATH:-/usr/local/bin:/usr/bin:/bin}"
+exec '/usr/bin/node' '/opt/paperclip-data/cli/current/node_modules/paperclipai/dist/index.js' "$@"

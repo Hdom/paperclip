@@ -1,0 +1,21 @@
+[Unit]
+Description=Paperclip
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=paperclip
+Group=paperclip
+WorkingDirectory=/opt/paperclip-data
+EnvironmentFile=/etc/paperclip/paperclip.env
+Environment=HOME=/home/paperclip
+Environment=CODEX_HOME=/home/paperclip/.codex
+Environment=PATH=/home/paperclip/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DISABLE_AUTOUPDATER=1
+ExecStart=/home/paperclip/.local/bin/paperclipai run --no-repair
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
