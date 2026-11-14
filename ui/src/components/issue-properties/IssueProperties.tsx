@@ -1,5 +1,6 @@
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { isLockedIssueStub } from "@/components/LockedIssueChip";
+import { MarkdownBody } from "../MarkdownBody";
 import { IssuePullRequestLinks } from "../IssuePullRequestLinks";
 import { useIssueWorkProducts } from "../../hooks/useIssueWorkProducts";
 import { getIssuePullRequests, pullRequestHref, pullRequestIdentity } from "../../lib/issue-pull-requests";
@@ -49,7 +50,7 @@ import {
 import { getRecentProjectIds } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
-import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
+import { buildExecutionPolicy, stageDecisionKey, stageParticipantValues } from "../../lib/issue-execution-policy";
 import { useExecutionPolicy } from "../../hooks/useExecutionPolicy";
 import {
   areAutomaticMonitorChecksPaused,
@@ -202,7 +203,8 @@ interface IssuePropertiesProps {
   childIssues?: Issue[];
   issueLinkState?: unknown;
   onAddSubIssue?: () => void;
-  onUpdate: (data: Record<string, unknown>) => void;
+  /** Resolves to false when the update fails; hosts may also return nothing. */
+  onUpdate: (data: Record<string, unknown>) => void | Promise<boolean>;
   inline?: boolean;
   /** Whether an agent run is currently in flight on this issue, so the assignee
    * picker can warn that reassigning will interrupt it. */
@@ -214,6 +216,8 @@ interface IssuePropertiesProps {
   onCheckMonitorNow?: () => void;
   checkingMonitorNow?: boolean;
   documentDeepLink?: IssuePropertiesDocumentDeepLink | null;
+  stageDecisionRequestId?: number;
+  onStageDecisionOpened?: (requestId: number) => void;
   /** Render only the Properties body when a parent owns the side-panel tabs. */
   sidePanelContentOnly?: boolean;
   /** Overrides the fetched Context row (Storybook fixtures); null hides it. */
@@ -255,6 +259,8 @@ export function IssueProperties({
   onCheckMonitorNow,
   checkingMonitorNow = false,
   documentDeepLink,
+  stageDecisionRequestId,
+  onStageDecisionOpened,
   sidePanelContentOnly = false,
   contextUsage,
 }: IssuePropertiesProps) {
@@ -301,8 +307,8 @@ export function IssueProperties({
   }, [taskChatShellEnabled, inline]);
   // A Plan tab represents materialized plan content, not merely planning mode.
   // Same query keys as the tab bodies, so these share their cached fetches.
-  const { data: paneTabPlanDocument } = useIssuePlanDocument(
-    taskChatShellEnabled ? issue.id : null,
+  const { data: paneTabPlanDocument, isPending: planPending, isError: planError, isFetching: planFetching } = useIssuePlanDocument(
+    taskChatShellEnabled || issue.executionState?.status === "pending" ? issue.id : null,
   );
   const { data: paneTabAcceptedPlans } = useQuery({
     queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
@@ -1110,6 +1116,69 @@ export function IssueProperties({
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
+  // The server records a stage decision only when the status change and the
+  // decision comment arrive in the same PATCH, so the decision needs its own
+  // controls instead of the status picker plus a separate thread comment.
+  const pendingStageKey = stageDecisionKey(issue.id, issue.executionState, currentUserId);
+  const expectedPlanRevisionId = paneTabPlanDocument?.latestRevisionId ?? null;
+  const decisionPlanReady = !planPending && !planError && !planFetching && typeof issue.statusVersion === "number";
+  const currentStageDecisionKey = pendingStageKey === null ? null
+    : `${pendingStageKey}:${issue.statusVersion}:${issue.executionState?.lastDecisionId ?? "none"}:${expectedPlanRevisionId ?? "no-plan"}`;
+  const pendingStageDecisionForCurrentUser = currentStageDecisionKey !== null;
+  const [stageDecisionNote, setStageDecisionNote] = useState("");
+  const stageDecisionNoteRef = useRef<HTMLTextAreaElement>(null);
+  // One decision per stage: a second submission could land after the stage
+  // advances, where the server treats this user as a board override and would
+  // complete the issue without the next participant.
+  const submittedStageDecisionKeyRef = useRef<string | null>(null);
+  const [submittedStageDecisionKey, setSubmittedStageDecisionKey] = useState<string | null>(null);
+  const stageDecisionSubmitting =
+    currentStageDecisionKey !== null && submittedStageDecisionKey === currentStageDecisionKey;
+  useEffect(() => {
+    // A new stage starts with an empty note. A failed submission keeps the key,
+    // so the note survives for a retry.
+    setStageDecisionNote("");
+    submittedStageDecisionKeyRef.current = null;
+    setSubmittedStageDecisionKey(null);
+  }, [currentStageDecisionKey]);
+  useEffect(() => {
+    if (stageDecisionRequestId === undefined) return;
+    paneTabUserChosenRef.current = true;
+    setPaneTab("properties");
+    // Consume only after the selected Properties content has mounted and the
+    // note actually received focus; clearing sooner can replace the panel.
+    const timer = window.setTimeout(() => {
+      const note = stageDecisionNoteRef.current;
+      if (!note || note.getClientRects().length === 0) return;
+      note.focus();
+      if (document.activeElement === note) onStageDecisionOpened?.(stageDecisionRequestId);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [stageDecisionRequestId, onStageDecisionOpened, pendingStageDecisionForCurrentUser]);
+  const submitStageDecision = (status: "done" | "in_progress") => {
+    const comment = stageDecisionNote.trim();
+    const key = currentStageDecisionKey;
+    if (!comment || !key || !decisionPlanReady || submittedStageDecisionKeyRef.current === key) return;
+    submittedStageDecisionKeyRef.current = key;
+    setSubmittedStageDecisionKey(key);
+    // Requesting changes must send exactly `in_progress`: other statuses from
+    // the participant clear the stage without recording a decision. The stage
+    // id makes the server reject the decision if the stage has since changed.
+    const expectedExecutionStageId = issue.executionState?.currentStageId;
+    void Promise.resolve().then<boolean | void>(() =>
+      onUpdate({ status, comment, expectedDecisionLastDecisionId: issue.executionState?.lastDecisionId ?? null, expectedDecisionStatusVersion: issue.statusVersion, expectedPlanRevisionId, ...(expectedExecutionStageId ? { expectedExecutionStageId } : {}) }),
+    ).then((result) => {
+      if (result === false && submittedStageDecisionKeyRef.current === key) {
+        submittedStageDecisionKeyRef.current = null;
+        setSubmittedStageDecisionKey(null);
+      }
+    }).catch(() => {
+      if (submittedStageDecisionKeyRef.current === key) {
+        submittedStageDecisionKeyRef.current = null;
+        setSubmittedStageDecisionKey(null);
+      }
+    });
+  };
   useEffect(() => {
     setMonitorAtInput(toDateTimeLocalValue(executionPolicy?.monitor?.nextCheckAt));
     setMonitorNotesInput(executionPolicy?.monitor?.notes ?? "");
@@ -2370,7 +2439,13 @@ export function IssueProperties({
             {...taskStatusIconProps(issue)}
             glyphContainerClassName="inline-flex size-6 shrink-0 items-center justify-center"
             blockerAttention={issue.blockerAttention}
-            onChange={(status) => onUpdate({ status })}
+            onChange={(status) => {
+              if (status === "done" && pendingStageDecisionForCurrentUser) {
+                stageDecisionNoteRef.current?.focus();
+                return;
+              }
+              onUpdate({ status });
+            }}
             showLabel
           />
         </PropertyRow>
@@ -2712,6 +2787,58 @@ export function IssueProperties({
             <span className="text-sm truncate min-w-0" title={currentExecutionLabel}>{currentExecutionLabel}</span>
           </PropertyRow>
         )}
+        {pendingStageDecisionForCurrentUser ? (
+          <div className="flex flex-col gap-2 py-1" data-testid="stage-decision">
+            <p className="text-xs text-muted-foreground" role="status">
+              {planError ? "Unable to load the plan. Reload the task before deciding."
+                : !decisionPlanReady ? "Loading the current plan…"
+                : paneTabPlanDocument ? `Decision applies to plan revision ${paneTabPlanDocument.latestRevisionNumber}.`
+                : "No plan document is attached to this task."}
+            </p>
+            {paneTabPlanDocument && decisionPlanReady ? (
+              <details key={expectedPlanRevisionId} className="text-sm">
+                <summary className="cursor-pointer">Read plan revision {paneTabPlanDocument.latestRevisionNumber}</summary>
+                <MarkdownBody>{paneTabPlanDocument.body}</MarkdownBody>
+              </details>
+            ) : null}
+            <Textarea
+              ref={stageDecisionNoteRef}
+              value={stageDecisionNote}
+              onChange={(event) => setStageDecisionNote(event.target.value)}
+              placeholder="Decision note (required)"
+              aria-label="Decision note"
+              className="min-h-16 text-sm"
+              disabled={stageDecisionSubmitting}
+              data-stage-decision-note=""
+              data-testid="stage-decision-note"
+            />
+            <div className="flex flex-wrap justify-end gap-2">
+              {issue.executionState?.returnAssignee ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!stageDecisionNote.trim() || stageDecisionSubmitting || !decisionPlanReady}
+                  title={stageDecisionNote.trim() ? undefined : "Add a decision note first"}
+                  onClick={() => submitStageDecision("in_progress")}
+                  data-testid="stage-decision-request-changes"
+                >
+                  Request changes
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                disabled={!stageDecisionNote.trim() || stageDecisionSubmitting || !decisionPlanReady}
+                title={stageDecisionNote.trim() ? undefined : "Add a decision note first"}
+                onClick={() => submitStageDecision("done")}
+                data-testid="stage-decision-approve"
+              >
+                Approve
+              </Button>
+            </div>
+          </div>
+        ) : null}
 
         {showScheduledRetryRow && scheduledRetry?.scheduledRetryReason === "workspace_busy" ? (
           <PropertyRow label="Workspace">
@@ -3182,6 +3309,7 @@ export function IssueProperties({
           <TabsTrigger
             key={codexStylePaneTabs ? undefined : tab.value}
             value={tab.value}
+            data-stage-decision-properties-tab={tab.value === "properties" ? "" : undefined}
             className={cn(
               paneTabTriggerClass,
               codexStylePaneTabs && "mx-1.5 hover:bg-accent/50 group-focus-within/pane-tab:bg-accent/50",

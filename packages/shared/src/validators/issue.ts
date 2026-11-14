@@ -1023,6 +1023,11 @@ export const updateIssueSchema = objectWithoutDefaults(
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),
     onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
     reviewInteractionId: z.string().guid().optional(),
+    /** Compare-and-set preconditions for an explicit stage decision. */
+    expectedExecutionStageId: z.string().guid().optional(),
+    expectedDecisionStatusVersion: z.number().int().nonnegative().optional(),
+    expectedDecisionLastDecisionId: z.string().guid().nullable().optional(),
+    expectedPlanRevisionId: z.string().guid().nullable().optional(),
     reviewRequest: issueReviewRequestSchema.optional().nullable(),
     reopen: z.boolean().optional(),
     resume: z.boolean().optional(),

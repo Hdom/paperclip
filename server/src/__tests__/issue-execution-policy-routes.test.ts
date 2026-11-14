@@ -405,6 +405,79 @@ describe("issue execution policy routes", () => {
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
+  function guardedApprovalFixture() {
+    const policy = normalizeIssueExecutionPolicy({ stages: [{ type: "approval", participants: [{ type: "user", userId: "local-board" }] }] })!;
+    const state = { status: "pending", currentStageId: policy.stages[0].id, currentStageType: "approval", currentStageIndex: 0,
+      currentParticipant: { type: "user", userId: "local-board" }, returnAssignee: null, completedStageIds: [],
+      lastDecisionId: null, lastDecisionOutcome: null, changesRequestedCount: 0 };
+    const issue = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", status: "in_review", statusVersion: 1,
+      reviewPolicy: "anyone", assigneeAgentId: null, assigneeUserId: "local-board", createdByUserId: "local-board",
+      identifier: "PAP-1002", title: "Approval", executionPolicy: policy, executionState: state };
+    const body = { status: "done", comment: "Approved", expectedExecutionStageId: policy.stages[0].id,
+      expectedDecisionStatusVersion: 1, expectedDecisionLastDecisionId: null, expectedPlanRevisionId: null };
+    return { issue, body };
+  }
+  it("rejects a mixed guarded decision before loading or mutating the issue", async () => {
+    const { body } = guardedApprovalFixture();
+    const res = await request(await createApp()).patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ ...body, visibility: "private" });
+    expect(res.status).toBe(422);
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+  it("rejects a guarded decision after the participant changes under the transaction lock", async () => {
+    const { issue, body } = guardedApprovalFixture();
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({ ...issue, executionState: {
+      ...issue.executionState, currentParticipant: { type: "user", userId: "another-user" },
+    } });
+    const res = await request(await createApp()).patch(`/api/issues/${issue.id}`).send(body);
+    expect(res.status).toBe(409);
+    expect(res.body.details.code).toBe("stage_decision_changed");
+    expect(mockDb.transaction).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+  it("rejects a changed plan before update or audit", async () => {
+    const { issue, body } = guardedApprovalFixture();
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockDb.transaction.mockImplementationOnce(async callback => callback({ select: () => ({ from: () => ({ innerJoin: () => ({ where: async () => [{ revisionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }] }) }) }) } as any));
+    const res = await request(await createApp()).patch(`/api/issues/${issue.id}`).send(body);
+    expect(res.status).toBe(409);
+    expect(res.body.details.code).toBe("stage_decision_plan_changed");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+  it("records the guarded plan revision in the decision transaction and rejects a replay", async () => {
+    const { issue, body } = guardedApprovalFixture();
+    const revisionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({ id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", body: "Approved", createdAt: new Date() });
+    const insertValues = vi.fn(async () => undefined);
+    const tx = { select: () => ({ from: () => ({ innerJoin: () => ({ where: async () => [{ revisionId }] }) }) }), insert: () => ({ values: insertValues }) };
+    mockDb.transaction.mockImplementationOnce(async callback => callback(tx as any));
+    mockIssueService.update.mockImplementation(async (_id, patch) => ({ ...issue, ...patch, changes: {}, updatedAt: new Date() }));
+    const res = await request(await createApp()).patch(`/api/issues/${issue.id}`).send({ ...body, expectedPlanRevisionId: revisionId });
+    expect(res.body.error).toBeUndefined();
+    expect(res.status).toBe(200);
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ outcome: "approved", stageId: body.expectedExecutionStageId }));
+    expect(mockLogActivity).toHaveBeenCalledWith(tx, expect.objectContaining({ action: "issue.execution_decision",
+      details: expect.objectContaining({ planRevisionId: revisionId, outcome: "approved" }) }), expect.any(Array));
+    mockIssueService.getById.mockResolvedValue({ ...issue, status: "done", statusVersion: 2 });
+    mockIssueService.update.mockClear();
+    const repeated = await request(await createApp()).patch(`/api/issues/${issue.id}`).send({ ...body, expectedPlanRevisionId: revisionId });
+    expect(repeated.status).toBe(409);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale guarded decision rather than treating it as a board override", async () => {
+    const { issue, body } = guardedApprovalFixture();
+    mockIssueService.getById.mockResolvedValue({ ...issue, executionState: { ...issue.executionState, status: "completed" } });
+    const res = await request(await createApp()).patch(`/api/issues/${issue.id}`).send(body);
+    expect(res.status).toBe(409);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

@@ -132,6 +132,8 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
+**Pending native review checkout.** Checkout by the active agent reviewer or approver acquires the run lease without leaving `in_review` or changing the current execution stage. Read back the stage, participant, return assignee and saved revision before deciding. If the stage belongs to another agent or a human, stop; checkout does not confer their approval authority. If the status or stage is inconsistent, report it rather than skipping checkout or repairing the gate yourself.
+
 **Name provisional tasks early.** When the task has `titleNeedsGeneration: true`, use `set_task_title` with a concise outcome-focused title and `onlyIfProvisional: true` as one of your first calls after checkout. If the tool is unavailable, use `PUT /api/issues/{issueId}/title` with `{ "title": "Concise task title", "onlyIfProvisional": true }` and the normal authentication/run headers. This metadata update is allowed in Ask and Plan modes. Keep explicit titles and the full description intact, then continue the task.
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.

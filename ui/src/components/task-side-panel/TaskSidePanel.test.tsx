@@ -785,6 +785,26 @@ describe("TaskSidePanel", () => {
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Plan");
   });
 
+  it.each([false, true])("selects Properties for an explicit decision request even when a plan is open (mobile=%s)", async (mobile) => {
+    fixture.plan = issueDocument("plan", "Plan");
+    fixture.documents = [fixture.plan];
+    await render(panel({ mobile }));
+    expect(container.textContent).toContain("Plan content");
+    await render(panel({ mobile, stageDecisionRequestId: 1 }));
+    expect(container.textContent).toContain("Properties content");
+    expect(container.textContent).not.toContain("Plan content");
+    fixture.plan = { ...fixture.plan, latestRevisionId: "new-revision" };
+    await render(panel({ mobile, stageDecisionRequestId: 1 }));
+    expect(container.textContent).toContain("Properties content");
+    // Once the host consumes the request, later navigation and remounts must
+    // respect the user's selected document rather than replay the old Done.
+    await render(panel({ mobile, documentDeepLink: { requestId: 2, documentKey: "plan" } }));
+    expect(container.textContent).toContain("Plan content");
+    await render(<></>);
+    await render(panel({ mobile }));
+    expect(container.textContent).toContain("Plan content");
+  });
+
   it("opens a plan deep link without looping while document metadata loads", async () => {
     fixture.documents = undefined;
     fixture.plan = undefined;

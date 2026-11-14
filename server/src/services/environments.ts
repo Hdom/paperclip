@@ -6,6 +6,7 @@ import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cl
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
 import { withEnvironmentLeaseController } from "./environment-lease-controller.js";
 import { randomUUID } from "node:crypto";
@@ -1794,6 +1795,7 @@ export function environmentService(db: Db) {
             .where(and(eq(sandboxCreationOperations.id, previous.creationOperationId), eq(sandboxCreationOperations.companyId, previous.companyId),
               eq(sandboxCreationOperations.leaseId, id), eq(sandboxCreationOperations.state, "cleanup_pending")));
         }
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionHandoff);
         const released = await tx.update(environmentLeases)
         .set({
           status,

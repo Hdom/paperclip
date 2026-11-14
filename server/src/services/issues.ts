@@ -214,6 +214,7 @@ import {
   applyIssueExecutionPolicyTransition,
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
 } from "./issue-execution-policy.js";
 import { assertQualityReviewPolicyMutation, assertQualityReviewPolicyReuse, assertRequiredQualityReviewComplete, requiredQualityReview } from "./required-quality-review.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -12538,7 +12539,14 @@ export function issueService(db: Db) {
       checkoutRunId: string | null,
     ) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+        })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
@@ -12546,6 +12554,34 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueCompany.companyId, agentId, {
         kind: "work",
       });
+
+      // Checkout acquires a lease; it must not turn a pending native review
+      // into implementation work or replace a human gate with an agent.
+      const pendingGate = parseObject(issueCompany.executionState).status === "pending";
+      if (pendingGate) {
+        const state = parseIssueExecutionState(issueCompany.executionState);
+        const policy = normalizeIssueExecutionPolicy(issueCompany.executionPolicy);
+        const stage = policy?.stages.find((candidate) => candidate.id === state?.currentStageId);
+        if (
+          issueCompany.status !== "in_review" ||
+          state?.currentParticipant?.type !== "agent" ||
+          state.currentParticipant.agentId !== agentId ||
+          issueCompany.assigneeAgentId !== agentId ||
+          issueCompany.assigneeUserId != null ||
+          !stage || stage.type !== state.currentStageType ||
+          !stage.participants.some((participant) => participant.type === "agent" && participant.agentId === agentId)
+        ) {
+          throw conflict("Only the active agent reviewer or approver can check out a pending execution stage");
+        }
+      }
+      const checkoutStatus = pendingGate ? "in_review" : "in_progress";
+      // Compare the policy and stage in the write itself: a concurrent human
+      // handoff or policy edit must invalidate this checkout's authority.
+      const stageSnapshotCondition = and(
+        issueCompany.executionPolicy == null ? isNull(issues.executionPolicy) : eq(issues.executionPolicy, issueCompany.executionPolicy),
+        issueCompany.executionState == null ? isNull(issues.executionState) : eq(issues.executionState, issueCompany.executionState),
+        pendingGate ? eq(issues.status, "in_review") : undefined,
+      );
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
@@ -12634,13 +12670,14 @@ export function issueService(db: Db) {
             assigneeUserId: null,
             checkoutRunId,
             executionRunId: checkoutRunId,
-            status: "in_progress",
-            startedAt: now,
+            status: checkoutStatus,
+            startedAt: pendingGate ? issues.startedAt : now,
             updatedAt: now,
           })
           .where(
             and(
               eq(issues.id, id),
+                  stageSnapshotCondition,
               inArray(issues.status, expectedStatuses),
               or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
               executionLockCondition,
@@ -12664,14 +12701,15 @@ export function issueService(db: Db) {
           executionRunId: issues.executionRunId,
         })
         .from(issues)
-        .where(eq(issues.id, id))
+        .where(and(eq(issues.id, id), stageSnapshotCondition))
         .then((rows) => rows[0] ?? null);
 
-      if (!current) throw notFound("Issue not found");
+      if (!current) throw conflict("Issue execution stage changed during checkout");
 
       if (
         current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
+        current.status === checkoutStatus &&
+        (!pendingGate || expectedStatuses.includes(current.status)) &&
         current.checkoutRunId == null &&
         (current.executionRunId == null ||
           current.executionRunId === checkoutRunId) &&
@@ -12689,7 +12727,8 @@ export function issueService(db: Db) {
           .where(
             and(
               eq(issues.id, id),
-              eq(issues.status, "in_progress"),
+              stageSnapshotCondition,
+              eq(issues.status, checkoutStatus),
               eq(issues.assigneeAgentId, agentId),
               isNull(issues.checkoutRunId),
               or(
@@ -12705,9 +12744,10 @@ export function issueService(db: Db) {
       }
 
       if (
+        !pendingGate &&
         checkoutRunId &&
         current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
+        current.status === checkoutStatus &&
         current.checkoutRunId &&
         current.checkoutRunId !== checkoutRunId
       ) {
@@ -12721,9 +12761,9 @@ export function issueService(db: Db) {
           const row = await db
             .select()
             .from(issues)
-            .where(eq(issues.id, id))
+            .where(and(eq(issues.id, id), stageSnapshotCondition))
             .then((rows) => rows[0] ?? null);
-          if (!row) throw notFound("Issue not found");
+          if (!row) throw conflict("Issue execution stage changed during checkout");
           const [enriched] = await withIssueLabels(db, [row]);
           return enriched;
         }
@@ -12749,10 +12789,10 @@ export function issueService(db: Db) {
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,
             executionLockedAt: now,
-            status: "in_progress",
+            status: checkoutStatus,
             updatedAt: now,
           };
-          if (current.status !== "in_progress") {
+          if (!pendingGate && current.status !== "in_progress") {
             adoptionSet.startedAt = now;
           }
           const staleExecutionRunId = current.executionRunId;
@@ -12774,6 +12814,7 @@ export function issueService(db: Db) {
               .where(
                 and(
                   eq(issues.id, id),
+                  stageSnapshotCondition,
                   inArray(issues.status, expectedStatuses),
                   eq(issues.executionRunId, staleExecutionRunId),
                   or(
@@ -12792,18 +12833,18 @@ export function issueService(db: Db) {
         }
       }
 
-      // If this run already owns it and it's in_progress, return it (no self-409)
+      // A repeated checkout by the owning run retains the same work/review posture.
       if (
         current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
+        current.status === checkoutStatus &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
         const row = await db
           .select()
           .from(issues)
-          .where(eq(issues.id, id))
+          .where(and(eq(issues.id, id), stageSnapshotCondition))
           .then((rows) => rows[0] ?? null);
-        if (!row) throw notFound("Issue not found");
+        if (!row) throw conflict("Issue execution stage changed during checkout");
         const [enriched] = await withIssueLabels(db, [row]);
         return enriched;
       }

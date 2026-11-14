@@ -33,7 +33,7 @@ export interface UpdateIssueContext {
  * second comment or interrupt twice. Updates with any of these never resend
  * on their own.
  */
-const NON_REPLAYABLE_FIELDS = ["comment", "interrupt", "attachmentIds", "reopen"] as const;
+const NON_REPLAYABLE_FIELDS = ["comment", "interrupt", "attachmentIds", "reopen", "expectedExecutionStageId"] as const;
 
 /** True when sending this update twice has the same effect as once. */
 export function isReplayableIssueUpdate(data: Record<string, unknown>): boolean {
@@ -201,7 +201,8 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
         ...[...refs].map((ref) => queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(ref) })),
         ...(companyId ? [queryClient.cancelQueries({ queryKey: queryKeys.issues.list(companyId) })] : []),
       ]);
-      return { refs, rollback: applyOptimisticIssueUpdate(queryClient, companyId, refs, data) };
+      return { refs, rollback: data.expectedExecutionStageId === undefined
+        ? applyOptimisticIssueUpdate(queryClient, companyId, refs, data) : [] };
     },
     onSuccess: (result: IssueUpdateResponse, variables: UpdateIssueVariables) => {
       onSuccess?.(result, variables);

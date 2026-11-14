@@ -29,6 +29,7 @@ import { registerAutomaticCompletionReviewWork } from "./native-runtime/automati
 import { registerObsoletePolicyReviewWork } from "./native-runtime/obsolete-policy-reviews.js";
 import { registerCancelledWorkspacePreservationWork } from "./native-runtime/native-failed-workspace-recovery.js";
 import { readUpgradeReadiness } from "./heartbeat/upgrade-readiness.js";
+import { handoffWakeWork } from "./heartbeat/handoff-wake.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
@@ -4272,6 +4273,10 @@ export function heartbeatService(
   }
 
   return {
+    registerExecutionHandoffWork: (
+      coordinator: Parameters<ReturnType<typeof handoffWakeWork>["register"]>[0], canRun: () => boolean,
+    ) => handoffWakeWork(db, enqueueWakeup).register(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null),
     stopInvocationsForAgents,
     waitForRunExecutionDrain: async (
       runId: string,

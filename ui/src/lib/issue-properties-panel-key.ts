@@ -5,6 +5,7 @@ type IssuePropertiesPanelKeyIssue = Pick<
   | "id"
   | "status"
   | "displayStatus"
+  | "statusVersion"
   | "priority"
   | "assigneeAgentId"
   | "assigneeUserId"
@@ -38,6 +39,7 @@ export function buildIssuePropertiesPanelKey(
     id: issue.id,
     status: issue.status,
     displayStatus: issue.displayStatus,
+    statusVersion: issue.statusVersion,
     priority: issue.priority,
     assigneeAgentId: issue.assigneeAgentId,
     assigneeUserId: issue.assigneeUserId,
@@ -69,6 +71,10 @@ export function buildIssuePropertiesPanelKey(
     executionState: issue.executionState
       ? {
           status: issue.executionState.status,
+          // Consecutive stages can share a type and participant; the decision
+          // controls reset per stage.
+          currentStageId: issue.executionState.currentStageId,
+          lastDecisionId: issue.executionState.lastDecisionId,
           currentStageType: issue.executionState.currentStageType,
           currentParticipant: issue.executionState.currentParticipant,
           returnAssignee: issue.executionState.returnAssignee,

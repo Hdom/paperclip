@@ -106,6 +106,20 @@ describe("useUpdateIssueMutation", () => {
     return Array.isArray(data) ? data[0]?.status : data?.status;
   };
 
+  it("keeps guarded stage decisions stable until the server accepts them", async () => {
+    let resolve!: (value: unknown) => void;
+    mockUpdate.mockReturnValue(new Promise((done) => { resolve = done; }));
+    render();
+    const data = { status: "done", expectedExecutionStageId: "approval-stage" };
+    expect(isReplayableIssueUpdate(data)).toBe(false);
+    act(() => current.mutate({ id: "PAP-1", data }));
+    await act(async () => {});
+    expect(statusIn(queryKeys.issues.detail("PAP-1"))).toBe("todo");
+    expect(statusIn(queryKeys.issues.list("company-1"))).toBe("todo");
+    expect(statusIn(queryKeys.issues.listByProject("company-1", "project-1"))).toBe("todo");
+    await act(async () => resolve({ ...issue({ status: "done" }), changes: {} }));
+  });
+
   it("updates every cached copy optimistically", async () => {
     let resolve!: (value: unknown) => void;
     mockUpdate.mockReturnValue(new Promise((done) => { resolve = done; }));

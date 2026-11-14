@@ -14,7 +14,7 @@ export function registerExecutionControlWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   duties: ReadonlyArray<{
     queue: DeliveryQueue;
-    run: () => Promise<unknown>;
+    run: (signal?: AbortSignal) => Promise<unknown>;
     next: () => Promise<number | null>;
     onSettled?: () => void;
     settleEmptyWhilePaused?: boolean;
@@ -31,7 +31,7 @@ export function registerExecutionControlWork(
       retryMs: EXECUTION_RECONCILIATION_INTERVAL_MS,
       pausePassiveMaintenance: true,
       onSettled: () => { requested += 1; duty.onSettled?.(); },
-      run: async () => {
+      run: async signal => {
         if (!canRun()) { requested += 1; next = null; return; }
         const now = Date.now();
         if (now < earliestRunAt) {
@@ -40,7 +40,7 @@ export function registerExecutionControlWork(
         }
         const generation = ++requested;
         earliestRunAt = now + EXECUTION_RECONCILIATION_INTERVAL_MS;
-        await duty.run();
+        await duty.run(signal);
         const deadline = await duty.next();
         next = deadline === null ? null : Math.max(deadline, earliestRunAt);
         reconciled = generation;
