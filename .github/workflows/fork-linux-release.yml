@@ -7,7 +7,6 @@ on:
         description: Full reviewed commit SHA in Hdom/paperclip
         required: true
         type: string
-        default: 20c71960bb5e6219d455f32c7df48eaaa0fcc333
       draft_release:
         description: Also create a draft GitHub Release (never deploys)
         required: true
@@ -67,10 +66,32 @@ jobs:
         working-directory: source
         run: >-
           pnpm exec vitest run --maxWorkers=1 --testTimeout=60000
+          server/src/__tests__/issue-review-checkout.test.ts
+          server/src/__tests__/issue-stage-decision-guard.test.ts
+          server/src/__tests__/issue-stage-decision-lock.test.ts
+          server/src/__tests__/issue-execution-policy.test.ts
+          server/src/__tests__/issue-execution-policy-routes.test.ts
+          server/src/__tests__/heartbeat-auto-checkout.test.ts
+          server/src/__tests__/issues-checkout-wakeup.test.ts
           server/src/__tests__/heartbeat-handoff-crash-child.test.ts
           server/src/__tests__/heartbeat-handoff-execution-wait.test.ts
           server/src/__tests__/issue-wake-diagnostics-routes.test.ts
           server/src/__tests__/server-startup-feedback-export.test.ts
+      - name: Guarded approval UI regressions
+        working-directory: source
+        run: >-
+          pnpm exec vitest run --maxWorkers=1
+          ui/src/hooks/useUpdateIssueMutation.test.tsx
+          ui/src/lib/issue-properties-panel-key.test.ts
+          ui/src/components/IssueProperties.test.tsx
+          ui/src/components/task-side-panel/TaskSidePanel.test.tsx
+          ui/src/pages/IssueDetail.test.tsx
+      - name: Install browser acceptance dependency
+        working-directory: source
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Desktop and phone guarded approval acceptance
+        working-directory: source
+        run: pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/human-stage-decision.spec.ts
       - name: Assemble and relocate native Linux payload
         run: node tooling/scripts/fork-package-linux.mjs "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/fork-release/release" "$PAPERCLIP_BUILD_COMMIT"
       - name: Upload verified candidate

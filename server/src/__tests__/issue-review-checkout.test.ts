@@ -38,7 +38,7 @@ const support = await getEmbeddedPostgresTestSupport();
       lastDecisionOutcome: null,
       changesRequestedCount: 0,
     };
-    await db.insert(issues).values({ id: issueId, companyId, title: "Review", status: "in_review", assigneeAgentId: human ? null : agentId, assigneeUserId: human ? "human" : null, executionPolicy: policy, executionState: state });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Review", status: "in_review", assigneeAgentId: human ? null : agentId, assigneeUserId: human ? "human" : null, executionPolicy: { ...policy }, executionState: state });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", scopeKind: "issue", issueId });
     return { companyId, issueId, agentId, producerId, runId, state };
   }

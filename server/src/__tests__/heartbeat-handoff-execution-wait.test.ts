@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, createDb, environmentLeases, heartbeatRuns, issueRelations, issues, issueTreeHolds, projects } from "@paperclipai/db";
@@ -571,7 +572,7 @@ describe.skipIf(!support.supported)("handoff execution waits", () => {
     const first = all[0].companyId === a.companyId ? a : b;
     const later = first === a ? b : a;
     if (gate === "agent_pause") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, first.reviewerId));
-    else later.deps.budgets.getInvocationBlock.mockImplementation(async (_company: string, agent: string) =>
+    else later.deps.budgets.getInvocationBlock.mockImplementation(async (_company: string, agent: string | null) =>
       agent === first.reviewerId ? { scopeType: "agent", scopeId: agent, scopeName: "blocked", reason: "Budget exhausted" } : null);
     const errors: unknown[] = [];
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: e => errors.push(e) });
@@ -647,7 +648,7 @@ describe.skipIf(!support.supported)("handoff execution waits", () => {
     const [saved] = await f.requests();
     const child = spawn(process.execPath, ["node_modules/vitest/vitest.mjs", "run",
       "server/src/__tests__/heartbeat-handoff-crash-child.test.ts", "--maxWorkers=1"], {
-      cwd: process.cwd(), detached: true, stdio: ["ignore", "pipe", "pipe"],
+      cwd: fileURLToPath(new URL("../../../", import.meta.url)), detached: true, stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=512",
         PAPERCLIP_BACKPORT_CRASH_DB: database.connectionString,
         PAPERCLIP_BACKPORT_CRASH_COMPANY: f.companyId,
