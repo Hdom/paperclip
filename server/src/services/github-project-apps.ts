@@ -12,10 +12,18 @@ export const PROJECT_APP_PERMISSIONS = {
 } as const;
 export type ProjectAppRole = keyof typeof PROJECT_APP_PERMISSIONS;
 const positiveId = z.number().int().positive().safe();
+export const PROJECT_APP_BOOTSTRAP = {
+  repositoryId: 1457227143,
+  fullName: "Hdom/paperclip-app-bootstrap-verification-20261113",
+} as const;
 const appSchema = z.object({ appId: positiveId, installationId: positiveId, agentId: z.string().uuid(), privateKeyPath: z.string().min(1) }).strict();
 export const projectAppsConfigSchema = z.object({
   version: z.literal(1), companyId: z.string().uuid(), owner: z.literal("Hdom"),
   stateDirectory: z.string().min(1),
+  bootstrapRepository: z.object({
+    repositoryId: z.literal(PROJECT_APP_BOOTSTRAP.repositoryId),
+    fullName: z.literal(PROJECT_APP_BOOTSTRAP.fullName),
+  }).strict().optional(),
   apps: z.object({ coordinator: appSchema, implementer: appSchema, reviewer: appSchema }).strict(),
 }).strict().superRefine((config, ctx) => {
   for (const field of ["appId", "installationId", "agentId", "privateKeyPath"] as const) {
@@ -26,7 +34,7 @@ export const projectAppsConfigSchema = z.object({
 export type ProjectAppsConfig = z.infer<typeof projectAppsConfigSchema>;
 const stateSchema = z.object({
   companyId: z.string().uuid(), projectId: z.string().uuid(),
-  phase: z.enum(["creating", "created", "ready"]),
+  phase: z.enum(["creating", "created", "bootstrap_cleanup_pending", "ready"]),
   repositoryId: positiveId.optional(), fullName: z.string(),
 }).strict();
 type ProjectState = z.infer<typeof stateSchema>;
@@ -86,7 +94,7 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
   const fetchImpl = options.fetch ?? fetch;
   // No configurable API origin: production credentials can only be sent to GitHub.
   async function request(token: string, endpoint: string, method = "GET", body?: unknown, acceptedStatuses: number[] = []) {
-    if (method === "POST" || method === "PUT") {
+    if (method === "POST" || method === "PUT" || (method === "DELETE" && endpoint !== "/installation/token")) {
       await options.beforeMutation?.();
       // Synchronous native-transport fence immediately before dispatch. Cleanup
       // DELETE remains available after Stop so controller tokens can be revoked.
@@ -125,7 +133,7 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
     try { return appJwt(config.apps[role].appId, await readProtected(config.apps[role].privateKeyPath, 32768)); }
     catch { throw forbidden("GitHub App private key is invalid or not protected on the controller"); }
   }
-  async function installation(role: ProjectAppRole) {
+  async function installation(role: ProjectAppRole, allowBootstrap = false) {
     const app = config.apps[role];
     const signed = await jwt(role);
     const registration = await request(signed, "/app");
@@ -138,15 +146,17 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
         value.repository_selection !== "selected" || typeof value.app_slug !== "string" || value.app_slug !== registration.slug ||
         !samePermissions(value.permissions, PROJECT_APP_PERMISSIONS[role]))
       throw forbidden(`GitHub ${role} installation does not match the approved owner, selected repositories, or exact permissions`);
-    if (role !== "coordinator") await verifyWorkerSelection(role);
+    if (role !== "coordinator") await verifyWorkerSelection(role, allowBootstrap);
     return value;
   }
   async function revoke(token: string) {
     try { await request(token, "/installation/token", "DELETE"); }
     catch { /* Never disclose tokens in cleanup errors; expiry remains at most one hour. */ }
   }
-  async function issue(role: ProjectAppRole, repositoryId?: number) {
-    const installed = await installation(role);
+  async function issue(role: ProjectAppRole, repositoryId?: number, allowBootstrap = false) {
+    if (repositoryId === PROJECT_APP_BOOTSTRAP.repositoryId)
+      throw forbidden("The starter repository cannot receive project credentials");
+    const installed = await installation(role, allowBootstrap);
     if (role !== "coordinator" && !repositoryId) throw forbidden("Worker tokens require one project repository");
     const value = await request(await jwt(role), `/app/installations/${config.apps[role].installationId}/access_tokens`, "POST", {
       permissions: PROJECT_APP_PERMISSIONS[role],
@@ -169,15 +179,18 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
       const value = stateSchema.parse(JSON.parse(await readProtected(statePath(projectId), 8192)));
       if (value.companyId !== config.companyId || value.projectId !== projectId || value.fullName !== `${config.owner}/paperclip-${projectId}`)
         throw forbidden("GitHub project binding mismatch");
+      if (value.repositoryId === PROJECT_APP_BOOTSTRAP.repositoryId)
+        throw forbidden("The starter repository cannot be a project binding");
       return value;
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
       throw forbidden("GitHub project ledger is invalid or unprotected");
     }
   }
-  async function verifyWorkerSelection(role: "implementer" | "reviewer") {
+  async function verifyWorkerSelection(role: "implementer" | "reviewer", allowBootstrap = false): Promise<number[]> {
     // Verify installation scope as well as each exported token's scope. This
-    // prevents an unrelated selected repository from becoming a bootstrap shortcut.
+    // The one explicitly configured starter is tolerated only during provisioning,
+    // never when delivering agent credentials. It must remain genuinely empty.
     await protectedDirectory(config.stateDirectory);
     const files = (await readdir(config.stateDirectory)).filter(name => /^[0-9a-f-]{36}\.json$/i.test(name));
     if (files.length > 100) throw forbidden("This experimental broker supports at most 100 project repository bindings");
@@ -194,10 +207,44 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
     }
     try {
       const listing = await request(issued.token, "/installation/repositories?per_page=100");
+      const bootstrap = allowBootstrap ? config.bootstrapRepository : undefined;
       if (!listing || !Array.isArray(listing.repositories) || listing.total_count !== listing.repositories.length || listing.repositories.length > 100 ||
-          listing.repositories.some((repo: { id?: unknown }) => typeof repo.id !== "number" || !intended.has(repo.id)))
+          listing.repositories.some((repo: { id?: unknown }) => typeof repo.id !== "number" || (!intended.has(repo.id) && repo.id !== bootstrap?.repositoryId)))
         throw forbidden("GitHub worker installation includes an unrelated repository or exceeds the bounded inventory; selection was not expanded");
+      const ids = listing.repositories.map((repo: { id: number }) => repo.id);
+      if (bootstrap && ids.includes(bootstrap.repositoryId)) {
+        const proof = await request(issued.token, "/graphql", "POST", {
+          query: 'query { repository(owner: "Hdom", name: "paperclip-app-bootstrap-verification-20261113") { databaseId nameWithOwner isPrivate isEmpty isArchived isDisabled owner { login } } }',
+        });
+        const repo = proof?.data?.repository;
+        if (proof?.errors || !repo || repo.databaseId !== bootstrap.repositoryId || repo.nameWithOwner !== bootstrap.fullName ||
+            repo.owner?.login !== config.owner || repo.isPrivate !== true || repo.isEmpty !== true || repo.isArchived !== false || repo.isDisabled !== false)
+          throw forbidden("GitHub starter repository identity, privacy, or emptiness could not be verified");
+      }
+      return ids;
     } finally { await revoke(issued.token); }
+  }
+  async function removeBootstrap(token: string, value: ProjectState, reauthorize: () => Promise<void>) {
+    const bootstrap = config.bootstrapRepository;
+    if (!bootstrap) return;
+    // Prove both fixed workers retain the replacement before removing either
+    // starter grant. Reconciliation skips removals already completed.
+    const selections = new Map<"implementer" | "reviewer", number[]>();
+    for (const role of ["implementer", "reviewer"] as const) {
+      const credential = await issue(role, value.repositoryId, true);
+      await revoke(credential.token);
+      const ids = await verifyWorkerSelection(role, true);
+      if (!ids.includes(value.repositoryId!)) throw conflict("Project access must be verified before starter removal");
+      selections.set(role, ids);
+    }
+    for (const role of ["implementer", "reviewer"] as const) {
+      if (!selections.get(role)!.includes(bootstrap.repositoryId)) continue;
+      await reauthorize();
+      await request(token, `/user/installations/${config.apps[role].installationId}/repositories/${bootstrap.repositoryId}`, "DELETE", undefined, [304]);
+      const ids = await verifyWorkerSelection(role);
+      if (ids.includes(bootstrap.repositoryId) || !ids.includes(value.repositoryId!))
+        throw conflict("Starter removal is unverified; project credentials remain withheld");
+    }
   }
   async function save(value: ProjectState) {
     await protectedDirectory(config.stateDirectory);
@@ -216,6 +263,13 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
     return repo;
   }
   return {
+    // Operator readiness check only: validates installations and inventory,
+    // without creating/enrolling repositories or exporting any credential.
+    async verifySetup() {
+      for (const role of ["coordinator", "implementer", "reviewer"] as const)
+        await installation(role, true);
+      return { owner: config.owner, installationsVerified: 3, bootstrapConfigured: !!config.bootstrapRepository };
+    },
     async provision(projectId: string, reauthorize: () => Promise<void>) {
       await protectedDirectory(config.stateDirectory);
       let lock;
@@ -227,7 +281,7 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
         let value = await state(projectId);
         if (value?.phase === "creating") throw conflict("Repository creation outcome is uncertain; controller reconciliation is required");
         // All three installations must match before repository creation changes GitHub.
-        await installation("implementer"); await installation("reviewer");
+        await installation("implementer", true); await installation("reviewer", true);
         coordinatorToken = (await issue("coordinator")).token;
         if (!value) {
           value = { companyId: config.companyId, projectId, phase: "creating", fullName: `${config.owner}/paperclip-${projectId}` };
@@ -237,23 +291,32 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
             name: `paperclip-${projectId}`, private: true, auto_init: true,
             has_issues: false, has_projects: false, has_wiki: false,
           });
-          if (!Number.isSafeInteger(created?.id) || created!.id <= 0 || created?.full_name !== value.fullName || created.owner?.login !== config.owner || created.private !== true)
+          if (!Number.isSafeInteger(created?.id) || created!.id <= 0 || created?.id === PROJECT_APP_BOOTSTRAP.repositoryId || created?.full_name !== value.fullName || created.owner?.login !== config.owner || created.private !== true)
             throw forbidden("Created repository did not match the project; controller reconciliation is required");
           value = { ...value, repositoryId: created.id, phase: "created" };
           // Save provider success even if the run stopped while GitHub processed the request.
           await save(value);
         }
         await repository(coordinatorToken, value);
-        if (value.phase !== "ready") {
+        if (value.phase === "created") {
           // GitHub documents an admin prerequisite. Try only the approved narrow token;
           // a 403/404 is a blocker, never a reason to add Administration or a user token.
           for (const role of ["implementer", "reviewer"] as const) {
             await reauthorize();
             await request(coordinatorToken, `/user/installations/${config.apps[role].installationId}/repositories/${value.repositoryId}`, "PUT", undefined, [304]);
             // Prove the fixed worker installation can issue the exact one-repository token.
-            const verified = await issue(role, value.repositoryId);
+            const verified = await issue(role, value.repositoryId, true);
             await revoke(verified.token);
           }
+          value = { ...value, phase: "bootstrap_cleanup_pending" };
+          await save(value);
+        }
+        if (value.phase === "ready" && config.bootstrapRepository) {
+          value = { ...value, phase: "bootstrap_cleanup_pending" };
+          await save(value);
+        }
+        if (value.phase === "bootstrap_cleanup_pending") {
+          await removeBootstrap(coordinatorToken, value, reauthorize);
           value = { ...value, phase: "ready" };
           await save(value);
         }

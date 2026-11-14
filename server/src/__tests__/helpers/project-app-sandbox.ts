@@ -29,7 +29,7 @@ export async function projectAppSandbox() {
   const enrolled = new Map<ProjectAppRole, Set<number>>([["implementer", new Set()], ["reviewer", new Set()]]);
   const tokens = new Map<string, { role: ProjectAppRole; repositoryId?: number }>();
   const revoked: string[] = [];
-  const faults = { extraPermission: false, allRepositories: false, adminRefused: false, createDrop: false, driftScope: false, longExpiry: false, slow: false, redirect: "", foreignAppOwner: false, alreadyEnrolled: false };
+  const faults = { extraPermission: false, allRepositories: false, adminRefused: false, createDrop: false, driftScope: false, longExpiry: false, slow: false, redirect: "", foreignAppOwner: false, alreadyEnrolled: false, bootstrapGraphqlErrors: false, bootstrapCleanupRefused: false, bootstrapCleanupDrop: false };
   let repositorySequence = 900;
   const server = createServer(async (req, res) => {
     let bodyText = ""; for await (const chunk of req) bodyText += chunk;
@@ -72,6 +72,12 @@ export async function projectAppSandbox() {
     } else if (req.url === "/installation/repositories" && req.method === "GET") {
       const selected = [...(enrolled.get(role) ?? [])].map(id => ({ id }));
       json({ total_count: selected.length, repositories: selected });
+    } else if (req.url === "/graphql" && req.method === "POST") {
+      const repo = [...repositories.values()].find(repo => repo.full_name === "Hdom/paperclip-app-bootstrap-verification-20261113");
+      json({ ...(faults.bootstrapGraphqlErrors ? { errors: [{ message: "synthetic denied" }] } : {}), data: { repository: repo ? {
+        databaseId: repo.id, nameWithOwner: repo.full_name, owner: repo.owner, isPrivate: repo.private,
+        isEmpty: repo.empty === true, isArchived: repo.archived === true, isDisabled: repo.disabled === true,
+      } : null } });
     } else if (req.url?.startsWith("/users/") && req.method === "GET") {
       json({ login: `paperclip-${role}[bot]`, type: "Bot", id: 10000 + config.apps[role].appId });
     } else if (req.url?.startsWith("/repos/") && req.method === "GET") {
@@ -85,6 +91,15 @@ export async function projectAppSandbox() {
       const worker = (["implementer", "reviewer"] as const).find(r => config.apps[r].installationId === Number(match[1]));
       expect(worker).toBeTruthy(); enrolled.get(worker!)!.add(Number(match[2]));
       res.writeHead(faults.alreadyEnrolled ? 304 : 204); res.end();
+    } else if (req.url?.startsWith("/user/installations/") && req.method === "DELETE" && role === "coordinator") {
+      const match = /^\/user\/installations\/(\d+)\/repositories\/(\d+)$/.exec(req.url)!;
+      const worker = (["implementer", "reviewer"] as const).find(r => config.apps[r].installationId === Number(match[1]));
+      expect(worker).toBeTruthy(); expect(Number(match[2])).toBe(1457227143);
+      if (faults.bootstrapCleanupRefused && worker === "reviewer") { json({}, 403); return; }
+      expect(enrolled.get(worker!)!.size).toBeGreaterThan(1);
+      enrolled.get(worker!)!.delete(Number(match[2]));
+      if (faults.bootstrapCleanupDrop) { req.socket.destroy(); return; }
+      res.writeHead(204); res.end();
     } else if (req.url === "/installation/token" && req.method === "DELETE") {
       revoked.push(bearer); tokens.delete(bearer); res.writeHead(204); res.end();
     } else json({}, 404);

@@ -4,7 +4,7 @@ This opt-in enhancement adds three independent GitHub App identities for Hdom's 
 
 ## Authority and storage
 
-The controller operator registers and approves three private Apps, then installs each on Hdom with **Only select repositories**. Never select all repositories. Worker installation inventories must contain only repositories in this controller's protected project ledger; the broker refuses unrelated selections before creation or token delivery. The experimental inventory is bounded to 100 project bindings and 100 repositories per worker installation. Controller-only Metadata read tokens verify that inventory and are promptly revoked. Use these exact repository permissions; all account, organization, enterprise, and other repository permissions remain off:
+The controller operator registers and approves three private Apps, then installs each on Hdom with **Only select repositories**. Never select all repositories. Except for the explicitly pinned empty starter during provisioning, worker installation inventories must contain only repositories in this controller's protected project ledger; the broker refuses unrelated selections before creation or token delivery. The experimental inventory is bounded to 100 project bindings and 100 repositories per worker installation. Controller-only Metadata read tokens verify that inventory and are promptly revoked. Use these exact repository permissions; all account, organization, enterprise, and other repository permissions remain off:
 
 | App | Repository permissions |
 | --- | --- |
@@ -56,7 +56,7 @@ The requested private repository name is deterministic: `Hdom/paperclip-<project
 
 The broker records creation intent durably before `POST /user/repos`, records the returned repository ID before enrollment, and adds only that repository to the two configured worker installations. It checks each installation can issue the required one-repository token. Temporary controller verification tokens and Coordinator tokens are revoked after use. An idempotent retry after completed creation resumes enrollment without another create call. A per-project exclusive lock serializes concurrent callers.
 
-GitHub documents that enrollment requires repository admin access. It also lists installation tokens with `installation_repositories: write` as supported. This enhancement tries only the narrow approved token; any HTTP 403/404 remains a blocker. It never adds Administration, switches to a PAT, or borrows the owner's OAuth identity. The sandbox tests prove this refusal behavior, not that GitHub accepts narrow enrollment in Hdom's live account. Live enrollment remains to be verified after App setup. Whether GitHub permits an initially empty selected-repository worker installation also remains an account-UI bootstrap check. Do not grant unrelated repositories to bypass it.
+GitHub documents that enrollment requires repository admin access. It also lists installation tokens with `installation_repositories: write` as supported. This enhancement tries only the narrow approved token; any HTTP 403/404 remains a blocker. It never adds Administration, switches to a PAT, or borrows the owner's OAuth identity. Live disposable verification on Hdom confirmed repository creation, same-token creator access, and enrollment into both fixed worker installations using exactly the approved Coordinator permissions, without Administration. GitHub refuses removing the last selected repository with HTTP 422. Do not grant unrelated repositories to bypass that restriction.
 
 ## Worker credential delivery
 
@@ -83,3 +83,22 @@ Rollback to code containing these safeguards may disable the broker while retain
 Focused tests use synthetic RSA keys, an actual local HTTP server that verifies JWT signatures, protected temporary files, and a real embedded PostgreSQL database through Paperclip's runtime routes. Tests cover role/repository restrictions, scope drift, bot identity, stop and archive denials, uncertainty, restart, transport allowlists, token cleanup, and existing OAuth credential behavior. They do not create a GitHub repository or call GitHub with live credentials.
 
 Official sources: [repository creation](https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user), [installation enrollment](https://docs.github.com/en/rest/apps/installations#add-a-repository-to-an-app-installation), [scoped one-hour installation tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
+
+## Pinned starter repository
+
+For the verified Hdom bootstrap only, protected configuration may include:
+
+```json
+"bootstrapRepository": {
+  "repositoryId": 1457227143,
+  "fullName": "Hdom/paperclip-app-bootstrap-verification-20261113"
+}
+```
+
+These literal values are the only accepted exception. The default remains strict. The starter is installation inventory tolerance during provisioning only: it can never be a project ledger binding or an agent credential target. Metadata-only controller tokens use a fixed GitHub GraphQL query to verify the exact identity, owner, private visibility, explicit `isEmpty`, and active/unarchived status. Missing or denied proof fails closed; repository size is not used as an emptiness test. No new GitHub permission is required.
+
+After creating and proving both worker project grants, the controller durably records `bootstrap_cleanup_pending`. It removes only this starter from the two fixed worker installations, verifies the project remains selected and starter is absent, then marks the project ready. All non-revocation DELETE operations honor the current authorization and cancellation fences. Failed or uncertain removal retains the pending project, withholds agent credentials and never repeats creation. Reconciliation checks fresh inventories and skips a starter grant already absent. The empty starter repository itself is preserved; removing its installation grants does not delete it. The Coordinator's starter grant remains until an owner-approved cleanup path can remove it safely.
+
+The operator may call the broker's `verifySetup()` from a protected controller process to validate registration, installation, and starter inventory. It exports no token and creates or enrolls no repository; no public route was added. The real project run remains a separate authorized action.
+
+GraphQL reference: https://docs.github.com/en/graphql/reference/repos#repository
