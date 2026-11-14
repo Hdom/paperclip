@@ -1,0 +1,86 @@
+{
+  "observedOn": "2026-11-14",
+  "liveChangesMade": false,
+  "files": [
+    {
+      "surface": "controller",
+      "path": "/opt/paperclip-data/cli/github-apps-offline-activation.mjs",
+      "sha256": "b09d0444c75831dfd58cfbb86a8aef8517ec1a42b75170e1bf813cbe4dc732fa",
+      "mode": "0o644",
+      "uid": 1000,
+      "gid": 1000,
+      "source": null,
+      "status": "retired-untracked-bundle"
+    },
+    {
+      "surface": "controller",
+      "path": "/home/paperclip/.local/bin/paperclipai",
+      "sha256": "241d5dc3a1a7ba66af91d897dc630d51c533f097f5b5e9af5797beba30a60c35",
+      "mode": "0o755",
+      "uid": 1000,
+      "gid": 1000,
+      "source": "scripts/operations/deployment-examples/controller/paperclipai",
+      "status": "observed-exact-source"
+    },
+    {
+      "surface": "controller",
+      "path": "/etc/systemd/system/paperclip.service",
+      "sha256": "be094c7dd6fad7bf8ffb39ec4e9448233e0d3c66ed0fb11ef2eeab72fc8a7857",
+      "mode": "0o644",
+      "uid": 0,
+      "gid": 0,
+      "source": "scripts/operations/deployment-examples/controller/paperclip.service",
+      "status": "observed-exact-source"
+    },
+    {
+      "surface": "worker",
+      "path": "/usr/local/bin/paperclip-codex",
+      "sha256": "6f715dc00166d9343350de08e19039a2bcf494be42fe859d854b7d2b2acbe82f",
+      "mode": "0o755",
+      "uid": 0,
+      "gid": 0,
+      "source": "scripts/operations/deployment-examples/worker/paperclip-codex",
+      "status": "observed-exact-source"
+    },
+    {
+      "surface": "worker",
+      "path": "/usr/local/sbin/paperclip-codex-update",
+      "sha256": "e127dadc22ae16c5f0a10c1ae0d5899668f1fa9f084fdb96ffd2671582602819",
+      "mode": "0o755",
+      "uid": 0,
+      "gid": 0,
+      "source": "scripts/operations/deployment-examples/worker/paperclip-codex-update",
+      "status": "observed-exact-source"
+    },
+    {
+      "surface": "worker",
+      "path": "/etc/systemd/system/paperclip-codex-update-check.service",
+      "sha256": "07587208ca5a87f069eb4f1048c74fde4d2d12570bbec7d7c7186bf5e6521bc3",
+      "mode": "0o644",
+      "uid": 0,
+      "gid": 0,
+      "source": "scripts/operations/deployment-examples/worker/paperclip-codex-update-check.service",
+      "status": "observed-exact-source"
+    },
+    {
+      "surface": "worker",
+      "path": "/etc/systemd/system/paperclip-codex-update-check.timer",
+      "sha256": "b16c7c1244753e68920db8cbd182219ec5b8c6be3bfcc93f97bfdc38511c42d4",
+      "mode": "0o644",
+      "uid": 0,
+      "gid": 0,
+      "source": "scripts/operations/deployment-examples/worker/paperclip-codex-update-check.timer",
+      "status": "observed-exact-source"
+    },
+    {
+      "surface": "gateway",
+      "path": "/usr/local/sbin/paperclip-guests-exec",
+      "sha256": "771422336ab077abda82889991d083b868654c285c3e51242640ae81218d05f1",
+      "mode": "0o755",
+      "uid": 0,
+      "gid": 0,
+      "source": "scripts/operations/deployment-examples/gateway/paperclip-guests-exec",
+      "status": "observed-exact-source"
+    }
+  ]
+}

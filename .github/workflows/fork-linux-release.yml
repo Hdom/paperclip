@@ -80,6 +80,12 @@ jobs:
       - name: Scoped GitHub Apps and native controller secrets qualification
         working-directory: source
         run: node scripts/fork-github-app-regressions.mjs
+      - name: Operator utility source and safety regressions
+        working-directory: source
+        run: |
+          node --test scripts/operations/*.test.mjs
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/operations -p '*_test.py'
+          python3 scripts/operations/verify-utility-provenance.py --root .
       - name: Guarded approval UI regressions
         working-directory: source
         run: >-

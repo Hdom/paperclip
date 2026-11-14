@@ -1,0 +1,39 @@
+#!/usr/bin/python3 -I
+"""Root-owned, password-sudo entry point restricted to three authorized guests.
+
+Install only after specific approval. This grants root INSIDE LXC112/113/124;
+it grants no arbitrary Proxmox-node command or alternate pct operation.
+"""
+import os
+import sys
+
+PCT = "/usr/sbin/pct"
+ALLOWED_GUESTS = frozenset({"112", "113", "124"})
+SAFE_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
+
+
+def build_command(arguments):
+    if len(arguments) < 2 or arguments[0] not in ALLOWED_GUESTS:
+        raise ValueError("Expected guest 112, 113 or 124 followed by an absolute guest executable")
+    executable = arguments[1]
+    if not executable.startswith("/") or any(ord(c) < 32 or ord(c) == 127 for c in executable):
+        raise ValueError("Guest executable must be an absolute path without control characters")
+    return [PCT, "exec", arguments[0], "--", *arguments[1:]]
+
+
+def main(arguments):
+    if os.geteuid() != 0:
+        print("Use the specifically approved sudo entry point", file=sys.stderr)
+        return 77
+    try:
+        command = build_command(arguments)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 64
+    os.chdir("/")
+    os.execve(PCT, command, dict(SAFE_ENV))
+    return 70  # execve never returns on success
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
