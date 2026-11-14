@@ -1,11 +1,11 @@
-import importlib.machinery,importlib.util,pathlib,tempfile,unittest,os
+import importlib.machinery,importlib.util,pathlib,tempfile,unittest,os,io
 ROOT=pathlib.Path(__file__).parent
 
 def load(name,file):
  loader=importlib.machinery.SourceFileLoader(name,str(ROOT/file));spec=importlib.util.spec_from_loader(name,loader);module=importlib.util.module_from_spec(spec);loader.exec_module(module);return module
 transport=load('guest_exec','guest-exec.py');backup=load('prepare_upgrade','prepare-database-upgrade.py');gateway=load('gateway','deployment-examples/gateway/paperclip-guests-exec')
 class Channel:
- def __init__(self,password_prompt):self.prompted=password_prompt;self.stderr=b'PROMPT' if password_prompt else b'';self.stdout=b'' if password_prompt else b'READY\npublic-result';self.sent=[];self.closed=False
+ def __init__(self,password_prompt):self.prompted=password_prompt;self.stderr=b'PROMPT' if password_prompt else b'';self.stdout=b'' if password_prompt else b'READY\npublic-result';self.sent=[];self.closed=False;self.input=bytearray()
  def recv_ready(self):return bool(self.stdout)
  def recv_stderr_ready(self):return bool(self.stderr)
  def recv(self,size):value=self.stdout;self.stdout=b'';return value
@@ -13,6 +13,8 @@ class Channel:
  def sendall(self,value):
   if not self.prompted:raise AssertionError('Password leaked to NOPASSWD command stdin')
   self.sent.append(value);self.stdout=b'READY\npublic-result'
+ def send_ready(self):return True
+ def send(self,value):self.input.extend(value);return len(value)
  def shutdown_write(self):self.closed=True
  def exit_status_ready(self):return self.closed
  def recv_exit_status(self):return 0
@@ -25,6 +27,10 @@ class Safety(unittest.TestCase):
   channel=Channel(False);channel.stderr=b'PROMPT'
   code,out,err=transport.collect(channel,'PRIVATE_CANARY','PROMPT','READY',1)
   self.assertEqual(code,0);self.assertEqual(channel.sent,[]);self.assertNotIn(b'PRIVATE_CANARY',out+err)
+ def test_streamed_release_never_contains_sudo_password(self):
+  for prompted in [True,False]:
+   channel=Channel(prompted);code,out,err=transport.collect(channel,'PRIVATE_CANARY','PROMPT','READY',1,io.BytesIO(b'public-release-asset'))
+   self.assertEqual(code,0);self.assertEqual(bytes(channel.input),b'public-release-asset');self.assertNotIn(b'PRIVATE_CANARY',bytes(channel.input)+out+err)
  def test_desktop_transport_restricts_scope_and_preserves_literal_arguments(self):
   for guest,args in [(112,['/bin/true']),(999,['/bin/true']),(113,['relative']),(124,['/bin/evil\n'])]:
    with self.assertRaises(ValueError):transport.build_command(guest,args,'PROMPT','READY')

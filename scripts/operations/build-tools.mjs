@@ -10,7 +10,7 @@ if(!output||!path.isAbsolute(output)||!sourceCommit||!/^[a-f0-9]{40}$/.test(sour
 if(execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim()!==sourceCommit || execFileSync('git',['status','--porcelain','--','scripts/operations'],{cwd:root,encoding:'utf8'}).trim())throw new Error('Operator source is not the clean pinned commit');
 fs.mkdirSync(output,{recursive:true});
 const source=path.join(root,'scripts/operations');
-const names=['qualify-database-upgrade.mjs','prepare-database-upgrade.py','verify-utility-provenance.py','guest-exec.py','Invoke-PaperclipOperator.ps1','README.md','observed-deployment-inventory.json','deployment-examples'];
+const names=['qualify-database-upgrade.mjs','verify-native-key-recovery.mjs','prepare-database-upgrade.py','verify-utility-provenance.py','guest-exec.py','stage-release.py','Invoke-PaperclipOperator.ps1','README.md','observed-deployment-inventory.json','deployment-examples'];
 for(const name of names)fs.cpSync(path.join(source,name),path.join(output,name),{recursive:true,dereference:false,filter:file=>!file.split(path.sep).includes('__pycache__')&&!file.endsWith('.pyc')});
 const bundled = await build({metafile:true,absWorkingDir:root,alias:{'@paperclipai/shared/home-paths':path.join(root,'packages/shared/src/home-paths.ts')},entryPoints:['scripts/operations/activate-prepared-release.ts'],outfile:path.join(output,'activate-prepared-release.mjs'),bundle:true,platform:'node',format:'esm',target:'node24',logLevel:'warning'});
 const inputs=Object.keys(bundled.metafile.inputs);

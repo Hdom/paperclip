@@ -63,13 +63,31 @@ validates a request without retrieving credentials or opening a connection.
 `guest-exec.py` requires an externally installed Paramiko, the existing trusted SSH
 host-key file and `PROXMOX_OPERATOR_USER` / `PROXMOX_OPERATOR_PASSWORD` User variables.
 Its non-secret options JSON supplies `sshHost`, `guest`, `command` (an argument
-array) and optional `knownHosts` / `timeoutSeconds`. No credential values belong in
+array) and optional `knownHosts` / `timeoutSeconds` (1–900 seconds). Allow an adequate
+transfer timeout, such as 600 seconds for a large release. No credential values belong in
 that file. It rejects unknown/changed keys and disables SSH key/agent fallback.
 It sends a sudo password only after a real prompt. A readiness handshake prevents
 that password from becoming command stdin when sudo is cached or passwordless.
 It never forwards desktop credentials into the guest environment. Do not use it to
 print keys, tokens or sensitive files. Do not invoke it from an execution agent.
-The transport does not authorize any command or bypass a rejected action.
+For a release transfer, `stdinFile` may name one supported release asset and
+`stdinSha256` must match its previously verified GitHub asset digest. The file is
+streamed only after guest readiness, separately from sudo authentication. The
+transport does not authorize any command or bypass a rejected action.
+
+`stage-release.py ACTION OPTIONS_JSON` is controller-root-only. `receive` requires
+a pre-created root-only `cacheDirectory` under `/var/cache/paperclip-releases`,
+named for the first 12 source SHA characters with a root-owned non-writable ancestor chain, plus `sourceCommit`, `assetName`, `assetSizeBytes` and `assetSha256`.
+It commits received bytes exclusively after size/hash checks. `verify` requires
+`workflowRun` and `assetDigests` from the authenticated GitHub release response;
+it also verifies SHA256SUMS and the Hdom source/workflow manifest. `stage` adds
+`payloadStore` (the conventional `/opt/paperclip-data/cli/installs/git`) and optional `minimumRemainingBytes` (at least 1.5 GB). It rejects escaping archive
+paths/links/special files, checks disk headroom, and creates a new payload owned by
+paperclip. It never overwrites an install or changes `current` / `install.json`.
+Keep the asset cache separate from options files and helper source. These options
+contain paths, sizes and public hashes, never credentials. Copy only the reviewed
+source or generated Hdom operator artifact for isolated qualification. Permanent
+helper deployment and application activation require the reviewed merged release.
 
 ## Release and activation
 
@@ -124,6 +142,15 @@ existing protected PEMs. After cleanup, retain a consistent post-migration encry
 DB/native-config pair with pinned IDs/versions, the unchanged master key and sticky
 controller protection. Exclude concurrent rotation/configuration changes while
 capturing that pair. Verify restored native signing using public fingerprints only.
+`verify-native-key-recovery.mjs OPTIONS.json` imports the released dedicated signer
+against a verified restored clone, without starting a server or workers. It requires
+`payload`, `sourceCommit`, `config`, `restoreReceipt`, `cloneDatabase`, `nativeConfig`,
+`masterKeyFile`, the three `expectedFingerprints` and a new `receipt` path. The
+native configuration must contain pinned secret IDs/versions for all three roles;
+legacy key paths are refused. The existing private master file is never copied or
+created. The signer uses controller-only Secrets access; neither PEMs nor JWTs are
+printed, saved or returned by this utility. Its only mutation is the clone's normal
+secret-access audit trail. No installation token or GitHub API request is needed.
 An old binary alone is not a rollback after PEM cleanup. An unpublished local
 binary is not an allowed recovery release under the release-only rule. Stop and
 report if a compliant, tested recovery path is unavailable.
