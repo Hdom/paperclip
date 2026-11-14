@@ -20,6 +20,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { aiConnectionService } from "../services/ai-connections.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
@@ -99,7 +100,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), sourceId = randomUUID();
     const environmentId = randomUUID(), pluginId = randomUUID(), pluginKey = `test.tasks.${pluginId}`;
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-heartbeat-")); tempRoots.push(root);
-    await db.insert(companies).values({ id: companyId, name: "Task fixture", issuePrefix: "TASK", defaultResponsibleUserId: "task-user" });
+    await db.insert(companies).values({ id: companyId, name: "Task fixture", issuePrefix: protectedMode ? "TASKKEY" : "TASK", defaultResponsibleUserId: "task-user" });
     await grantResponsibleUser(companyId, "task-user");
     await db.insert(projects).values({ id: projectId, companyId, name: "Task fixture", status: "active",
       executionWorkspacePolicy: { enabled: true, storageProviderPluginId: pluginId } });
@@ -115,13 +116,13 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
         workspaceProvider: { modes: ["shared_workspace", "isolated_workspace", "operator_branch"], strategies: ["project_primary", "git_worktree"] },
         entrypoints: { worker: "worker.js" },
         environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, warmTaskVersion: 1, configSchema: { type: "object" } }] } });
-    await db.insert(environments).values({ id: environmentId, name: "Tasks", driver: "plugin", status: "active",
+    await db.insert(environments).values({ id: environmentId, name: protectedMode ? "Protected refusal Tasks" : "Tasks", driver: "plugin", status: "active",
       config: { pluginKey, driverKey: "tasks", driverConfig: {} } });
     await db.insert(agents).values({ id: agentId, companyId, name: "Task agent", role: "engineer", status: "idle",
       adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol", lifecycleMode: "warm" }, runtimeConfig: {},
       defaultEnvironmentId: environmentId, permissions: {} });
     await db.insert(issues).values({ id: issueId, companyId, projectId, projectWorkspaceId: sourceId, title: "Task-only dispatch", status: "in_progress",
-      assigneeAgentId: agentId, issueNumber: 1, identifier: "TASK-1" });
+      assigneeAgentId: agentId, issueNumber: 1, identifier: protectedMode ? "TASKKEY-1" : "TASK-1" });
     const call = vi.fn(async (_id: string, method: string) => { throw new Error(`Unexpected task provider call: ${method}`); });
     const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["workspaceOperation", "environmentTask", "environmentAcquireLease", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
     const entered = vi.fn(() => { throw new Error("synthetic_native_boundary_reached"); });
@@ -137,6 +138,72 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     // No workspace, lease, task, or native Runner work starts.
     expect(call).not.toHaveBeenCalled();
     expect(entered).not.toHaveBeenCalled();
+    expect(adapterExecute).not.toHaveBeenCalled();
+    await expect(stat(pluginOnlyCwd)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20_000);
+
+  it.each([true])("dispatches a managed-AI plugin-only project through the native boundary without controller workspace access (protected %s)", async protectedMode => {
+    vi.stubEnv("PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS", protectedMode ? "1" : "");
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), sourceId = randomUUID();
+    const environmentId = randomUUID(), pluginId = randomUUID(), pluginKey = `test.tasks.${pluginId}`;
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-heartbeat-")); tempRoots.push(root);
+    vi.stubEnv("PAPERCLIP_HOME", root);
+    await db.insert(companies).values({ id: companyId, name: "Task fixture", issuePrefix: protectedMode ? "KEYTASK" : "TASK", defaultResponsibleUserId: "task-user" });
+    await grantResponsibleUser(companyId, "task-user");
+    const credential = "synthetic-plugin-api-key-" + companyId;
+    const account = await aiConnectionService(db).save(companyId, "task-user", {
+      provider: "openai", method: "api_key", ownership: "personal", name: "Synthetic plugin account", apiKey: credential, agentIds: [], allAgents: true,
+    }, credential);
+    await db.insert(projects).values({ id: projectId, companyId, name: "Task fixture", status: "active",
+      executionWorkspacePolicy: { enabled: true, storageProviderPluginId: pluginId } });
+    const pluginOnlyCwd = path.join(root, "plugin-only", "project");
+    await db.insert(projectWorkspaces).values([
+      { id: sourceId, companyId, projectId, name: "Primary", cwd: pluginOnlyCwd, isPrimary: true },
+      { companyId, projectId, name: "Extra", cwd: null, repoUrl: "/unavailable-controller-repository.git", isPrimary: false },
+    ]);
+    await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: "@test/tasks", version: "1.0.0", apiVersion: 1,
+      categories: ["automation"], status: "ready", manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0",
+        displayName: "Tasks", description: "Task fixture", author: "Paperclip", categories: ["automation"],
+        capabilities: ["environment.drivers.register", "workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"],
+        workspaceProvider: { modes: ["shared_workspace", "isolated_workspace", "operator_branch"], strategies: ["project_primary", "git_worktree"] },
+        entrypoints: { worker: "worker.js" },
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, warmTaskVersion: 1, configSchema: { type: "object" } }] } });
+    await db.insert(environments).values({ id: environmentId, name: protectedMode ? "Protected Tasks" : "Tasks", driver: "plugin", status: "active",
+      config: { pluginKey, driverKey: "tasks", driverConfig: {} } });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Task agent", role: "engineer", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol", lifecycleMode: "warm" }, runtimeConfig: {
+        aiConnection: { provider: "openai", method: "api_key", mode: "delegated", connectionId: account.connectionId, grantId: account.grantId },
+      },
+      defaultEnvironmentId: environmentId, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, projectWorkspaceId: sourceId, title: "Task-only dispatch", status: "in_progress",
+      assigneeAgentId: agentId, issueNumber: 1, identifier: protectedMode ? "KEYTASK-1" : "TASK-1" });
+    const call = vi.fn(async (_id: string, method: string, params?: any) => {
+      if (method === "workspaceOperation") return { kind: "prepared", binding: { pluginId, projectId,
+        executionWorkspaceId: params.executionWorkspaceId, projectWorkspaceId: params.operation.source.id,
+        sourceRevision: params.operation.source.revision, workspaceRef: "provider:heartbeat-workspace" },
+        branchName: params.operation.branchName, baseSha: "a".repeat(40), created: true, branchCreatedByRuntime: false };
+      if (method === "environmentTask" && params.operation.kind === "describe") return {
+        kind: "description", taskId: params.taskId, projectAuthCheckVersion: 1,
+        runner: { version: "synthetic-fixture", digest: "sha256:" + "a".repeat(64) },
+      };
+      if (method === "environmentAcquireLease") return { providerLeaseId: "heartbeat-task-attempt", metadata: { remoteCwd: "/project" } };
+      if (method === "environmentReleaseLease" || method === "environmentDestroyLease") return undefined;
+      throw new Error(`Unexpected task provider call: ${method}`);
+    });
+    const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["workspaceOperation", "environmentTask", "environmentAcquireLease", "environmentReleaseLease", "environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
+    const entered = vi.fn(() => { throw new Error("synthetic_native_boundary_reached"); });
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager, nativeSessionBackendFactory: entered });
+    heartbeats.push(heartbeat);
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => { expect((await heartbeat.getRun(run!.id))?.status).toBe("failed"); }, { timeout: 10_000 });
+    expect(entered).toHaveBeenCalledWith(expect.objectContaining({ binding: expect.objectContaining({ runId: run!.id, companyId, issueId }) }));
+    expect((await heartbeat.getRun(run!.id))?.error).toContain("synthetic_native_boundary_reached");
+    await heartbeat.drainActiveRunExecutions();
+    expect(call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.objectContaining({ providerLeaseId: "heartbeat-task-attempt" }));
+    expect(call.mock.calls.every(([, method]) => ["workspaceOperation", "environmentTask", "environmentAcquireLease", "environmentDestroyLease"].includes(method))).toBe(true);
+    expect(call.mock.calls.filter(([, method]) => method === "workspaceOperation")).toHaveLength(1);
+    expect(call.mock.calls.filter(([, method]) => method === "environmentTask").map(([, , params]) => params.operation.kind)).toEqual(["describe"]);
     expect(adapterExecute).not.toHaveBeenCalled();
     await expect(stat(pluginOnlyCwd)).rejects.toMatchObject({ code: "ENOENT" });
   }, 20_000);

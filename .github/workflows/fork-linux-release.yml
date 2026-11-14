@@ -77,6 +77,9 @@ jobs:
           server/src/__tests__/heartbeat-handoff-execution-wait.test.ts
           server/src/__tests__/issue-wake-diagnostics-routes.test.ts
           server/src/__tests__/server-startup-feedback-export.test.ts
+      - name: Scoped GitHub Apps and native controller secrets qualification
+        working-directory: source
+        run: node scripts/fork-github-app-regressions.mjs
       - name: Guarded approval UI regressions
         working-directory: source
         run: >-
@@ -91,7 +94,15 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Desktop and phone guarded approval acceptance
         working-directory: source
-        run: pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/human-stage-decision.spec.ts
+        run: pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/human-stage-decision.spec.ts tests/e2e/github-app-identities.spec.ts
+      - name: Preserve synthetic browser acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-browser-acceptance-${{ inputs.source_sha }}
+          path: source/tests/e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Assemble and relocate native Linux payload
         run: node tooling/scripts/fork-package-linux.mjs "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/fork-release/release" "$PAPERCLIP_BUILD_COMMIT"
       - name: Upload verified candidate

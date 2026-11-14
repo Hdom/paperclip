@@ -69,7 +69,7 @@ export async function startWorkerSupervision(db: Db, run: Run, agent: Agent,
     await tx.update(heartbeatRuns).set({ workerSupervision: state,
       workerCheckInDeadlineAt: new Date(state.deadlineAt!), updatedAt: now }).where(eq(heartbeatRuns.id, run.id));
     return state;
-  });
+  }, { companyId: run.companyId, agentId: run.agentId, runId: run.id, issueId: taskId(run) ?? undefined });
 }
 
 /** An authenticated liveness report. It grants neither execution nor stop authority. */
@@ -125,7 +125,7 @@ export async function checkInWorker(db: Db, input: {
       message: "Worker check-ins resumed on the same execution; stop uncertainty remains independent",
       payload: { generation: state.generation, sequence: next.sequence } });
     return { accepted: true, ...next, duplicate: false };
-  });
+  }, { companyId: input.companyId, agentId: input.agentId, runId: input.runId, issueId: taskId(observed) ?? undefined });
 }
 
 /** Provider/controller settlement is deliberately not called a termination receipt. */
@@ -144,7 +144,7 @@ export async function settleWorkerSupervision(db: Db, runId: string, companyId: 
       workerSupervision: { ...state, state: "controller_settled", deadlineAt: null,
         controllerSettledAt: now.toISOString(),
         missedAt: state.missedAt ?? (state.deadlineAt && new Date(state.deadlineAt) <= now ? state.deadlineAt : null) }, updatedAt: now }).where(eq(heartbeatRuns.id, runId));
-  });
+  }, { companyId, agentId: observed.agentId, runId, issueId: taskId(observed) ?? undefined });
 }
 
 /** One concrete deadline per active obligation; no timer/empty-work polling here. */
@@ -169,7 +169,7 @@ export async function reconcileWorkerCheckIns(db: Db, now = new Date()) {
         missedAt: state.missedAt ?? now.toISOString() }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id));
     await recordMissedCheckIn(tx, run, state);
     missed++;
-  });
+  }, { companyId: item.companyId, runId: item.id, issueId: taskId(item) ?? undefined });
   return { checked: due.length, missed };
 }
 

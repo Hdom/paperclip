@@ -1,5 +1,4 @@
 import { isPreDispatchRepairCancellationVerified } from "./pre-dispatch-repair-cancellation.js";
-import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";

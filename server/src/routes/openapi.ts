@@ -1,3 +1,5 @@
+import { githubProjectAppRoleSchema, githubProjectAppConfirmationSchema, githubProjectAppSettingsInputSchema,
+  githubProjectAppRotateInputSchema, githubProjectAppActivateInputSchema, githubProjectAppVerificationSchema } from "@paperclipai/shared";
 import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai/shared";
 import { workerCheckInSchema, workerSupervisionStateSchema } from "@paperclipai/shared";
 import { checkpointContinuationSchema, CHECKPOINT_CONTINUATION_MAX_ATTEMPTS } from "../services/heartbeat/checkpoint-continuation.js";
@@ -1692,6 +1694,8 @@ function resolveOperationAuthLevel(
   path: string,
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
+  if (path === "/api/companies/{companyId}/github-project-apps" || path.startsWith("/api/companies/{companyId}/github-project-apps/"))
+    return method.toUpperCase() === "GET" ? "board" : "instance_admin";
   if (key === "GET /api/mcp/requests/{id}" || key === "GET /api/mcp/device"
       || key === "POST /api/mcp/requests/{id}/dot-pairing"
       || key === "POST /api/mcp/requests/{id}/dot-pairing/preview"
@@ -1807,6 +1811,11 @@ function applyDocumentFixups(document: any): any {
               : authLevel === "authenticated"
                 ? { actor: "board_or_agent" }
                 : { actor: "public" };
+
+      if (path === "/api/companies/{companyId}/github-project-apps/keys/{role}/rotate") {
+        const keyInput = operation.requestBody?.content?.["application/json"]?.schema?.properties?.privateKey;
+        if (keyInput) Object.assign(keyInput, { writeOnly: true, description: "Write-only PEM input. No response or log includes this value." });
+      }
 
       if (isVoiceSessionOperation(path)) {
         operation.security = [{[BOARD_SESSION_AUTH_SCHEME]: []}];
@@ -5639,6 +5648,26 @@ registry.registerPath({
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
+
+// GitHub App administration belongs to the board, never execution agents.
+for (const operation of [
+  { method: "get", suffix: "", summary: "Read managed GitHub App status and controller signing metadata", schema: undefined },
+  { method: "put", suffix: "", summary: "Confirm role assignment or issuance changes", schema: githubProjectAppSettingsInputSchema },
+  { method: "post", suffix: "/verify", summary: "Verify the fixed Apps and selected repository inventory", schema: githubProjectAppVerificationSchema },
+  { method: "post", suffix: "/migrate", summary: "Confirm native encryption and verified prepared-key cleanup", schema: githubProjectAppConfirmationSchema },
+  { method: "post", suffix: "/keys/{role}/rotate", summary: "Validate a write-only replacement signing key and activate its encrypted version", schema: githubProjectAppRotateInputSchema },
+  { method: "post", suffix: "/keys/{role}/activate", summary: "Verify and activate a pinned retained signing-key version", schema: githubProjectAppActivateInputSchema },
+] as const) {
+  registry.registerPath({
+    method: operation.method,
+    path: `/api/companies/{companyId}/github-project-apps${operation.suffix}`,
+    tags: ["secrets"], summary: operation.summary,
+    description: "Board company access is required. Writes additionally require instance administration, connection management, a current revision and same-origin browser requests. Key values are write-only and never returned. Controller keys cannot be runtime bindings. App IDs, installations and permission ceilings remain fixed.",
+    request: { params: operation.suffix.includes("{role}") ? z.object({ companyId: z.string().uuid(), role: githubProjectAppRoleSchema }) : z.object({ companyId: z.string().uuid() }),
+      ...(operation.schema ? { body: jsonBody(operation.schema) } : {}) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+  });
+}
 
 // ─── Secrets ─────────────────────────────────────────────────────────────────
 

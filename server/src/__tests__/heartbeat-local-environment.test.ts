@@ -229,8 +229,8 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   it.each(["default", "project", "task"])("refuses %s Local placement through public heartbeat before dispatch", async selection => {
     const companyId = randomUUID(), agentId = randomUUID(), localId = randomUUID(), projectId = randomUUID(), issueId = randomUUID();
     const tempDir = await mkdtemp(join(tmpdir(), "protected-heartbeat-")), marker = join(tempDir, "spawned");
-    await db.insert(companies).values({ id: companyId, name: "Protected", issuePrefix: "KEY", requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
-    await db.insert(environments).values({ id: localId, companyId, name: "Local", driver: "local", status: "active", config: {} });
+    await db.insert(companies).values({ id: companyId, name: "Protected", issuePrefix: `KEY${selection.toUpperCase()}`, requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(environments).values({ id: localId, name: `Protected Local ${companyId}`, driver: "local", status: "active", config: {} });
     await db.insert(agents).values({ id: agentId, companyId, name: "Blocked Local", role: "engineer", status: "idle", adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'executed')`] }, runtimeConfig: {}, permissions: {} });
     await db.insert(projects).values({ id: projectId, companyId, name: "No dispatch", executionWorkspacePolicy: selection === "project" ? { enabled: true, defaultMode: "shared_workspace", environmentId: localId } : null });
     await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Refuse Local", assigneeAgentId: agentId, executionWorkspaceSettings: selection === "task" ? { mode: "shared_workspace", environmentId: localId } : null });

@@ -10,6 +10,22 @@ let root: string, source: string, secret: string;
 beforeEach(async () => { root = await mkdtemp(path.join(tmpdir(), "controller-source-policy-")); source = path.join(root, "sources"); secret = path.join(root, "protected"); await mkdir(source); await mkdir(secret); vi.stubEnv("PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS", "1"); vi.stubEnv("PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG", ""); vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS", JSON.stringify([source])); vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS", JSON.stringify([source])); vi.stubEnv("PAPERCLIP_CONTROLLER_PROTECTED_PATHS", JSON.stringify([secret])); });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
 describe("controller source policy", () => {
+ it("accepts native signing references without exposing fixed legacy key storage", async () => {
+  const configFile = path.join(secret, "apps.json");
+  await writeFile(configFile, JSON.stringify({ stateDirectory: path.join(secret, "ledger"), apps: Object.fromEntries(["coordinator", "implementer", "reviewer"].map((role, i) => [role, { signingKeySecret: { secretId: `00000000-0000-4000-8000-00000000000${i}`, version: 1 } }])) }));
+  vi.stubEnv("PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG", configFile);
+  await expect(assertControllerSourcePathAllowed(source)).resolves.toBeUndefined();
+  await expect(assertControllerSourcePathAllowed(path.join(secret, "keys/old.pem"))).rejects.toThrow();
+ });
+ it("refuses native master-key and database/backup allowlist overlap", async () => {
+  vi.stubEnv("PAPERCLIP_HOME", source);
+  await expect(assertControllerSourcePathAllowed(source)).rejects.toThrow();
+ });
+ it("refuses an explicit native master-key file inside a source root", async () => {
+  vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", path.join(source, "master.key"));
+  await expect(assertControllerSourcePathAllowed(source)).rejects.toThrow();
+ });
+
  it("allows approved source and missing descendants", async () => { await expect(assertControllerSourcePathAllowed(source)).resolves.toBeUndefined(); await expect(assertControllerSourcePathAllowed(path.join(source, "new/file"))).resolves.toBeUndefined(); });
  it("rejects secrets and ancestor copies", async () => { await expect(assertControllerSourcePathAllowed(secret)).rejects.toThrow(); await expect(assertControllerSourcePathAllowed(root)).rejects.toThrow(); });
  it("rejects an approved root that contains protected storage", async () => { vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS", JSON.stringify([root])); await expect(assertControllerSourcePathAllowed(source)).rejects.toThrow(); });

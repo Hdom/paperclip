@@ -3,6 +3,7 @@ import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
+import { resolveDefaultSecretsKeyFilePath, resolveDefaultEmbeddedPostgresDir, resolveDefaultBackupDir, resolvePaperclipConfigPathForInstance, resolvePaperclipEnvPathForConfig } from "@paperclipai/shared/home-paths";
 
 export function controllerExecutionProtected(env: NodeJS.ProcessEnv = process.env) {
   return Boolean(env.PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS || env.PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG);
@@ -49,6 +50,9 @@ export async function assertControllerSourcePathAllowed(file: string, writing = 
   if (!controllerExecutionProtected()) return;
   try {
     const protectedPaths = ["/etc/paperclip/github-project-apps", "/var/lib/paperclip/github-project-apps", ...pathList("PAPERCLIP_CONTROLLER_PROTECTED_PATHS")];
+    const nativeConfig = process.env.PAPERCLIP_CONFIG?.trim() || process.env.PAPERCLIP_CONFIG_PATH?.trim() || resolvePaperclipConfigPathForInstance();
+    protectedPaths.push(nativeConfig, resolvePaperclipEnvPathForConfig(nativeConfig), resolveDefaultSecretsKeyFilePath(), resolveDefaultEmbeddedPostgresDir(), resolveDefaultBackupDir());
+    if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE?.trim()) protectedPaths.push(path.resolve(process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE.trim()));
     const configFile = process.env.PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG;
     if (configFile) {
       protectedPaths.push(path.dirname(configFile));
@@ -56,8 +60,15 @@ export async function assertControllerSourcePathAllowed(file: string, writing = 
       if (typeof config.stateDirectory !== "string" || !config.apps || typeof config.apps !== "object") throw refused();
       protectedPaths.push(config.stateDirectory);
       for (const role of ["coordinator", "implementer", "reviewer"]) {
-        if (typeof config.apps[role]?.privateKeyPath !== "string") throw refused();
-        protectedPaths.push(path.dirname(config.apps[role].privateKeyPath));
+        const app = config.apps[role];
+        if (!app || typeof app !== "object") throw refused();
+        const file = typeof app.privateKeyPath === "string" && path.isAbsolute(app.privateKeyPath);
+        const ref = app.signingKeySecret;
+        const native = !!ref && typeof ref === "object" && !Array.isArray(ref) && Object.keys(ref).length === 2 &&
+          typeof ref.secretId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.secretId) &&
+          Number.isSafeInteger(ref.version) && ref.version > 0;
+        if ((app.privateKeyPath !== undefined && !file) || (ref !== undefined && !native) || Number(file) + Number(native) !== 1) throw refused();
+        if (file) protectedPaths.push(path.dirname(app.privateKeyPath));
       }
     }
     const secrets = await Promise.all(protectedPaths.map(canonical));

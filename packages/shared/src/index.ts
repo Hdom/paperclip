@@ -2918,3 +2918,7 @@ export {
 export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
 
 export { WORKER_CHECK_IN_TIMEOUT_MS, WORKER_CHECK_IN_INTERVAL_MS, workerSupervisionConfigSchema, workerCheckInSchema, workerSupervisionStateSchema, readWorkerSupervision, type WorkerSupervisionState } from "./worker-supervision.js";
+
+export type { GitHubProjectAppRole, GitHubProjectAppIdentity, GitHubProjectAppSettings } from "./types/github-project-apps.js";
+
+export * from "./validators/github-project-apps.js";

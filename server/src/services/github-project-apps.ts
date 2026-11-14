@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath, rename, unlink } from "node:fs/promises";
-import { createSign, randomUUID } from "node:crypto";
+import { createHash, createPublicKey, createSign, randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
 import { conflict, forbidden, unprocessable } from "../errors.js";
@@ -16,20 +16,32 @@ export const PROJECT_APP_BOOTSTRAP = {
   repositoryId: 1457227143,
   fullName: "Hdom/paperclip-app-bootstrap-verification-20261113",
 } as const;
-const appSchema = z.object({ appId: positiveId, installationId: positiveId, agentId: z.string().uuid(), privateKeyPath: z.string().min(1) }).strict();
+const appSchema = z.object({
+  appId: positiveId, installationId: positiveId, agentId: z.string().uuid(),
+  privateKeyPath: z.string().min(1).optional(),
+  signingKeySecret: z.object({ secretId: z.string().uuid(), version: positiveId }).strict().optional(),
+}).strict().superRefine((app, ctx) => {
+  if (Number(!!app.privateKeyPath) + Number(!!app.signingKeySecret) !== 1)
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Choose exactly one protected signing-key reference" });
+});
 export const projectAppsConfigSchema = z.object({
   version: z.literal(1), companyId: z.string().uuid(), owner: z.literal("Hdom"),
   stateDirectory: z.string().min(1),
+  enabled: z.boolean().optional(),
+  revision: z.number().int().nonnegative().optional(),
+  blockedAgentIds: z.array(z.string().uuid()).max(1000).optional(),
   bootstrapRepository: z.object({
     repositoryId: z.literal(PROJECT_APP_BOOTSTRAP.repositoryId),
     fullName: z.literal(PROJECT_APP_BOOTSTRAP.fullName),
   }).strict().optional(),
   apps: z.object({ coordinator: appSchema, implementer: appSchema, reviewer: appSchema }).strict(),
 }).strict().superRefine((config, ctx) => {
-  for (const field of ["appId", "installationId", "agentId", "privateKeyPath"] as const) {
+  for (const field of ["appId", "installationId", "agentId"] as const) {
     if (new Set(Object.values(config.apps).map(app => app[field])).size !== 3)
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Use three distinct ${field} values` });
   }
+  if (new Set(Object.values(config.apps).map(app => app.signingKeySecret?.secretId ?? app.privateKeyPath)).size !== 3)
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Use three distinct signing secrets" });
 });
 export type ProjectAppsConfig = z.infer<typeof projectAppsConfigSchema>;
 const stateSchema = z.object({
@@ -72,9 +84,39 @@ export async function loadProjectAppsConfig(): Promise<ProjectAppsConfig | null>
   await protectedDirectory(config.stateDirectory);
   return config;
 }
+export async function projectAppsConfigSnapshot() {
+  const config = await loadProjectAppsConfig();
+  if (!config) return null;
+  return { config, revision: createHash("sha256").update(JSON.stringify(config)).digest("hex") };
+}
+export async function withProjectAppsConfigLock<T>(work: () => Promise<T>): Promise<T> {
+  const file = process.env.PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG;
+  if (!file) throw forbidden("Controller GitHub App support has not been prepared");
+  await protectedDirectory(path.dirname(file));
+  let handle;
+  try { handle = await open(`${file}.admin.lock`, "wx", 0o600); }
+  catch { throw conflict("GitHub App administration is busy or needs reconciliation"); }
+  try { return await work(); }
+  finally { await handle.close(); await unlink(`${file}.admin.lock`); }
+}
+export async function saveProjectAppsConfig(config: ProjectAppsConfig, expectedRevision: string) {
+  const current = await projectAppsConfigSnapshot();
+  if (!current || current.revision !== expectedRevision || current.config.companyId !== config.companyId)
+    throw conflict("GitHub App settings changed. Reload and confirm again");
+  const parsed = projectAppsConfigSchema.parse(config);
+  const file = process.env.PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG!;
+  const temporary = `${file}.${randomUUID()}.pending`;
+  const handle = await open(temporary, "wx", 0o600);
+  try { await handle.writeFile(JSON.stringify(parsed, null, 2) + "\n"); await handle.sync(); }
+  finally { await handle.close(); }
+  await rename(temporary, file);
+  const directory = await open(path.dirname(file), constants.O_RDONLY);
+  try { await directory.sync(); } finally { await directory.close(); }
+}
 export function projectAppRole(config: ProjectAppsConfig, companyId: string, agentId: string) {
   if (config.companyId !== companyId) return null;
-  return (Object.keys(config.apps) as ProjectAppRole[]).find(role => config.apps[role].agentId === agentId) ?? null;
+  return (Object.keys(config.apps) as ProjectAppRole[]).find(role => config.apps[role].agentId === agentId)
+    ?? (config.blockedAgentIds?.includes(agentId) ? "blocked" as const : null);
 }
 function samePermissions(actual: unknown, expected: Record<string, string>) {
   if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false;
@@ -90,6 +132,7 @@ function appJwt(appId: number, privateKey: string) {
 
 export function createProjectAppBroker(config: ProjectAppsConfig, options: {
   fetch?: typeof fetch; timeoutMs?: number; beforeMutation?: () => Promise<void>; assertActive?: () => void;
+  signKey?: (role: ProjectAppRole, appId: number, ref: { secretId: string; version: number }) => Promise<{ jwt: string; publicFingerprint: string }>;
 } = {}) {
   const fetchImpl = options.fetch ?? fetch;
   // No configurable API origin: production credentials can only be sent to GitHub.
@@ -130,7 +173,14 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
     } finally { clearTimeout(timeout); }
   }
   async function jwt(role: ProjectAppRole) {
-    try { return appJwt(config.apps[role].appId, await readProtected(config.apps[role].privateKeyPath, 32768)); }
+    try {
+      const app = config.apps[role];
+      if (app.signingKeySecret) {
+        if (!options.signKey) throw new Error("Controller signer unavailable");
+        return (await options.signKey(role, app.appId, app.signingKeySecret)).jwt;
+      }
+      return appJwt(app.appId, await readProtected(app.privateKeyPath!, 32768));
+    }
     catch { throw forbidden("GitHub App private key is invalid or not protected on the controller"); }
   }
   async function installation(role: ProjectAppRole, allowBootstrap = false) {
@@ -263,6 +313,37 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
     return repo;
   }
   return {
+    async inspect() {
+      const rows = [];
+      for (const role of ["coordinator", "implementer", "reviewer"] as const) {
+        const app = config.apps[role];
+        let inventoryToken: string | undefined;
+        try {
+          const installed = await installation(role, true);
+          const fingerprint = app.signingKeySecret && options.signKey
+            ? (await options.signKey(role, app.appId, app.signingKeySecret)).publicFingerprint
+            : `SHA256:${createHash("sha256").update(createPublicKey(await readProtected(app.privateKeyPath!, 32768)).export({ type: "spki", format: "der" })).digest("base64")}`;
+          const issued = await request(await jwt(role), `/app/installations/${app.installationId}/access_tokens`, "POST", { permissions: { metadata: "read" } });
+          if (typeof issued?.token === "string") inventoryToken = issued.token;
+          if (!inventoryToken || !samePermissions(issued?.permissions, { metadata: "read" }) || !Number.isFinite(Date.parse(issued?.expires_at)) ||
+              Date.parse(issued!.expires_at) <= Date.now() || Date.parse(issued!.expires_at) > Date.now() + 3610000) throw forbidden("Unexpected metadata scope");
+          const listing = await request(inventoryToken, "/installation/repositories?per_page=100");
+          if (!listing || !Array.isArray(listing.repositories) || listing.total_count !== listing.repositories.length || listing.repositories.length > 100)
+            throw forbidden("Unbounded inventory");
+          const repositories = listing.repositories.map((repo: Record<string, unknown>) => {
+            if (!Number.isSafeInteger(repo.id) || typeof repo.full_name !== "string" || !repo.full_name.startsWith(config.owner + "/") || repo.private !== true)
+              throw forbidden("Unexpected repository selection");
+            return { id: repo.id as number, fullName: repo.full_name, starter: repo.id === config.bootstrapRepository?.repositoryId };
+          });
+          rows.push({ role, status: "verified" as const, login: `${installed!.app_slug}[bot]`,
+            appUrl: `https://github.com/settings/apps/${installed!.app_slug}`, publicFingerprint: fingerprint, repositories });
+        } catch {
+          rows.push({ role, status: "attention" as const, login: null, appUrl: null, publicFingerprint: null, repositories: [],
+            message: "Verification failed. Check the signing key, exact App permissions and selected repositories." });
+        } finally { if (inventoryToken) await revoke(inventoryToken); }
+      }
+      return { checkedAt: new Date().toISOString(), roles: rows };
+    },
     // Operator readiness check only: validates installations and inventory,
     // without creating/enrolling repositories or exporting any credential.
     async verifySetup() {
@@ -271,6 +352,7 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
       return { owner: config.owner, installationsVerified: 3, bootstrapConfigured: !!config.bootstrapRepository };
     },
     async provision(projectId: string, reauthorize: () => Promise<void>) {
+      if (config.enabled === false) throw forbidden("GitHub App issuance is paused");
       await protectedDirectory(config.stateDirectory);
       let lock;
       try { lock = await open(`${statePath(projectId)}.lock`, "wx", 0o600); }
@@ -329,6 +411,7 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
       }
     },
     async workerCredential(role: "implementer" | "reviewer", projectId: string, reauthorize: () => Promise<void>) {
+      if (config.enabled === false) throw forbidden("GitHub App issuance is paused");
       await reauthorize();
       const value = await state(projectId);
       if (!value || value.phase !== "ready" || !value.repositoryId) throw conflict("Coordinator must provision this project repository first");

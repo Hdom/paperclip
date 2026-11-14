@@ -20,7 +20,9 @@ export async function projectAppSandbox() {
   for (const role of Object.keys(config.apps) as ProjectAppRole[]) {
     const key = generateKeyPairSync("rsa", { modulusLength: 2048 });
     publicKeys.set(config.apps[role].appId, key.publicKey);
-    await writeFile(config.apps[role].privateKeyPath, key.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+    const keyPath = config.apps[role].privateKeyPath;
+    if (!keyPath) throw new Error("Fixture requires a file signing key");
+    await writeFile(keyPath, key.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
   }
   const configPath = path.join(directory, "config.json");
   await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });

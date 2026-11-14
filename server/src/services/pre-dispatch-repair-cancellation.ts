@@ -34,8 +34,14 @@ function candidate(run: Run) {
 
 /** Positive scheduler provenance, not missing PID fields. Called under the issue
  * and run locks. A suppressed repair cannot conceal an unsettled predecessor. */
-export async function isPreDispatchRepairCancellationVerified(db: Db, run: Run): Promise<boolean> {
-  if (!candidate(run)) return false;
+export async function isPreDispatchRepairCancellationVerified(db: Db,
+  observed: Pick<Run, "id" | "companyId" | "agentId" | "runtimeMode" | "status" | "errorCode">): Promise<boolean> {
+  if (observed.runtimeMode !== "legacy" || observed.status !== "cancelled" || observed.errorCode !== SUPERSEDED) return false;
+  // Current continuation readers use narrow projections. Re-read complete,
+  // company/agent-bound evidence rather than treating omitted fields as null.
+  const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, observed.id),
+    eq(heartbeatRuns.companyId, observed.companyId), eq(heartbeatRuns.agentId, observed.agentId))).limit(1);
+  if (!run || !candidate(run)) return false;
   const issueId = run.contextSnapshot!.issueId;
   const visited = new Set<string>();
   let current: Run | undefined = run;

@@ -7,6 +7,7 @@ import { allowsGitHubCredentialExport } from "./github-credential-policy.js";
 import { issueTreeControlService } from "./issue-tree-control.js";
 import { logActivity } from "./activity-log.js";
 import { createProjectAppBroker, loadProjectAppsConfig, projectAppRole, type ProjectAppsConfig } from "./github-project-apps.js";
+import { secretService } from "./secrets.js";
 import type { GitCredential } from "./git-credentials.js";
 
 type RunInput = { companyId: string; agentId: string; runId: string };
@@ -23,7 +24,7 @@ function assertRunNotStopping(run: { status: string; resultJson: Record<string, 
 
 async function authorizedProject(db: Db, config: ProjectAppsConfig, input: RunInput) {
   const currentConfig = await loadProjectAppsConfig();
-  if (JSON.stringify(currentConfig) !== JSON.stringify(config)) throw forbidden("GitHub App configuration changed; retry with current authority");
+  if (currentConfig?.enabled === false || JSON.stringify(currentConfig) !== JSON.stringify(config)) throw forbidden("GitHub App configuration changed; retry with current authority");
   const { run, context } = await captureRunIdentity(db, input);
   assertRunNotStopping(run);
   const issueId = boundRunIssueId(run);
@@ -56,6 +57,7 @@ export async function resolveProjectAppCredential(db: Db, companyId: string, con
   if (!config || !context.agentId) return null;
   const role = projectAppRole(config, companyId, context.agentId);
   if (!role) return null;
+  if (role === "blocked" || config.enabled === false) return { configured: true, identitySource: "dedicated", error: "Managed GitHub App access is paused; personal credentials are not substituted" };
   if (role === "coordinator") return { configured: true, identitySource: "dedicated", error: "Coordinator uses project provisioning; its App token is never exported" };
   if (!context.heartbeatRunId) return { configured: true, identitySource: "dedicated", error: "GitHub App credentials require an active project run" };
   const input = { companyId, agentId: context.agentId, runId: context.heartbeatRunId };
@@ -67,7 +69,7 @@ export async function resolveProjectAppCredential(db: Db, companyId: string, con
     };
     await logActivity(db, { companyId, actorType: "agent", actorId: input.agentId, agentId: input.agentId, runId: input.runId,
       issueId: issue.id, entityType: "project", entityId: project.id, action: "github_project_app.token_requested", details: { role } });
-    const issued = await createProjectAppBroker(config, { beforeMutation: reauthorize }).workerCredential(role, project.id, reauthorize);
+    const issued = await createProjectAppBroker(config, { beforeMutation: reauthorize, signKey: (role, appId, ref) => secretService(db).signControllerGitHubAppJwt(config.companyId, ref.secretId, ref.version, role, appId) }).workerCredential(role, project.id, reauthorize);
     return { configured: true, identitySource: "dedicated", credential: {
       token: issued.token, source: "managed_connection", secretName: null, identitySource: "dedicated",
       githubIdentity: { userId: issued.userId, login: issued.login },
@@ -81,7 +83,7 @@ export async function resolveProjectAppCredential(db: Db, companyId: string, con
 export async function provisionRunProjectRepository(db: Db, input: RunInput, assertActive?: () => void) {
   assertActive?.();
   const config = await loadProjectAppsConfig();
-  if (!config || projectAppRole(config, input.companyId, input.agentId) !== "coordinator")
+  if (!config || config.enabled === false || projectAppRole(config, input.companyId, input.agentId) !== "coordinator")
     throw forbidden("Only the configured Coordinator can provision project repositories");
   const { project, issue } = await authorizedProject(db, config, input);
   const reauthorize = async () => {
@@ -102,7 +104,7 @@ export async function provisionRunProjectRepository(db: Db, input: RunInput, ass
   });
   await audit("github_project_app.provision_requested");
   try {
-    const result = await createProjectAppBroker(config, { beforeMutation: reauthorize, assertActive }).provision(project.id, reauthorize);
+    const result = await createProjectAppBroker(config, { beforeMutation: reauthorize, assertActive, signKey: (role, appId, ref) => secretService(db).signControllerGitHubAppJwt(config.companyId, ref.secretId, ref.version, role, appId) }).provision(project.id, reauthorize);
     await audit("github_project_app.provision_ready", { repositoryId: result.repositoryId, repositoryUrl: result.repositoryUrl });
     return result;
   } catch (error) {

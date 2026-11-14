@@ -24,6 +24,20 @@ beforeEach(async () => {
 afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
 const stagingEntries = async () => await readdir(snapshots).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return []; throw error; });
 describe("guarded controller asset snapshots", () => {
+ it.each([["codex", "auth.json"], ["claude", ".credentials.json"]])("stages approved %s auth and skills with native controller-secret configuration", async (name, authName) => {
+  const configFile = path.join(keys, "apps.json");
+  await writeFile(configFile, JSON.stringify({ stateDirectory: path.join(keys, "ledger"), apps: Object.fromEntries(["coordinator", "implementer", "reviewer"].map((role, i) => [role, { signingKeySecret: { secretId: `00000000-0000-4000-8000-00000000000${i}`, version: 1 } }])) }));
+  vi.stubEnv("PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG", configFile);
+  const home = path.join(sources, name); await mkdir(home); await mkdir(path.join(home, "skills"));
+  await writeFile(path.join(home, authName), "synthetic-approved-auth");
+  await writeFile(path.join(home, "skills/SKILL.md"), "synthetic-approved-skill");
+  const snapshot = await createControllerSourceSnapshot(home);
+  expect(await readFile(path.join(snapshot.directory, authName), "utf8")).toBe("synthetic-approved-auth");
+  expect(await readFile(path.join(snapshot.directory, "skills/SKILL.md"), "utf8")).toBe("synthetic-approved-skill");
+  await snapshot.cleanup();
+  await expect(createControllerSourceSnapshot(keys)).rejects.toThrow(/signing-key protection/);
+ });
+
  it("resolves approved credential and skill aliases into private regular files", async () => {
   await mkdir(path.join(sources, "home")); await mkdir(path.join(sources, "store"));
   await writeFile(path.join(sources, "auth.json"), '{"synthetic":"approved"}');

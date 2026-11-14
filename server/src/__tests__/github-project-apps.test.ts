@@ -199,6 +199,7 @@ describe("controller GitHub project App broker", () => {
   });
   it("rejects symlinked private keys and unsafe storage permissions", async () => {
     const original = sandbox.config.apps.reviewer.privateKeyPath;
+    if (!original) throw new Error("Fixture requires a file signing key");
     sandbox.config.apps.reviewer.privateKeyPath = path.join(sandbox.directory, "key-link.pem");
     await symlink(original, sandbox.config.apps.reviewer.privateKeyPath);
     await expect(sandbox.broker.provision(randomUUID(), async () => {})).rejects.toThrow("private key");

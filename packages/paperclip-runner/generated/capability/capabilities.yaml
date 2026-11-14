@@ -308,6 +308,15 @@
       "expectedMockState": "operation_result"
     },
     {
+      "id": "skill:skills/paperclip/SKILL.md:826",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/SKILL.md#L826:controller-managed-project-github-apps-optional-fork-feature",
+      "heading": "Controller-managed project GitHub Apps (optional fork feature)",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "scoped_discovery",
+      "expectedMockState": "operation_result"
+    },
+    {
       "id": "skill:skills/paperclip/references/api-reference.md:1",
       "kind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/api-reference.md#L1:paperclip-api-reference",
@@ -942,6 +951,15 @@
       "kind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/api-reference.md#L1669:common-mistakes",
       "heading": "Common Mistakes",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "scoped_discovery",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:1760",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md#L1760:controller-managed-project-github-apps-optional-fork-feature",
+      "heading": "Controller-managed project GitHub Apps (optional fork feature)",
       "primaryDisposition": "optional_agent_tool",
       "semanticOperation": "scoped_discovery",
       "expectedMockState": "operation_result"

@@ -8,9 +8,9 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 
 ## Baseline Counts
 
-- Skill/reference headings: 166
+- Skill/reference headings: 168
 - Eval cases: 106 across 16 groups
-- Total normative rows: 272
+- Total normative rows: 274
 - Legacy MCP aliases folded into normative rows: 42
 
 | Eval group | Cases |
@@ -75,6 +75,7 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/SKILL.md:full-reference:777 | optional_agent_tool | skills/paperclip/SKILL.md:777 |
 | skill:skills/paperclip/SKILL.md:conversational-confirmation-answers:781 | always_agent_tool | skills/paperclip/SKILL.md:781 |
 | skill:skills/paperclip/SKILL.md:incidental-feedback:798 | optional_agent_tool | skills/paperclip/SKILL.md:798 |
+| skill:skills/paperclip/SKILL.md:controller-managed-project-github-apps-optional-fork-feature:826 | optional_agent_tool | skills/paperclip/SKILL.md:826 |
 | skill:skills/paperclip/references/api-reference.md:paperclip-api-reference:1 | optional_agent_tool | skills/paperclip/references/api-reference.md:1 |
 | skill:skills/paperclip/references/api-reference.md:response-schemas:9 | optional_agent_tool | skills/paperclip/references/api-reference.md:9 |
 | skill:skills/paperclip/references/api-reference.md:agent-record-get-api-agents-me-or-get-api-agents-agentid:11 | optional_agent_tool | skills/paperclip/references/api-reference.md:11 |
@@ -145,6 +146,7 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/references/api-reference.md:agent-secret-proposals:1529 | optional_agent_tool | skills/paperclip/references/api-reference.md:1529 |
 | skill:skills/paperclip/references/api-reference.md:agent-secret-access:1629 | optional_agent_tool | skills/paperclip/references/api-reference.md:1629 |
 | skill:skills/paperclip/references/api-reference.md:common-mistakes:1669 | optional_agent_tool | skills/paperclip/references/api-reference.md:1669 |
+| skill:skills/paperclip/references/api-reference.md:controller-managed-project-github-apps-optional-fork-feature:1760 | optional_agent_tool | skills/paperclip/references/api-reference.md:1760 |
 | skill:skills/paperclip/references/artifacts.md:generated-artifacts-and-work-products:1 | always_agent_tool | skills/paperclip/references/artifacts.md:1 |
 | skill:skills/paperclip/references/artifacts.md:workspace-only-file-references:15 | optional_agent_tool | skills/paperclip/references/artifacts.md:15 |
 | skill:skills/paperclip/references/cases.md:cases:1 | optional_agent_tool | skills/paperclip/references/cases.md:1 |

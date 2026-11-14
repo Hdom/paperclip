@@ -10,8 +10,8 @@ beforeEach(async () => {
  root = await mkdtemp(path.join(os.tmpdir(), "protected-adapter-assets-")); source = path.join(root, "source"); home = path.join(source, "home"); keys = path.join(root, "keys"); snapshots = path.join(root, "snapshots");
  await mkdir(home, { recursive: true }); await mkdir(keys); await writeFile(path.join(keys, "synthetic.pem"), "synthetic-protected-sentinel", { mode: 0o600 });
  vi.stubEnv("PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS", "1"); vi.stubEnv("PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG", "");
- vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS", JSON.stringify([source, snapshots])); vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS", JSON.stringify([source]));
- vi.stubEnv("PAPERCLIP_CONTROLLER_PROTECTED_PATHS", JSON.stringify([keys])); vi.stubEnv("PAPERCLIP_CONTROLLER_ASSET_SNAPSHOT_ROOT", snapshots); vi.stubEnv("PAPERCLIP_HOME", path.join(source, "data")); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+ vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS", JSON.stringify([source, snapshots, path.join(root, "controller-data", "instances", "default", "companies", "company", "claude-prompt-cache")])); vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS", JSON.stringify([source]));
+ vi.stubEnv("PAPERCLIP_CONTROLLER_PROTECTED_PATHS", JSON.stringify([keys])); vi.stubEnv("PAPERCLIP_CONTROLLER_ASSET_SNAPSHOT_ROOT", snapshots); vi.stubEnv("PAPERCLIP_HOME", path.join(root, "controller-data")); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
 });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
 const children = async () => await readdir(snapshots).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return []; throw error; });

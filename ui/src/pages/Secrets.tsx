@@ -1,3 +1,4 @@
+import { ControllerSigningKeysSection } from "@/components/GitHubProjectAppControls";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1817,6 +1818,8 @@ export function Secrets() {
         <KeyRound className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Secrets</h1>
       </div>
+
+      <ControllerSigningKeysSection companyId={selectedCompanyId} />
 
       <Tabs
         value={activeTab}

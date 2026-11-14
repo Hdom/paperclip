@@ -1,4 +1,4 @@
-# Controller-managed GitHub project Apps (fork experiment)
+# GitHub App identities and controller signing secrets
 
 This opt-in enhancement adds three independent GitHub App identities for Hdom's personal account. It does not change existing OAuth connections or the chat/review-bot connector. It does not create Apps, keys, installations, or repositories at startup. It is disabled unless the controller sets `PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG`.
 
@@ -12,11 +12,15 @@ The controller operator registers and approves three private Apps, then installs
 | Implementer | Metadata read; Contents write; Pull requests write |
 | Reviewer | Metadata read; Contents read; Pull requests write |
 
-The API permission key for GitHub App installation repository access is `installation_repositories`; this was verified against GitHub's actual registration form. Repository creation uses `repository_creation`. Separate App IDs, installation IDs, agent IDs, and key paths are required. The broker validates the registered App owner and actual installation owner, personal-account target, selected-repository mode, suspended state, and exact permissions before use. A broader or missing permission is a blocker.
+The API permission key for GitHub App installation repository access is `installation_repositories`; this was verified against GitHub's actual registration form. Repository creation uses `repository_creation`. Separate App IDs, installation IDs, agent IDs, and signing identities are required. The broker validates the registered App owner and actual installation owner, personal-account target, selected-repository mode, suspended state, and exact permissions before use. A broader or missing permission is a blocker.
 
 GitHub's Coordinator permission is broader than two installation IDs. The broker enforces those two fixed IDs and never exports a Coordinator token. This boundary relies on the trusted controller. Worker tokens are independently narrowed by GitHub to one repository and one role's exact permissions.
 
-On the Linux controller, prepare a dedicated directory such as `/etc/paperclip/github-project-apps` with mode 0700. Store the operator-managed configuration and the three PEM files with mode 0600, owned by root or the controller service user. PEMs must never enter agent workspaces, agent environment variables, company secrets, task bodies, source repositories, logs, or desktop transcripts. Keep the mutable ledger in a separate mode-0700 controller directory such as `/var/lib/paperclip/github-project-apps`. The service user needs write access there. Do not mount either directory into a worker. Existing instance backup procedures must cover these directories without exposing their contents.
+Signing keys use Paperclip's native `local_encrypted` secret provider with the non-bindable `controller` scope. The provider master key remains controller-only. These records are not company, user, or plugin runtime secrets. Generic secret reads, rotation, deletion, environment references, and connection bindings cannot use them. A dedicated signer checks company, role, App ID, provider, and a pinned numeric version before decrypting; only a short-lived App JWT and public fingerprint leave that method. No API reveals or exports a PEM.
+
+The existing protected configuration and project ledger remain service-owned controller state. The configuration holds `signingKeySecret: { secretId, version }` references, never signing material. Use mode-0700 directories and mode-0600 files. Migration accepts only the three prepared role files beside the configuration. It encrypts native versions, compares public fingerprints, verifies GitHub access, atomically switches references, and verifies again before unlinking unchanged prepared files. Verification failure restores the original references before cleanup. Changed or unremovable files remain visible as pending cleanup. It does not create a second plaintext backup.
+
+Signing keys must never enter agent workspaces, runtime environment variables, ordinary secret scopes, tasks, repositories, logs, or transcripts. Backup policy must protect the native encrypted database records and their provider master key together. Do not mount controller state into workers.
 
 The service rejects symlinked paths, unprotected modes, oversized files, duplicate identities, and Windows execution. File permissions protect against worker access only while agents run on the remote worker identity. Shared worker processes can still inspect or reuse each other's delivered tokens. This is not strong agent isolation. Docker remains deferred.
 
@@ -29,9 +33,9 @@ Configuration shape (all values below are placeholders; never put a PEM into thi
   "owner": "Hdom",
   "stateDirectory": "/var/lib/paperclip/github-project-apps",
   "apps": {
-    "coordinator": { "appId": 1, "installationId": 101, "agentId": "00000000-0000-4000-8000-000000000002", "privateKeyPath": "/etc/paperclip/github-project-apps/coordinator.pem" },
-    "implementer": { "appId": 2, "installationId": 102, "agentId": "00000000-0000-4000-8000-000000000003", "privateKeyPath": "/etc/paperclip/github-project-apps/implementer.pem" },
-    "reviewer": { "appId": 3, "installationId": 103, "agentId": "00000000-0000-4000-8000-000000000004", "privateKeyPath": "/etc/paperclip/github-project-apps/reviewer.pem" }
+    "coordinator": { "appId": 1, "installationId": 101, "agentId": "00000000-0000-4000-8000-000000000002", "signingKeySecret": { "secretId": "00000000-0000-4000-8000-000000000011", "version": 1 } },
+    "implementer": { "appId": 2, "installationId": 102, "agentId": "00000000-0000-4000-8000-000000000003", "signingKeySecret": { "secretId": "00000000-0000-4000-8000-000000000012", "version": 1 } },
+    "reviewer": { "appId": 3, "installationId": 103, "agentId": "00000000-0000-4000-8000-000000000004", "signingKeySecret": { "secretId": "00000000-0000-4000-8000-000000000013", "version": 1 } }
   }
 }
 ```
@@ -45,6 +49,22 @@ Approved shared credential and skill links are materialized into private regular
 Before enabling protection, create a service-owned mode-0700 scratch root, default `/var/lib/paperclip/controller-assets`, or set root-controlled `PAPERCLIP_CONTROLLER_ASSET_SNAPSHOT_ROOT` to a dedicated absolute path. Include it in `PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS` and keep it disjoint from every `PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS` entry. Configure the controller's `TMPDIR` to an approved private scratch root too, so intermediate archives and provider assets remain inside approved readable paths. Keep App signing keys, config and ledger out of all scratch and materialization roots. Do not add a broad ancestor to an allowlist to bypass a refusal.
 
 These safeguards cover the reviewed Codex/Claude materialization and asset-transfer paths. They remain an application-enforced boundary and do not establish strong OS isolation. Production activation requires checked source/write/scratch roots, a clean process drain, pinned remote targets, the current reviewed release, and live GitHub permission/enrollment verification before the real run.
+
+## Existing Paperclip UI
+
+Open **Agent → Tools → GitHub identity** to see the assigned App role, verified bot, status, and effective authority. An instance administrator with connection-management permission can open **Manage GitHub App** there. **Secrets → Controller signing keys** opens the same controls and shows encrypted storage and pinned versions.
+
+The dialog supports explicit access verification, role assignment, issuance pause/resume, prepared-file migration and cleanup, write-only replacement-key validation/rotation, and verification/activation of a retained encrypted version. Assignment and issuance changes require a review and confirmation. Key/version and migration changes have separate confirmations. Stale revisions, active affected runs, permission drift, or failed verification refuse the change. Former role agents remain blocked from personal fallback until explicitly released. Pausing retains managed identity selection and prevents new credentials; it does not revoke a token already delivered.
+
+App IDs, installation IDs, the Hdom owner, and permission ceilings remain fixed to the approved identities. GitHub registration, key generation/revocation, and installation repository selection remain in GitHub, with links from each role. The Paperclip dialog reports installation inventory; it cannot grant broader access. Initial instance bootstrap and machine filesystem allowlists remain controller settings because they establish the trusted signer and host boundary. They are not agent-editable switches. Runtime issuance and role/key lifecycle are UI-controlled.
+
+Source roots must also include only the specific managed runtime caches needed for transfers, such as `<instance>/companies/<companyId>/claude-prompt-cache`. Never allow the instance root or another ancestor of its native key, database, configuration, or backup stores. Tokens in shared worker processes do not provide strong OS isolation; Docker remains deferred.
+
+## Additive migration and rollback
+
+Canonical migration history through `0464` is unchanged. `0465_gifted_banshee.sql` has exactly the SQL bytes and SHA256 of the previously deployed custom worker `0375`; normal hash-only receipts therefore recognize it under its new filename without repeating column creation or rewriting old receipts. `0466_friendly_roulette` adds the controller secret scope afterward. Disposable tests cover fresh, canonical, pre-custom, and custom histories with retained synthetic rows and full catalog checks, including repeated upgrades. A nonstandard journal with a filename column requires separate compatibility proof before activation.
+
+Do not deploy an older release that cannot use native signing references after plaintext cleanup. Configuration rollback during migration happens before any cleanup; subsequent key recovery uses retained encrypted versions through a compatible reviewed release. Keep real activation separate from source tests and only deploy artifacts produced by Hdom/paperclip's release workflow.
 
 ## Coordinator first-run operation
 
@@ -60,7 +80,7 @@ GitHub documents that enrollment requires repository admin access. It also lists
 
 ## Worker credential delivery
 
-Existing operation-time GitHub credential acquisition resolves configured worker roles through this broker before the OAuth path. Git/gh launchers and native transports retain their existing credential handling. A configured worker with missing, revoked, broader, or unavailable App access fails closed; it never falls back to a personal credential. Configured roles also suppress host GitHub fallback and OAuth-backed GitHub MCP selection/dispatch through the existing identity-selection seam. They use Git/gh with their project App; existing OAuth grants remain stored for other agents and users. Unconfigured agents and a disabled feature retain the existing behavior.
+Existing operation-time GitHub credential acquisition resolves configured worker roles through this broker before the OAuth path. Git/gh launchers and native transports retain their existing credential handling. A configured worker with missing, revoked, broader, or unavailable App access fails closed; it never falls back to a personal credential. Configured roles also suppress host GitHub fallback and OAuth-backed GitHub MCP selection/dispatch through the existing identity-selection seam. They use Git/gh with their project App; existing OAuth grants remain stored for other agents and users. Unconfigured agents retain the existing behavior. Managed roles that are paused or blocked do not fall back to personal credentials.
 
 For each acquisition the controller requests an installation token with an explicit single `repository_ids` entry and exact role permissions. It validates the returned repository scope, permissions, and expiry, then checks the repository still matches its private Hdom binding and verifies the App bot's public identity. Commit author settings use the verified bot ID and login. No arbitrary token, private key, or JWT is persisted in the project ledger. The existing in-memory credential environment is delivered to the command only.
 
@@ -99,6 +119,6 @@ These literal values are the only accepted exception. The default remains strict
 
 After creating and proving both worker project grants, the controller durably records `bootstrap_cleanup_pending`. It removes only this starter from the two fixed worker installations, verifies the project remains selected and starter is absent, then marks the project ready. All non-revocation DELETE operations honor the current authorization and cancellation fences. Failed or uncertain removal retains the pending project, withholds agent credentials and never repeats creation. Reconciliation checks fresh inventories and skips a starter grant already absent. The empty starter repository itself is preserved; removing its installation grants does not delete it. The Coordinator's starter grant remains until an owner-approved cleanup path can remove it safely.
 
-The operator may call the broker's `verifySetup()` from a protected controller process to validate registration, installation, and starter inventory. It exports no token and creates or enrolls no repository; no public route was added. The real project run remains a separate authorized action.
+The administrator can use **Verify App access** to validate registration, installation, and starter inventory. It exports no token and creates or enrolls no repository. The same broker verification remains available to protected controller maintenance. The real project run remains a separate authorized action.
 
 GraphQL reference: https://docs.github.com/en/graphql/reference/repos#repository
