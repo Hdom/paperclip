@@ -29,7 +29,7 @@ describe("HTTP logger redaction", () => {
     const app = express(); app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream))); app.use(express.json());
     app.use((_req, res, next) => { res.setHeader("x-provider-echo", headerCanary); if (status === 500) return next(new Error(sentinel)); res.status(status).json({ ok: true }); });
     app.use(errorHandler);
-    for (const route of ["/api/companies/test/github-project-apps/keys/reviewer/rotate", "/API/companies/test/github-project-apps/malformed"]) {
+    for (const route of ["/api/companies/test/github-project-apps/keys/reviewer/rotate", "/API/companies/test/github-project-apps/malformed", "/api/companies/test/signing-keys", "/api/companies/test/signing-keys/id/rotate", "/API/companies/test/signing%2Dkeys/malformed"]) {
       const response = await request(app).post(route).set("x-unexpected", headerCanary).send({ privateKey: sentinel, unexpected: sentinel });
       expect(JSON.stringify(response.body)).not.toContain(sentinel);
     }

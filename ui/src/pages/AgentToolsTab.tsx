@@ -83,7 +83,7 @@ function GitHubIdentitySection({
               <>
                 <p className="mt-0.5 text-sm font-medium text-foreground">{managedApp ? `${managedApp.role} GitHub App${managedApp.login ? ` · ${managedApp.login}` : ""}` : "Managed GitHub access paused"}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">{managedApp ? `${managedApp.status}. ${managedApp.role === "coordinator" ? "Creates and enrolls project repositories; its token is never delivered to the agent." : "Uses a short-lived token limited to the current project repository."}` : "Its previous App assignment was removed. An administrator must explicitly release it before other GitHub connection rules apply."}</p>
-                <p className="mt-1 text-xs text-muted-foreground">Personal GitHub and host credentials are not substituted. Signing keys remain in controller-only Paperclip Secrets.</p>
+                <p className="mt-1 text-xs text-muted-foreground">Personal GitHub and host credentials are not substituted. Signing keys remain in Paperclip-managed Paperclip Secrets.</p>
               </>
             ) : dedicatedIdentity ? (
               <>

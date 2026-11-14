@@ -6,7 +6,7 @@ import { expect, test, type APIResponse } from "@playwright/test";
 import type { GitHubProjectAppSettings } from "@paperclipai/shared";
 async function json(response: APIResponse) { expect(response.ok(), `${response.status()}: ${await response.text()}`).toBeTruthy(); return response.json(); }
 for (const mobile of [false, true]) {
-  test(`GitHub Apps in existing Tools and Secrets ${mobile ? "phone" : "desktop"}`, async ({ page, request }, testInfo) => {
+  test(`GitHub Apps in Permissions and Secrets ${mobile ? "phone" : "desktop"}`, async ({ page, request }, testInfo) => {
     test.setTimeout(90_000);
     await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1440, height: 1000 });
     const company = await json(await request.post("/api/companies", { data: { name: `App identity UI ${randomUUID()}` } }));
@@ -32,6 +32,18 @@ for (const mobile of [false, true]) {
       } else expect(route.request().method()).toBe("GET");
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(data) });
     });
+    await page.route(`**/api/companies/${company.id}/signing-keys`, async route => {
+      expect(route.request().method()).toBe("GET");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ canManage: true,
+        keys: data.roles.map(row => ({ id: row.secretId, name: `GitHub App ${row.role} signing key`, description: "Synthetic native signing key",
+          status: "active", type: "github_app", algorithm: null, publicFingerprint: null, latestVersion: row.latestVersion,
+          revision: null, githubApp: { role: row.role, appId: row.appId }, createdAt: "2026-11-14T00:00:00Z", updatedAt: "2026-11-14T00:00:00Z" })) }) });
+    });
+    await page.route(`**/api/companies/${company.id}/signing-keys/*/versions`, async route => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([
+        { id: "fixture-2", version: 2, status: "current", createdAt: "2026-11-14T00:00:00Z" },
+        { id: "fixture-1", version: 1, status: "previous", createdAt: "2026-11-13T00:00:00Z" }]) });
+    });
     // The Refine-v2 layout intentionally hides Tools. Exercise the current
     // Permissions / Trust entry point on both desktop and phone.
     await page.goto(`/${company.issuePrefix}/agents/${agents[1].urlKey ?? agents[1].id}/permissions`);
@@ -54,12 +66,18 @@ for (const mobile of [false, true]) {
     await expect(page.getByText("Managed GitHub access paused", { exact: true })).toBeVisible();
     await expect(page.getByText("Connect my GitHub", { exact: true })).toHaveCount(0);
     await page.goto(`/${company.issuePrefix}/company/settings/secrets`);
-    await expect(page.getByRole("heading", { name: "Controller signing keys", exact: true })).toBeVisible();
-    await expect(page.getByText("Coordinator: encrypted native secret · version 1 · active", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Manage App signing keys", exact: true }).click();
+    if (mobile) await page.getByLabel("Secrets section", { exact: true }).selectOption("signing-keys");
+    else await page.getByRole("tab", { name: "Signing keys", exact: true }).click();
+    await expect(page.getByRole("table")).toBeVisible();
+    await page.getByRole("button", { name: "GitHub App implementer signing key", exact: true }).click();
+    const keyDetails = page.getByRole("dialog", { name: "GitHub App implementer signing key", exact: true });
+    await expect(keyDetails.getByText("Active version: 1", { exact: false })).toBeVisible();
+    await expect(keyDetails.getByText("Latest stored version", { exact: true })).toBeVisible();
+    await expect(keyDetails.locator('input[type="file"]')).toHaveCount(0);
+    await keyDetails.getByRole("button", { name: "Manage GitHub App and key", exact: true }).click();
     await expect(dialog).toBeVisible();
     await dialog.locator("summary").filter({ hasText: "Signing key" }).nth(1).click();
-    await expect(dialog.getByText("Controller signing only. The key value cannot be revealed or bound to an agent.", { exact: true }).nth(1)).toBeVisible();
+    await expect(dialog.getByText("Used by Paperclip for signing. The key value cannot be revealed or bound to an agent.", { exact: true }).nth(1)).toBeVisible();
     await expect(dialog.getByLabel("Replacement Implementer signing key", { exact: true })).toHaveAttribute("type", "file");
     await dialog.getByLabel("Replacement Implementer signing key", { exact: true }).scrollIntoViewIfNeeded();
     expect(await page.content()).not.toContain("-----BEGIN PRIVATE KEY-----");

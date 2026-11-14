@@ -2922,3 +2922,7 @@ export { WORKER_CHECK_IN_TIMEOUT_MS, WORKER_CHECK_IN_INTERVAL_MS, workerSupervis
 export type { GitHubProjectAppRole, GitHubProjectAppIdentity, GitHubProjectAppSettings } from "./types/github-project-apps.js";
 
 export * from "./validators/github-project-apps.js";
+
+export type { SigningKeySummary, SigningKeyCatalog } from "./types/signing-keys.js";
+
+export * from "./validators/signing-keys.js";

@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 const roles = ["coordinator", "implementer", "reviewer"] as const;
 const labels = { coordinator: "Coordinator", implementer: "Implementer", reviewer: "Reviewer" };
 const permissions = {
-  coordinator: "Creates project repositories and enrolls the two fixed worker installations. Its token stays on the controller.",
+  coordinator: "Creates project repositories and enrolls the two fixed worker installations. Paperclip retains its token.",
   implementer: "Writes project contents and opens pull requests.",
   reviewer: "Reads project contents and submits pull request reviews.",
 };
@@ -89,7 +89,7 @@ export function GitHubProjectAppManager({ companyId, agentId, label = "Manage Gi
           <details><summary className="cursor-pointer text-sm font-medium">Signing key · {row.keyStorage === "native_encrypted" ? "Paperclip Secrets" : "Migration required"}</summary>
             {row.keyStorage === "native_encrypted" ? <div className="space-y-2 mt-2 text-sm">
               <p>Secret {row.secretId} · Active version {row.pinnedVersion} · Latest stored version {row.latestVersion ?? "unavailable"}</p>
-              <p>Controller signing only. The key value cannot be revealed or bound to an agent.</p>
+              <p>Used by Paperclip for signing. The key value cannot be revealed or bound to an agent.</p>
               {row.publicFingerprint && <p className="break-all font-mono text-xs">Verified public fingerprint: {row.publicFingerprint}</p>}
               <p className="text-xs text-muted-foreground">Generate a replacement in this App’s GitHub settings. Paperclip validates it before activation and keeps encrypted versions for recovery. GitHub key revocation remains in GitHub.</p>
               <input key={`${row.role}-${data.revision}`} aria-label={`Replacement ${labels[row.role]} signing key`} type="file" accept=".pem" disabled={busy} onChange={event => { setFiles(value => ({ ...value, [row.role]: event.target.files?.[0] })); setKeyConfirmed(value => ({ ...value, [row.role]: false })); }} />
@@ -98,7 +98,7 @@ export function GitHubProjectAppManager({ companyId, agentId, label = "Manage Gi
               <div className="flex items-center gap-2"><input aria-label={`${labels[row.role]} key version`} className="w-20 rounded border bg-background p-1 text-base md:text-sm" type="number" min={1} max={row.latestVersion ?? undefined} value={versions[row.role] ?? row.pinnedVersion ?? 1} disabled={busy} onChange={event => setVersions(value => ({ ...value, [row.role]: Number(event.target.value) }))} />
                 <Button variant="outline" size="sm" disabled={busy || !keyConfirmed[row.role] || (versions[row.role] ?? row.pinnedVersion) === row.pinnedVersion} onClick={() => void action(() => githubProjectAppsApi.activate(companyId, row.role, { revision: data.revision, confirmed: true, version: versions[row.role]! }))}>Verify and activate version</Button>
               </div>
-            </div> : <p className="mt-2 text-sm">Controller migration must finish before key management is available here.</p>}
+            </div> : <p className="mt-2 text-sm">Migration to Paperclip Secrets must finish before key management is available here.</p>}
           </details>
         </section>)}
         {blocked && !current && <div className="rounded border p-3 text-sm space-y-2"><p>This agent’s former App assignment remains paused. Personal GitHub fallback is suppressed.</p><Button variant="outline" disabled={busy || !confirmed} onClick={() => void action(() => githubProjectAppsApi.configure(companyId, { revision: data.revision, confirmed: true, releaseAgentId: agentId }))}>Release managed identity and use existing GitHub connection rules</Button></div>}
@@ -134,21 +134,9 @@ export function AgentGitHubAppIdentity({ companyId, agentId }: { companyId: stri
       <p className="text-xs text-muted-foreground">New project tokens are blocked. Personal GitHub credentials are not substituted.</p>
     </> : current ? <>
       <p className="text-sm break-words">{current.role} GitHub App{current.login ? ` · ${current.login}` : ""}</p>
-      <p className="text-xs text-muted-foreground">{current.status}. {current.role === "coordinator" ? "Creates and enrolls project repositories. Its token stays on the controller." : "Uses short-lived tokens limited to the current project repository."}</p>
+      <p className="text-xs text-muted-foreground">{current.status}. {current.role === "coordinator" ? "Creates and enrolls project repositories. Paperclip retains its token." : "Uses short-lived tokens limited to the current project repository."}</p>
     </> : <p className="text-xs text-muted-foreground">No GitHub App role is assigned to this agent.</p>}
     {data.canManage ? <GitHubProjectAppManager companyId={companyId} agentId={agentId} label={current || blocked ? "Manage GitHub App" : "Use a GitHub App"} />
       : <p className="text-xs text-muted-foreground">Managed by an administrator</p>}
-  </section>;
-}
-
-
-export function ControllerSigningKeysSection({ companyId }: { companyId: string }) {
-  const query = useGitHubProjectApps(companyId);
-  if (!query.data?.available || !query.data.canManage) return null;
-  return <section id="controller-signing-keys" className="rounded-lg border p-4 space-y-3">
-    <h2 className="font-semibold">Controller signing keys</h2>
-    <p className="text-sm text-muted-foreground">GitHub App signing keys use Paperclip’s encrypted secret provider and version history. They are not available in agent secret pickers or bindings.</p>
-    {query.data.roles.map(row => <p key={row.role} className="text-sm">{labels[row.role]}: {row.keyStorage === "native_encrypted" ? `encrypted native secret · version ${row.pinnedVersion} · ${row.keyStatus}` : "native migration pending"}</p>)}
-    <GitHubProjectAppManager companyId={companyId} label="Manage App signing keys" />
   </section>;
 }

@@ -5,7 +5,8 @@ A committed script or `--execute` / `-ConfirmChange` flag does not grant approva
 root access, a credential, or permission to start a project.
 
 GitHub App identity assignment, issuance, verification and key lifecycle belong in
-Agent > Tools > GitHub identity and Secrets. Use those UI controls. These utilities
+Agent > Permissions / Trust > Allowed connectors > GitHub identity and
+Settings > Secrets > Signing keys. Use those UI controls. These utilities
 cover host release handling, recovery qualification and source inspection. They
 never replace the UI with a second App configuration system.
 

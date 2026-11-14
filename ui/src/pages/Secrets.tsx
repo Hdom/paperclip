@@ -1,4 +1,4 @@
-import { ControllerSigningKeysSection } from "@/components/GitHubProjectAppControls";
+import { SigningKeysTab } from "./secrets/SigningKeysTab";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -139,7 +139,7 @@ type CreateMode = "managed" | "external";
 type RotateMode = "value" | "reference";
 type SecretValueProvider = "company" | "user";
 type ProvidedByFilter = "all" | SecretValueProvider;
-type SecretsTab = "secrets" | "my-secrets" | "vaults" | "proposals";
+type SecretsTab = "signing-keys" | "secrets" | "my-secrets" | "vaults" | "proposals";
 type SecretsViewMode = "folders" | "flat";
 
 const SECRETS_VIEW_MODE_STORAGE_KEY = "paperclip.secrets.viewMode";
@@ -1819,7 +1819,6 @@ export function Secrets() {
         <h1 className="text-lg font-semibold">Secrets</h1>
       </div>
 
-      <ControllerSigningKeysSection companyId={selectedCompanyId} />
 
       <Tabs
         value={activeTab}
@@ -1827,8 +1826,10 @@ export function Secrets() {
         className="flex flex-col gap-4"
       >
         <PageTabBar
+          ariaLabel="Secrets section"
           items={[
             { value: "secrets", label: "Secrets" },
+            { value: "signing-keys", label: "Signing keys" },
             { value: "my-secrets", label: "My secrets" },
             ...(hideVaultsTab ? [] : [{ value: "vaults", label: "Provider vaults" }]),
             ...(hideProposalsTab
@@ -1856,6 +1857,8 @@ export function Secrets() {
           value={activeTab}
           onValueChange={(value) => setActiveTab(value as SecretsTab)}
         />
+
+        <TabsContent value="signing-keys"><SigningKeysTab companyId={selectedCompanyId} /></TabsContent>
 
         <TabsContent value="secrets" className="flex flex-col gap-3">
           <SecretsHowToUse />
@@ -2347,6 +2350,7 @@ export function Secrets() {
               <Tabs value={secretDetailTab} onValueChange={setSecretDetailTab} className="flex-1 min-h-0 flex flex-col">
                 <div className="border-b border-border px-4">
                   <PageTabBar
+                    ariaLabel="Secret details section"
                     items={[
                       { value: "details", label: "Details" },
                       { value: "usage", label: usageQuery.data ? `Usage (${usageQuery.data.bindings.length})` : "Usage" },
@@ -2485,6 +2489,7 @@ export function Secrets() {
               <Tabs value={secretDetailTab} onValueChange={setSecretDetailTab} className="flex-1 min-h-0 flex flex-col">
                 <div className="border-b border-border px-4">
                   <PageTabBar
+                    ariaLabel="Secret definition section"
                     items={[
                       { value: "details", label: "Details" },
                       { value: "coverage", label: "Coverage" },

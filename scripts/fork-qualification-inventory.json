@@ -1,0 +1,557 @@
+{
+  "baseline": "37767b35e5a142c957c8eeda55da163527443c58",
+  "tasks": [
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/heartbeat/retries.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/heartbeat/run-completion.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/heartbeat-task-context.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/issue-scheduled-retry-routes.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/explicit-native-continuation.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/ssh-host-stop-receipt.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/worker-supervision.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/github-project-apps.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/github-project-app-runtime.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/controller-signing-secrets.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/signing-keys-routes.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/secrets/signing-key-material.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/github-project-app-admin.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/github-project-app-api-contract.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/http-log-redaction.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/controller-execution-protection.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/controller-native-staging-protection.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/secrets-service.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/secrets-routes.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/agent-secrets-routes.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/agent-instance-secrets.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/project-instance-secrets.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/secrets-service-user-secret-owner-scoped.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/heartbeat-local-environment.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts",
+        "-t",
+        "Local placement"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/heartbeat-plugin-environment.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts",
+        "-t",
+        "protected"
+      ]
+    },
+    {
+      "cwd": ".",
+      "files": [
+        "packages/db/src/worker-supervision-upgrade.test.ts"
+      ],
+      "extra": []
+    },
+    {
+      "cwd": ".",
+      "files": [
+        "packages/adapter-utils/src/controller-source-protection.test.ts",
+        "packages/adapter-utils/src/controller-source-materialization.test.ts",
+        "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts",
+        "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"
+      ],
+      "extra": []
+    },
+    {
+      "cwd": ".",
+      "files": [
+        "ui/src/pages/AgentToolsTab.test.tsx",
+        "ui/src/pages/secrets/SigningKeysTab.test.tsx",
+        "ui/src/components/GitHubProjectAppControls.test.tsx",
+        "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx",
+        "ui/src/components/AgentContextualSidebar.test.tsx",
+        "ui/src/pages/agent-detail-navigation.test.ts"
+      ],
+      "extra": []
+    }
+  ],
+  "baselineTasks": [
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/heartbeat/retries.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/heartbeat/run-completion.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/heartbeat-task-context.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/issue-scheduled-retry-routes.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/explicit-native-continuation.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/ssh-host-stop-receipt.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/worker-supervision.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/github-project-apps.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/github-project-app-runtime.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/controller-signing-secrets.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/github-project-app-admin.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/github-project-app-api-contract.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/http-log-redaction.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/controller-execution-protection.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/controller-native-staging-protection.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/secrets-service.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/secrets-routes.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/agent-secrets-routes.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/agent-instance-secrets.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/project-instance-secrets.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/secrets-service-user-secret-owner-scoped.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/heartbeat-local-environment.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts",
+        "-t",
+        "Local placement"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/heartbeat-plugin-environment.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts",
+        "-t",
+        "protected"
+      ]
+    },
+    {
+      "cwd": ".",
+      "files": [
+        "packages/db/src/worker-supervision-upgrade.test.ts"
+      ],
+      "extra": []
+    },
+    {
+      "cwd": ".",
+      "files": [
+        "packages/adapter-utils/src/controller-source-protection.test.ts",
+        "packages/adapter-utils/src/controller-source-materialization.test.ts",
+        "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts",
+        "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"
+      ],
+      "extra": []
+    },
+    {
+      "cwd": ".",
+      "files": [
+        "ui/src/pages/AgentToolsTab.test.tsx",
+        "ui/src/components/GitHubProjectAppControls.test.tsx",
+        "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx",
+        "ui/src/components/AgentContextualSidebar.test.tsx",
+        "ui/src/pages/agent-detail-navigation.test.ts"
+      ],
+      "extra": []
+    }
+  ],
+  "reviewedAdditions": [
+    "src/__tests__/signing-keys-routes.test.ts",
+    "src/secrets/signing-key-material.test.ts",
+    "ui/src/pages/secrets/SigningKeysTab.test.tsx"
+  ]
+}
