@@ -6,6 +6,7 @@ import { AgentPanel } from "@/components/agent-detail/AgentPanels";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
+import { AgentGitHubAppIdentity } from "@/components/GitHubProjectAppControls";
 import { AppLogo } from "../apps/AppLogo";
 
 const SHOWN_LOGOS = 3;
@@ -52,13 +53,13 @@ export function AgentAllowedConnectors({ agentId, companyId }: { agentId: string
         </Button>
       }
     >
-      <div className="flex min-w-0 flex-1 flex-col justify-center px-(--agent-detail-module-inset) pb-(--agent-detail-module-inset)">
+      <div className="flex min-w-0 flex-1 flex-col justify-center gap-3 px-(--agent-detail-module-inset) pb-(--agent-detail-module-inset)">
         {loading ? (
           <p role="status" className="text-xs text-muted-foreground">Resolving access…</p>
         ) : failed ? (
           <p role="alert" className="text-xs text-destructive">Couldn’t load this agent’s connectors.</p>
         ) : apps.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No connectors are allowed yet.</p>
+          <p className="text-xs text-muted-foreground">No connector tools are allowed yet.</p>
         ) : (
           <ul aria-label="Connectors" className="flex max-h-(--agent-detail-logo-rows-h) flex-wrap gap-3 overflow-hidden">
             {apps.slice(0, SHOWN_LOGOS).map((app) => (
@@ -68,6 +69,7 @@ export function AgentAllowedConnectors({ agentId, companyId }: { agentId: string
             ))}
           </ul>
         )}
+        <AgentGitHubAppIdentity companyId={companyId} agentId={agentId} />
       </div>
     </AgentPanel>
   );

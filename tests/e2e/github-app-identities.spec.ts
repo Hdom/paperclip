@@ -32,7 +32,9 @@ for (const mobile of [false, true]) {
       } else expect(route.request().method()).toBe("GET");
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(data) });
     });
-    await page.goto(`/${company.issuePrefix}/agents/${agents[1].urlKey ?? agents[1].id}/tools`);
+    // The Refine-v2 layout intentionally hides Tools. Exercise the current
+    // Permissions / Trust entry point on both desktop and phone.
+    await page.goto(`/${company.issuePrefix}/agents/${agents[1].urlKey ?? agents[1].id}/permissions`);
     await expect(page.getByRole("heading", { name: "GitHub identity", exact: true })).toBeVisible();
     await expect(page.getByText("implementer GitHub App · fixture-implementer[bot]", { exact: true })).toBeVisible();
     await expect(page.getByText("Connect my GitHub", { exact: true })).toHaveCount(0);
