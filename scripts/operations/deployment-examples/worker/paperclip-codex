@@ -1,0 +1,17 @@
+#!/bin/sh
+set -u
+case "${1:-}" in
+ --version|-V|--help|-h|login) exec /usr/local/bin/codex "$@" ;;
+esac
+exec 9<>/var/lib/paperclip-worker/codex.lock
+/usr/bin/flock --exclusive --timeout 180 9 || exit 75
+audit=/var/lib/paperclip-worker/codex-executions.tsv
+run_id=${PAPERCLIP_RUN_ID:-unattributed}
+record_end() {
+ status=$?
+ printf '%s\tend\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" "$$" "$run_id" "$status" >> "$audit"
+}
+trap record_end EXIT
+printf '%s\tstart\t%s\t%s\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" "$$" "$run_id" >> "$audit"
+/usr/local/bin/codex "$@"
+exit $?

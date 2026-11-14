@@ -415,8 +415,15 @@ try {
   const extractedServer = path.join(extractedPayload, 'node_modules/@paperclipai/server');
   run(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(path.join(extractedServer, 'dist/app.js')).href)}); process.exit(0)`], extractedPayload);
   fs.accessSync(path.join(extractedServer, 'dist/vendor/paperclip-runner/bin/paperclip-runnerd'), fs.constants.X_OK);
+  const operatorTools = path.join(staging, 'operator-tools');
+  run(process.execPath, ['scripts/operations/build-tools.mjs', operatorTools, sha], source);
+  const operatorArchive = `paperclip-${sha.slice(0, 12)}-operator-tools.tar.gz`;
+  run('tar', ['-czf', path.join(output, operatorArchive), '-C', staging, 'operator-tools'], staging);
+  const operatorManifest = json(path.join(operatorTools, 'operator-tools-manifest.json'));
+  if (operatorManifest.repository !== 'Hdom/paperclip' || operatorManifest.sourceCommit !== sha) throw new Error('Operator tools identity mismatch');
   const provenance = {
     repository: 'Hdom/paperclip', sourceCommit: sha, packageVersion: version,
+    operatorTools: { archive: operatorArchive, files: operatorManifest.files },
     packagingScriptSha256: createHash('sha256').update(fs.readFileSync(fileURLToPath(import.meta.url))).digest('hex'),
     workflowCommit: process.env.GITHUB_SHA ?? null,
     workflowRun: process.env.GITHUB_RUN_ID ?? null,
@@ -435,7 +442,7 @@ try {
   fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify(provenance, null, 2) + '\n');
   fs.writeFileSync(path.join(output, 'resolved-package-lock.json'), resolvedLock);
   const hashes = [];
-  for (const file of [archive, 'manifest.json', 'resolved-package-lock.json']) {
+  for (const file of [archive, operatorArchive, 'manifest.json', 'resolved-package-lock.json']) {
     // Stream through sha256sum instead of buffering the large runtime archive.
     hashes.push(run('sha256sum', [file], output, true).toString().trim());
   }
