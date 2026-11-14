@@ -19,7 +19,7 @@ for (const file of [
   "src/services/explicit-native-continuation.test.ts", "src/services/ssh-host-stop-receipt.test.ts",
   "src/services/worker-supervision.test.ts",
   "src/__tests__/github-project-apps.test.ts", "src/__tests__/github-project-app-runtime.test.ts",
-  "src/__tests__/controller-signing-secrets.test.ts", "src/__tests__/github-project-app-admin.test.ts",
+  "src/__tests__/controller-signing-secrets.test.ts", "src/__tests__/signing-keys-routes.test.ts", "src/secrets/signing-key-material.test.ts", "src/__tests__/github-project-app-admin.test.ts",
   "src/__tests__/github-project-app-api-contract.test.ts", "src/__tests__/http-log-redaction.test.ts",
   "src/__tests__/controller-execution-protection.test.ts", "src/__tests__/controller-native-staging-protection.test.ts",
   "src/__tests__/secrets-service.test.ts", "src/__tests__/secrets-routes.test.ts",
@@ -35,4 +35,4 @@ test(resolve(root, "server"), ["src/__tests__/heartbeat-plugin-environment.test.
 test(root, ["packages/db/src/worker-supervision-upgrade.test.ts"]);
 test(root, ["packages/adapter-utils/src/controller-source-protection.test.ts", "packages/adapter-utils/src/controller-source-materialization.test.ts",
   "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"]);
-test(root, ["ui/src/pages/AgentToolsTab.test.tsx", "ui/src/components/GitHubProjectAppControls.test.tsx", "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx", "ui/src/components/AgentContextualSidebar.test.tsx", "ui/src/pages/agent-detail-navigation.test.ts"]);
+test(root, ["ui/src/pages/AgentToolsTab.test.tsx", "ui/src/pages/secrets/SigningKeysTab.test.tsx", "ui/src/components/GitHubProjectAppControls.test.tsx", "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx", "ui/src/components/AgentContextualSidebar.test.tsx", "ui/src/pages/agent-detail-navigation.test.ts"]);

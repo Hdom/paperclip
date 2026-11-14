@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubProjectAppSettings } from "@paperclipai/shared";
-import { GitHubProjectAppManager, ControllerSigningKeysSection, githubProjectAppsQueryKey } from "./GitHubProjectAppControls";
+import { GitHubProjectAppManager, githubProjectAppsQueryKey } from "./GitHubProjectAppControls";
 const api = vi.hoisted(() => ({ settings: vi.fn(), configure: vi.fn(), migrate: vi.fn(), verify: vi.fn(), rotate: vi.fn(), activate: vi.fn() }));
 const agents = vi.hoisted(() => vi.fn());
 vi.mock("@/api/github-project-apps", () => ({ githubProjectAppsApi: api }));
@@ -28,7 +28,7 @@ function button(text: string, within: ParentNode = document): HTMLButtonElement 
 async function click(element: HTMLElement) { await act(async () => { element.click(); }); }
 async function render(data: GitHubProjectAppSettings, secrets = false) {
   api.settings.mockResolvedValue(data); client.setQueryData(githubProjectAppsQueryKey("company"), data);
-  await act(async () => { root.render(<QueryClientProvider client={client}>{secrets ? <ControllerSigningKeysSection companyId="company" /> : <GitHubProjectAppManager companyId="company" />}</QueryClientProvider>); });
+  await act(async () => { root.render(<QueryClientProvider client={client}>{secrets ? <GitHubProjectAppManager companyId="company" label="Manage App signing keys" /> : <GitHubProjectAppManager companyId="company" />}</QueryClientProvider>); });
 }
 async function checkbox(text: string) {
   const label = [...document.querySelectorAll("label")].find(l => l.textContent?.includes(text));
@@ -67,7 +67,7 @@ describe("GitHub App operator controls", () => {
     api.migrate.mockResolvedValue({ ...settings(), revision: "b".repeat(64), migration: { migrated: true, cleanupPending: [] } });
     await checkbox("I confirm migration and verified plaintext cleanup"); await click(button("Migrate signing keys to Paperclip Secrets"));
     expect(api.migrate).toHaveBeenCalledExactlyOnceWith("company", data.revision);
-    expect(document.body.textContent).toContain("encrypted native secret");
+    expect(document.body.textContent).toContain("Paperclip Secrets");
     expect(document.body.textContent).toContain("cannot be revealed or bound to an agent");
   });
   it("sends replacement key bytes only in the confirmed request and never puts them in UI or query caches", async () => {

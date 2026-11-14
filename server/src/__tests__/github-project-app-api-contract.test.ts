@@ -23,4 +23,17 @@ describe("GitHub App administration discovery contract", () => {
     expect(githubProjectAppSettingsInputSchema.safeParse({ revision, confirmed: true, installationId: 123 }).success).toBe(false);
     expect(githubProjectAppRotateInputSchema.safeParse({ revision, confirmed: true, privateKey: "synthetic", expectedLatestVersion: 1, scope: "company" }).success).toBe(false);
   });
+  it("documents generic signing keys as metadata-only with strict administrator lifecycle writes", () => {
+    const paths = buildOpenApiSpec().paths as Record<string, Record<string, any>>;
+    const base = "/api/companies/{companyId}/signing-keys";
+    expect(paths[base].get["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    for (const [method, suffix] of [["post", ""], ["post", "/{secretId}/rotate"], ["patch", "/{secretId}"]]) {
+      const operation = paths[base + suffix][method];
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board", instanceAdmin: true });
+      expect(operation.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
+      if (method === "post") expect(operation.requestBody.content["application/json"].schema.properties.privateKey.writeOnly).toBe(true);
+    }
+    expect(paths[base + "/{secretId}/versions"].get).toBeDefined();
+  });
+
 });

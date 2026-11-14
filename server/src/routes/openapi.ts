@@ -1,3 +1,4 @@
+import { signingKeyCreateSchema, signingKeyRotateSchema, signingKeyUpdateSchema } from "@paperclipai/shared";
 import { githubProjectAppRoleSchema, githubProjectAppConfirmationSchema, githubProjectAppSettingsInputSchema,
   githubProjectAppRotateInputSchema, githubProjectAppActivateInputSchema, githubProjectAppVerificationSchema } from "@paperclipai/shared";
 import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai/shared";
@@ -1694,7 +1695,7 @@ function resolveOperationAuthLevel(
   path: string,
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
-  if (path === "/api/companies/{companyId}/github-project-apps" || path.startsWith("/api/companies/{companyId}/github-project-apps/"))
+  if (/^\/api\/companies\/\{companyId\}\/(github-project-apps|signing-keys)(?:\/|$)/.test(path))
     return method.toUpperCase() === "GET" ? "board" : "instance_admin";
   if (key === "GET /api/mcp/requests/{id}" || key === "GET /api/mcp/device"
       || key === "POST /api/mcp/requests/{id}/dot-pairing"
@@ -1812,7 +1813,7 @@ function applyDocumentFixups(document: any): any {
                 ? { actor: "board_or_agent" }
                 : { actor: "public" };
 
-      if (path === "/api/companies/{companyId}/github-project-apps/keys/{role}/rotate") {
+      if (path === "/api/companies/{companyId}/github-project-apps/keys/{role}/rotate" || path.startsWith("/api/companies/{companyId}/signing-keys")) {
         const keyInput = operation.requestBody?.content?.["application/json"]?.schema?.properties?.privateKey;
         if (keyInput) Object.assign(keyInput, { writeOnly: true, description: "Write-only PEM input. No response or log includes this value." });
       }
@@ -5666,6 +5667,23 @@ for (const operation of [
     request: { params: operation.suffix.includes("{role}") ? z.object({ companyId: z.string().uuid(), role: githubProjectAppRoleSchema }) : z.object({ companyId: z.string().uuid() }),
       ...(operation.schema ? { body: jsonBody(operation.schema) } : {}) },
     responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+  });
+}
+
+// Signing values are write-only; this catalog exposes public metadata only.
+for (const operation of [
+  { method: "get", suffix: "", summary: "List signing-key public metadata", schema: undefined },
+  { method: "get", suffix: "/{secretId}/versions", summary: "List signing-key version metadata", schema: undefined },
+  { method: "post", suffix: "", summary: "Import an encrypted signing key", schema: signingKeyCreateSchema },
+  { method: "post", suffix: "/{secretId}/rotate", summary: "Rotate an unbound signing key", schema: signingKeyRotateSchema },
+  { method: "patch", suffix: "/{secretId}", summary: "Update an unbound signing-key lifecycle", schema: signingKeyUpdateSchema },
+] as const) {
+  registry.registerPath({ method: operation.method, path: `/api/companies/{companyId}/signing-keys${operation.suffix}`,
+    tags: ["secrets"], summary: operation.summary,
+    description: "Board company access is required. Writes require instance administration, explicit confirmation and same-origin browser requests. Existing keys require exact version and lifecycle revision. Connected-service keys require that service's verified lifecycle. No key-value reads, export, generic signing or agent bindings are provided.",
+    request: { params: operation.suffix ? z.object({ companyId: z.string().uuid(), secretId: z.string().uuid() }) : z.object({ companyId: z.string().uuid() }),
+      ...(operation.schema ? { body: jsonBody(operation.schema) } : {}) },
+    responses: { ...(operation.method === "post" && !operation.suffix ? { 201: r.ok() } : { 200: r.ok() }), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
   });
 }
 

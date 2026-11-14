@@ -145,7 +145,7 @@ export function isPrivateControllerGitHubAppHttpRequest(url: string | undefined)
   if (!url) return false;
   let pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
   for (let depth = 0; depth < 4; depth++) {
-    if (/^\/api\/companies\/[^/]+\/github-project-apps(?:\/|$)/i.test(pathname)) return true;
+    if (/^\/api\/companies\/[^/]+\/(?:github-project-apps|signing-keys)(?:\/|$)/i.test(pathname)) return true;
     try { const decoded = decodeURIComponent(pathname); if (decoded === pathname) break; pathname = decoded; } catch { break; }
   }
   return false;

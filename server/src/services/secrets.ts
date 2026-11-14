@@ -1,4 +1,5 @@
-import { createHash, createPrivateKey, createPublicKey, createSign, randomUUID } from "node:crypto";
+import { parseSigningKeyMaterial, signingKeyPublicMetadata, type SigningKeyPublicInfo } from "../secrets/signing-key-material.js";
+import { createHash, createSign, randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -654,10 +655,9 @@ const controllerSigningKey = (role: ControllerSigningRole) => `github-app-signin
 function controllerSigningMaterial(value: string) {
   if (Buffer.byteLength(value) > 16384) throw unprocessable("Signing key exceeds the supported size");
   try {
-    const key = createPrivateKey(value);
-    if (key.asymmetricKeyType !== "rsa") throw new Error("not RSA");
-    const fingerprint = `SHA256:${createHash("sha256").update(createPublicKey(key).export({ type: "spki", format: "der" })).digest("base64")}`;
-    return { key, fingerprint };
+    const material = parseSigningKeyMaterial(value);
+    if (material.publicInfo.algorithm !== "rsa") throw new Error("not RSA");
+    return { key: material.key, fingerprint: material.publicInfo.publicFingerprint };
   } catch { throw unprocessable("A valid RSA signing key is required"); }
 }
 type SecretResolutionOptions = {
@@ -2446,6 +2446,45 @@ export function secretService(db: Db | DbTransaction) {
   // `rotate:` can wrap it in `withAccountHomeSecretMutationLock` only when the
   // secret being rotated is `local_encrypted`, without duplicating this whole
   // write sequence.
+  function managedSigningMaterial(value: string) {
+    try { return parseSigningKeyMaterial(value); }
+    catch (error) { throw unprocessable(error instanceof Error ? error.message : "A valid private signing key is required"); }
+  }
+
+  async function createManagedSigningKeyNative(companyId: string, identity: {
+    key: string; name: string; description: string | null; providerMetadata: Record<string, unknown>;
+  }, value: string, actorUserId: string) {
+    const { publicInfo } = managedSigningMaterial(value);
+    const prepared = await getSecretProvider("local_encrypted").createSecret({ value, externalRef: null, providerConfig: null,
+      context: { companyId, secretKey: identity.key, secretName: identity.name, version: 1 } });
+    try {
+      return await db.transaction(async tx => {
+        const [secret] = await tx.insert(companySecrets).values({ companyId, scope: "controller", key: identity.key, name: identity.name,
+          provider: "local_encrypted", status: "active", managedMode: "paperclip_managed", latestVersion: 1,
+          providerMetadata: { ...identity.providerMetadata, signingPublicKey: signingKeyPublicMetadata(publicInfo, 1) },
+          description: identity.description, createdByUserId: actorUserId }).returning();
+        await tx.insert(companySecretVersions).values({ secretId: secret!.id, version: 1, material: prepared.material,
+          valueSha256: prepared.valueSha256, fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
+          status: "current", createdByUserId: actorUserId });
+        return secret!;
+      });
+    } catch (error) {
+      const cause = error as { code?: string; cause?: { code?: string } };
+      if (cause.code === "23505" || cause.cause?.code === "23505") throw conflict("Signing key already exists");
+      throw unprocessable("Signing key could not be stored");
+    }
+  }
+
+  async function requireGenericSigningKey(companyId: string, secretId: string) {
+    const secret = await getById(secretId);
+    if (!secret || secret.companyId !== companyId || secret.scope !== "controller" || secret.status === "deleted") throw notFound("Signing key not found");
+    if (secret.provider !== "local_encrypted" || secret.managedMode !== "paperclip_managed"
+        || secret.providerMetadata?.purpose !== "signing_key" || secret.providerMetadata?.type !== "generic"
+        || secret.providerMetadata?.consumer !== undefined) throw forbidden("This signing key requires its connected service's verified lifecycle");
+    return secret;
+  }
+
+
   async function rotateUnlocked(
     secretId: string,
     input: {
@@ -2462,11 +2501,22 @@ export function secretService(db: Db | DbTransaction) {
     },
     actor?: { userId?: string | null; agentId?: string | null },
     controllerCapability?: typeof controllerSigningCapability,
+    signingPublicInfo?: SigningKeyPublicInfo,
+    authorizedSigningIdentity?: typeof companySecrets.$inferSelect,
   ) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.scope === "controller" && controllerCapability !== controllerSigningCapability)
       throw forbidden("Controller signing keys require their managed lifecycle");
+    if (controllerCapability === controllerSigningCapability) {
+      const expected = authorizedSigningIdentity;
+      if (!expected || secret.id !== expected.id || secret.companyId !== expected.companyId
+          || secret.scope !== expected.scope || secret.key !== expected.key || secret.provider !== expected.provider
+          || secret.managedMode !== expected.managedMode
+          || JSON.stringify(secret.providerMetadata) !== JSON.stringify(expected.providerMetadata)) {
+        throw conflict("Signing key identity changed; reload before retrying");
+      }
+    }
     if (secret.status !== "active") throw unprocessable("Cannot rotate a non-active secret");
     if (input.expectedLatestVersion !== undefined && secret.latestVersion !== input.expectedLatestVersion) {
       throw conflict(SECRET_VERSION_STALE_CONFLICT);
@@ -2599,6 +2649,12 @@ export function secretService(db: Db | DbTransaction) {
           .update(companySecrets)
           .set({
             latestVersion: nextVersion,
+            ...(controllerCapability === controllerSigningCapability && signingPublicInfo ? {
+              providerMetadata: { ...secret.providerMetadata,
+                ...(secret.providerMetadata?.purpose === "signing_key" && secret.providerMetadata?.type === "generic"
+                  ? { lifecycleRevision: Number(secret.providerMetadata.lifecycleRevision) + 1 } : {}),
+                signingPublicKey: signingKeyPublicMetadata(signingPublicInfo, nextVersion) },
+            } : {}),
             aiSessionEpoch: input.preserveAiSessionEpoch ? secret.aiSessionEpoch : sql`${companySecrets.aiSessionEpoch} + 1`,
             externalRef: prepared.externalRef,
             providerConfigId,
@@ -2607,6 +2663,12 @@ export function secretService(db: Db | DbTransaction) {
           })
           .where(and(
             eq(companySecrets.id, secret.id),
+            controllerCapability === controllerSigningCapability ? and(
+              eq(companySecrets.scope, "controller"), eq(companySecrets.companyId, secret.companyId),
+              eq(companySecrets.key, secret.key), eq(companySecrets.provider, secret.provider),
+              eq(companySecrets.managedMode, secret.managedMode), eq(companySecrets.status, "active")) : undefined,
+            controllerCapability === controllerSigningCapability && secret.providerMetadata
+              ? eq(companySecrets.providerMetadata, secret.providerMetadata) : undefined,
             // The compare-and-set guard. It matches the latest version, so a
             // concurrent rotation that already bumped it fails this predicate.
             input.expectedLatestVersion === undefined
@@ -4672,33 +4734,49 @@ export function secretService(db: Db | DbTransaction) {
     // Controller-scoped keys use the native encrypted provider and versions.
     // No generic binding/value API can resolve this scope. Only a signed JWT
     // and public fingerprint leave these dedicated controller methods.
+    listSigningKeys: async (companyId: string) => db.select().from(companySecrets)
+      .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "controller"), ne(companySecrets.status, "deleted"))),
+    createSigningKey: async (companyId: string, input: { name: string; description?: string | null; privateKey: string }, actorUserId: string) =>
+      createManagedSigningKeyNative(companyId, { key: `signing-key.${randomUUID()}`, name: input.name,
+        description: input.description ?? null, providerMetadata: { purpose: "signing_key", type: "generic", lifecycleRevision: 1 } }, input.privateKey, actorUserId),
+    rotateSigningKey: async (companyId: string, secretId: string, privateKey: string, expectedLatestVersion: number, actorUserId: string, expectedRevision?: number) => {
+      const secret = await requireGenericSigningKey(companyId, secretId);
+      if (expectedRevision !== undefined && secret.providerMetadata?.lifecycleRevision !== expectedRevision) throw conflict("Signing key changed; reload before retrying");
+      const { publicInfo } = managedSigningMaterial(privateKey);
+      return rotateUnlocked(secretId, { value: privateKey, expectedLatestVersion }, { userId: actorUserId }, controllerSigningCapability, publicInfo, secret);
+    },
+    updateSigningKey: async (companyId: string, secretId: string, patch: {
+      name?: string; description?: string | null; status?: "active" | "disabled" | "archived"; expectedLatestVersion: number; expectedRevision: number;
+    }) => {
+      const secret = await requireGenericSigningKey(companyId, secretId);
+      if (secret.providerMetadata?.lifecycleRevision !== patch.expectedRevision) throw conflict("Signing key changed; reload before retrying");
+      const [updated] = await db.update(companySecrets).set({
+        ...(patch.name === undefined ? {} : { name: patch.name }),
+        ...(patch.description === undefined ? {} : { description: patch.description }),
+        ...(patch.status === undefined ? {} : { status: patch.status }),
+        providerMetadata: { ...secret.providerMetadata, lifecycleRevision: patch.expectedRevision + 1 }, updatedAt: new Date(),
+      }).where(and(eq(companySecrets.id, secretId), eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "controller"),
+        eq(companySecrets.latestVersion, patch.expectedLatestVersion), eq(companySecrets.status, secret.status), eq(companySecrets.providerMetadata, secret.providerMetadata!))).returning();
+      if (!updated) throw conflict(SECRET_VERSION_STALE_CONFLICT);
+      return updated;
+    },
+    signingKeyVersions: async (companyId: string, secretId: string) => {
+      const secret = await getById(secretId);
+      if (!secret || secret.companyId !== companyId || secret.scope !== "controller" || secret.status === "deleted") throw notFound("Signing key not found");
+      return db.select({ id: companySecretVersions.id, version: companySecretVersions.version, status: companySecretVersions.status,
+        createdAt: companySecretVersions.createdAt }).from(companySecretVersions)
+        .where(eq(companySecretVersions.secretId, secretId)).orderBy(desc(companySecretVersions.version));
+    },
+
+
     listControllerSigningKeys: async (companyId: string) => db.select().from(companySecrets)
       .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "controller"), ne(companySecrets.status, "deleted"))),
     createControllerSigningKey: async (companyId: string, role: ControllerSigningRole, appId: number, value: string, actorUserId: string) => {
       if (!controllerSigningRoles.includes(role) || !Number.isSafeInteger(appId) || appId <= 0) throw unprocessable("Invalid signing identity");
       controllerSigningMaterial(value);
-      const key = controllerSigningKey(role), name = `GitHub App ${role} signing key`;
-      // Local encryption prepares no remote resource. Publish native metadata
-      // and its first encrypted version in one transaction, without a reserved
-      // half-created row or any extra plaintext file.
-      const prepared = await getSecretProvider("local_encrypted").createSecret({ value, externalRef: null, providerConfig: null,
-        context: { companyId, secretKey: key, secretName: name, version: 1 } });
-      try {
-        return await db.transaction(async tx => {
-          const [secret] = await tx.insert(companySecrets).values({ companyId, scope: "controller", key, name,
-            provider: "local_encrypted", status: "active", managedMode: "paperclip_managed", latestVersion: 1,
-            providerMetadata: { consumer: "github_project_apps", role, appId },
-            description: "Controller signing only. Never available to agents, environment bindings or connection credentials.", createdByUserId: actorUserId }).returning();
-          await tx.insert(companySecretVersions).values({ secretId: secret!.id, version: 1, material: prepared.material,
-            valueSha256: prepared.valueSha256, fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
-            status: "current", createdByUserId: actorUserId });
-          return secret!;
-        });
-      } catch (error) {
-        const cause = error as { code?: string; cause?: { code?: string } };
-        if (cause.code === "23505" || cause.cause?.code === "23505") throw conflict("Controller signing identity already exists");
-        throw unprocessable("Controller signing secret could not be stored");
-      }
+      return createManagedSigningKeyNative(companyId, { key: controllerSigningKey(role), name: `GitHub App ${role} signing key`,
+        providerMetadata: { consumer: "github_project_apps", role, appId },
+        description: "Used by Paperclip for signing. Unavailable to agent variables and connection credentials." }, value, actorUserId);
     },
     rotateControllerSigningKey: async (companyId: string, secretId: string, role: ControllerSigningRole, appId: number, value: string, expectedLatestVersion: number, actorUserId: string) => {
       const secret = await getById(secretId);
@@ -4706,7 +4784,7 @@ export function secretService(db: Db | DbTransaction) {
           secret.provider !== "local_encrypted" || secret.providerMetadata?.appId !== appId || secret.providerMetadata?.role !== role)
         throw forbidden("Controller signing key identity mismatch");
       controllerSigningMaterial(value);
-      return rotateUnlocked(secretId, { value, expectedLatestVersion }, { userId: actorUserId }, controllerSigningCapability);
+      return rotateUnlocked(secretId, { value, expectedLatestVersion }, { userId: actorUserId }, controllerSigningCapability, parseSigningKeyMaterial(value).publicInfo, secret);
     },
     signControllerGitHubAppJwt: async (companyId: string, secretId: string, version: number, role: ControllerSigningRole, appId: number) => {
       if (!controllerSigningRoles.includes(role) || !Number.isSafeInteger(appId) || appId < 1 || !Number.isSafeInteger(version) || version < 1)

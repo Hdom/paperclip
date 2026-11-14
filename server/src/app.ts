@@ -48,6 +48,7 @@ import { createMcpApiDispatch, createPublicMcpExecutor } from "./services/public
 import { createPublicMcpEvents, type PublicMcpEvents } from "./services/public-mcp/events.js";
 import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "./routes/public-mcp.js";
 import { agentAvatarRoutes } from "./routes/agent-avatars.js";
+import { signingKeyRoutes } from "./routes/signing-keys.js";
 import { githubProjectAppRoutes } from "./routes/github-project-apps.js";
 import { decisionModelRoutes } from "./routes/decision-models.js";
 import { agentObservabilityRoutes } from "./routes/agent-observability.js";
@@ -919,6 +920,7 @@ export async function createApp(
   registerAssignedMcpGateway(db, toolGateway);
   app.locals.toolActionDeliveries = toolActionDeliveries;
   app.use(mcpGatewayProtocolRoutes(toolGateway));
+  api.use(signingKeyRoutes(db, undefined, { publicOrigin: opts.authPublicBaseUrl }));
   api.use(githubProjectAppRoutes(db, undefined, { publicOrigin: opts.authPublicBaseUrl }));
   api.use(decisionModelRoutes(db));
   api.use(agentObservabilityRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure }));

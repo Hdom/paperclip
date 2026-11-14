@@ -93,4 +93,90 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await secrets.resolveSecretValue(companyId, normal.id, 1)).toBe(pem);
   });
 
+  it("stores generic RSA, EC and Ed25519 keys without permitting generic value or agent access", async () => {
+    const keys = [pair, generateKeyPairSync("ec", { namedCurve: "prime256v1" }), generateKeyPairSync("ed25519")];
+    for (const key of keys) {
+      const privateKey = key.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+      const secret = await secrets.createSigningKey(companyId, { name: "Synthetic signing key", privateKey }, "synthetic-admin");
+      expect(secret.scope).toBe("controller");
+      expect(secret.providerMetadata?.signingPublicKey).toMatchObject({ version: 1, algorithm: key.privateKey.asymmetricKeyType });
+      const decrypt = vi.spyOn(localEncryptedProvider, "resolveVersion");
+      await expect(secrets.resolveSecretValue(companyId, secret.id, 1)).rejects.toThrow();
+      await expect(secrets.resolveSecretVersionIdentity(companyId, secret.id, 1)).rejects.toThrow();
+      await expect(secrets.createBinding({ companyId, secretId: secret.id, targetType: "agent", targetId: randomUUID(), configPath: "env.KEY" })).rejects.toThrow();
+      expect(decrypt).not.toHaveBeenCalled(); decrypt.mockRestore();
+      const versions = await secrets.signingKeyVersions(companyId, secret.id);
+      expect(Object.keys(versions[0]!).sort()).toEqual(["createdAt", "id", "status", "version"]);
+      expect(JSON.stringify(versions)).not.toContain("PRIVATE KEY");
+    }
+    expect(await secrets.list(companyId)).toEqual([]);
+  });
+  it("rotates generic keys with an exact version and protects typed consumer keys", async () => {
+    const secret = await secrets.createSigningKey(companyId, { name: "Generic key", privateKey: pem }, "synthetic-admin");
+    const replacement = generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const rotated = await secrets.rotateSigningKey(companyId, secret.id, replacement, 1, "synthetic-admin");
+    expect(rotated.latestVersion).toBe(2);
+    expect(rotated.providerMetadata?.signingPublicKey).toMatchObject({ version: 2, algorithm: "ed25519" });
+    await expect(secrets.rotateSigningKey(companyId, secret.id, pem, 1, "synthetic-admin")).rejects.toThrow("stale");
+    await expect(secrets.rotateSigningKey(randomUUID(), secret.id, pem, 2, "synthetic-admin")).rejects.toThrow("not found");
+    const typed = await create();
+    await expect(secrets.rotateSigningKey(companyId, typed.id, pem, 1, "synthetic-admin")).rejects.toThrow("verified lifecycle");
+    await expect(secrets.updateSigningKey(companyId, typed.id, { status: "disabled", expectedRevision: 1, expectedLatestVersion: 1 })).rejects.toThrow("verified lifecycle");
+    expect((await secrets.signControllerGitHubAppJwt(companyId, typed.id, 1, "reviewer", 13)).jwt).toBeTruthy();
+  });
+  it("keeps lifecycle updates company-bound and version-guarded without changing identity", async () => {
+    const secret = await secrets.createSigningKey(companyId, { name: "Generic key", privateKey: pem }, "synthetic-admin");
+    await expect(secrets.updateSigningKey(randomUUID(), secret.id, { status: "disabled", expectedRevision: 1, expectedLatestVersion: 1 })).rejects.toThrow("not found");
+    await expect(secrets.updateSigningKey(companyId, secret.id, { status: "disabled", expectedRevision: 1, expectedLatestVersion: 2 })).rejects.toThrow("stale");
+    const updated = await secrets.updateSigningKey(companyId, secret.id, { name: "Renamed key", status: "disabled", expectedRevision: 1, expectedLatestVersion: 1 });
+    expect(updated.providerMetadata).toEqual({ ...secret.providerMetadata, lifecycleRevision: 2 });
+    expect(updated.key).toBe(secret.key);
+    await expect(secrets.rotateSigningKey(companyId, secret.id, pem, 1, "synthetic-admin")).rejects.toThrow("non-active");
+    await expect(secrets.update(secret.id, { providerMetadata: {} })).rejects.toThrow("managed lifecycle");
+  });
+
+  it("rejects a concurrent disable during provider preparation without advancing the version", async () => {
+    const secret = await secrets.createSigningKey(companyId, { name: "Race key", privateKey: pem }, "synthetic-admin");
+    const prepare = localEncryptedProvider.createVersion!.bind(localEncryptedProvider);
+    vi.spyOn(localEncryptedProvider, "createVersion").mockImplementationOnce(async input => {
+      const prepared = await prepare(input);
+      await secrets.updateSigningKey(companyId, secret.id, { status: "disabled", expectedLatestVersion: 1, expectedRevision: 1 });
+      return prepared;
+    });
+    await expect(secrets.rotateSigningKey(companyId, secret.id, pem, 1, "synthetic-admin")).rejects.toThrow("stale");
+    const current = await secrets.getById(secret.id);
+    expect(current).toMatchObject({ latestVersion: 1, status: "disabled" });
+    expect(current?.providerMetadata?.lifecycleRevision).toBe(2);
+  });
+  it("rejects a stale activation after another lifecycle change", async () => {
+    const secret = await secrets.createSigningKey(companyId, { name: "Lifecycle key", privateKey: pem }, "synthetic-admin");
+    await secrets.updateSigningKey(companyId, secret.id, { status: "disabled", expectedLatestVersion: 1, expectedRevision: 1 });
+    await expect(secrets.updateSigningKey(companyId, secret.id, { status: "active", expectedLatestVersion: 1, expectedRevision: 1 })).rejects.toThrow("changed");
+    expect((await secrets.getById(secret.id))?.status).toBe("disabled");
+  });
+  it("binds the original identity across the internal rotation reread", async () => {
+    const secret = await secrets.createSigningKey(companyId, { name: "Identity race key", privateKey: pem }, "synthetic-admin");
+    const select = db.select.bind(db); let reads = 0;
+    vi.spyOn(db, "select").mockImplementation(((...args: Parameters<typeof db.select>) => {
+      const query = select(...args); const from = query.from.bind(query);
+      query.from = ((table: unknown) => {
+        const built = from(table as never);
+        if (table === companySecrets && ++reads === 2) {
+          const where = built.where.bind(built);
+          built.where = ((condition: unknown) => {
+            const selected = where(condition as never); const then = selected.then.bind(selected);
+            selected.then = ((resolve: unknown, reject: unknown) => db.update(companySecrets)
+              .set({ providerMetadata: { consumer: "some_future_consumer" } }).where(eq(companySecrets.id, secret.id))
+              .then(() => then(resolve as never, reject as never))) as typeof selected.then;
+            return selected;
+          }) as typeof built.where;
+        }
+        return built;
+      }) as typeof query.from;
+      return query;
+    }) as typeof db.select);
+    await expect(secrets.rotateSigningKey(companyId, secret.id, pem, 1, "synthetic-admin")).rejects.toThrow("identity changed");
+    expect((await secrets.getById(secret.id))?.latestVersion).toBe(1);
+  });
+
 });
