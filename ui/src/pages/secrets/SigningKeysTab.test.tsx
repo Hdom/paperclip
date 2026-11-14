@@ -69,4 +69,15 @@ describe("Secrets signing-key table", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull(); expect(api.create).not.toHaveBeenCalled();
   });
 
+  it("renders normalized legacy GitHub descriptions in the table and details", async () => {
+    const description = "Used by Paperclip for signing. Unavailable to agent variables and connection credentials.";
+    await render([key({ id: "github", name: "Legacy GitHub signer", type: "github_app", revision: null,
+      description, githubApp: { role: "reviewer", appId: 13 } })]);
+    expect(container.querySelector("table")?.textContent).toContain(description);
+    expect(container.querySelector("table")?.textContent).not.toContain("Controller");
+    await click(button("Legacy GitHub signer"));
+    expect((document.querySelector('textarea[aria-label="Signing key description"]') as HTMLTextAreaElement).value).toBe(description);
+    expect(document.body.textContent).not.toContain("Controller");
+  });
+
 });

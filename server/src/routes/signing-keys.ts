@@ -19,7 +19,11 @@ export function signingKeySummary(row: Awaited<ReturnType<ReturnType<typeof secr
     && typeof metadata.appId === "number" && Number.isSafeInteger(metadata.appId) && metadata.appId > 0
     ? { role, appId: metadata.appId } : null;
   const generic = metadata?.purpose === "signing_key" && metadata?.type === "generic" && metadata?.consumer === undefined;
-  return { id: row.id, name: row.name, description: row.description, status: row.status,
+  // Compatibility read model: normalize only the exact old system-generated
+  // description for recognized GitHub keys. Never rewrite stored/user text.
+  const description = githubApp && row.description === "Controller signing only. Never available to agents, environment bindings or connection credentials."
+    ? "Used by Paperclip for signing. Unavailable to agent variables and connection credentials." : row.description;
+  return { id: row.id, name: row.name, description, status: row.status,
     type: githubApp ? "github_app" : generic ? "generic" : "managed", githubApp,
     algorithm: info?.algorithm ?? null, publicFingerprint: info?.publicFingerprint ?? null,
     latestVersion: row.latestVersion, revision: generic && Number.isSafeInteger(metadata?.lifecycleRevision) ? Number(metadata!.lifecycleRevision) : null,

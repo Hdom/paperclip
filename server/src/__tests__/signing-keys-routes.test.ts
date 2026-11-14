@@ -2,7 +2,8 @@ import express from "express";
 import request from "supertest";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { companies, createDb } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import { companies, companySecrets, createDb } from "@paperclipai/db";
 import { secretService } from "../services/secrets.js";
 import { signingKeyRoutes, signingKeyCreateSchema, signingKeyRotateSchema, signingKeyUpdateSchema } from "../routes/signing-keys.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -57,4 +58,25 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(signingKeyRotateSchema.safeParse({ privateKey: pem, expectedLatestVersion: 1, expectedRevision: 1, confirmed: false }).success).toBe(false);
     expect(signingKeyUpdateSchema.safeParse({ expectedLatestVersion: 1, expectedRevision: 1, confirmed: true, consumer: "github_project_apps" }).success).toBe(false);
   });
+  it("normalizes the exact legacy GitHub description without rewriting records or custom descriptions", async () => {
+    const legacy = "Controller signing only. Never available to agents, environment bindings or connection credentials.";
+    const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const service = secretService(db);
+    for (const role of ["coordinator", "implementer", "reviewer"] as const) {
+      const key = await service.createControllerSigningKey(companyId, role, 13, rsa, "synthetic-admin");
+      await db.update(companySecrets).set({ description: legacy }).where(eq(companySecrets.id, key.id));
+    }
+    const before = await service.listSigningKeys(companyId);
+    const catalog = await request(app()).get(base()); expect(catalog.status).toBe(200); expect(catalog.body.keys).toHaveLength(3);
+    for (const key of catalog.body.keys) { expect(key.description).toBe("Used by Paperclip for signing. Unavailable to agent variables and connection credentials."); expect(key.type).toBe("github_app"); }
+    expect(JSON.stringify(catalog.body)).not.toContain("Controller");
+    expect(await service.listSigningKeys(companyId)).toEqual(before);
+    await db.update(companySecrets).set({ description: "Custom operator description" }).where(eq(companySecrets.id, before[0]!.id));
+    const custom = await request(app()).get(base());
+    expect(custom.body.keys.find((key: { id: string }) => key.id === before[0]!.id).description).toBe("Custom operator description");
+    const generic = await service.createSigningKey(companyId, { name: "Generic", privateKey: pem, description: legacy }, "synthetic-admin");
+    const unrelated = await request(app()).get(base());
+    expect(unrelated.body.keys.find((key: { id: string }) => key.id === generic.id).description).toBe(legacy);
+  });
+
 });
