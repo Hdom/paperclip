@@ -8,6 +8,7 @@ import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js
 import { readFreshWorkspaceReadiness } from "../fresh-workspace-continuation.js";
 import { assertNativeSessionPreparationAuthority } from "../native-runtime/native-execution-lease.js";
 import { resolveRemoteWorkspaceSource } from "./remote-workspace-source.js";
+import { assertControllerSafeEnvironment, assertControllerSafeExecutionTarget } from "../controller-execution-protection.js";
 import { reserveFreshPluginTaskWorkspace, stageProviderFreshWorkspace } from "../provider-fresh-workspace.js";
 import { freshWorkspaceSchema, type PluginFreshWorkspace } from "@paperclipai/plugin-sdk";
 import { pluginRegistryService } from "../plugin-registry.js";
@@ -1375,6 +1376,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     throw error;
   }
   const selectedEnvironment = acquiredEnvironment.environment;
+  assertControllerSafeEnvironment(selectedEnvironment);
   // Defense-in-depth: re-check the actually-acquired environment against the
   // execution allowlist. Even if selection were bypassed, a denied (local/ssh/
   // non-k8s) environment FAILS the run here rather than executing untrusted.
@@ -1476,6 +1478,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const workspaceRealization = realizationResult.workspaceRealization;
   const executionTarget = realizationResult.executionTarget;
+  assertControllerSafeExecutionTarget(executionTarget);
   if (remoteAuthority && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const repositories = await timeWorkspace("workspace_repository_admission", () =>
       executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId, issueId,

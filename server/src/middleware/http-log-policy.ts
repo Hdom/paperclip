@@ -43,6 +43,7 @@ function normalizePath(url: string): string {
  * Labels come from this closed list, never from the request URL.
  */
 export type SecretSensitiveRouteFamily =
+  | "controller_github_app"
   | "ephemeral_enrollment"
   | "provider_webhook"
   | "muse"
@@ -140,6 +141,16 @@ export function isPrivateDotPrincipalHttpRequest(url: string | undefined): boole
  * error metadata for the whole route. Webhook failures also use generic error
  * metadata: raw provider text/files/credentials cannot be named-field redacted.
  */
+export function isPrivateControllerGitHubAppHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  let pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  for (let depth = 0; depth < 4; depth++) {
+    if (/^\/api\/companies\/[^/]+\/github-project-apps(?:\/|$)/i.test(pathname)) return true;
+    try { const decoded = decodeURIComponent(pathname); if (decoded === pathname) break; pathname = decoded; } catch { break; }
+  }
+  return false;
+}
+
 export function isSecretSensitiveHttpRequest(
   method: string | undefined,
   url: string | undefined,
@@ -152,6 +163,7 @@ export function secretSensitiveRouteFamily(
   method: string | undefined,
   url: string | undefined,
 ): SecretSensitiveRouteFamily | null {
+  if (isPrivateControllerGitHubAppHttpRequest(url)) return "controller_github_app";
   if (url && /^\/api\/instance\/ephemeral-enrollment(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return "ephemeral_enrollment";
   if (isPrivateWebhookHttpRequest(method, url)) return "provider_webhook";
   if (isPrivateMuseHttpRequest(url)) return "muse";

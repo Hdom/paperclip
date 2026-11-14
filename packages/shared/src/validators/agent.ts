@@ -1,3 +1,4 @@
+import { workerSupervisionConfigSchema } from "../worker-supervision.js";
 import { agentAppearanceSchema } from "../agent-appearance.js";
 import { aiRuntimeConnectionBindingSchema as aiConnectionBindingSchema } from "../ai-connection-router.js";
 import { z } from "zod";
@@ -72,6 +73,7 @@ export const createAgentInstructionsBundleSchema = z.object({
 });
 
 export const agentRuntimeConfigSchema = z.object({
+  workerSupervision: workerSupervisionConfigSchema.optional(),
   aiConnection: aiConnectionBindingSchema.optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),

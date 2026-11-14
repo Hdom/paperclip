@@ -597,3 +597,18 @@ Evidence: `source-only` — [browser recovery](../../ui/src/context/LiveUpdatesP
 Verification: `not-run` — Disconnect while server changes task/run/decision; reconnect/visibility return/refetch matches reload without duplicate comments/decisions/toasts. Initial-open gap and hidden/unmount loops checked.
 
 Gaps: Healthy socket proves transport only, not provider restart or successful failed task. Mocks not deployed network proof.
+
+Scoped saved-input source update (2026-11-11, `recovery/user-continuation`):
+[never-dispatched repair proof](../../server/src/services/pre-dispatch-repair-cancellation.ts)
+recognizes only a matching `scheduled_retry` cancellation by the disposition
+scheduler, its bound cancelled system wake, and no execution or lease evidence.
+Historical rows require the exact server-authored suppression event; future
+cancellations also persist a machine receipt in the winning compare-and-set.
+A bounded predecessor walk retains termination/cleanup gates for actual runs.
+The scanner only reconsiders existing user-authored input; locked ordinary
+admission rechecks the proof and owns delivery. No new agent permission, public
+endpoint, generic recovery exemption or live queue mutation is introduced.
+[Continuation tests](../../server/src/services/explicit-native-continuation.test.ts)
+cover missing/foreign proof, contradictory launch evidence, actual predecessors
+and concurrent one-time adoption of the original saved request. Source/mock
+qualification does not establish eligibility of a particular deployed row.

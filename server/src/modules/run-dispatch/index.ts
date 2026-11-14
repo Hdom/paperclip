@@ -10,6 +10,7 @@ import {
 import type { RunDispatchWriter, ScheduledRetryReader } from "./application/ports.js";
 
 export {
+  CHECKPOINT_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,

@@ -14,6 +14,7 @@ import { approvedToolReviewCompanies, prepareApprovedToolReview, recoverApproved
 import { toolReviewExpiryService } from "./tool-review-expiry.js";
 import { notifyToolReviewChange, writeToolReviewChange } from "./tool-review-work-notifications.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
+import { assertControllerHostProcessAllowed } from "./controller-execution-protection.js";
 import type { runPromptInjectionProvider } from "./prompt-injection-provider.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -5380,6 +5381,7 @@ export function createToolGatewayService(
         },
       );
     }
+    assertControllerHostProcessAllowed();
     const child = spawn(input.template.command, input.template.args, {
       env: input.env,
       stdio: ["pipe", "pipe", "pipe"],

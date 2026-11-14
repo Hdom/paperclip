@@ -21,6 +21,8 @@ const mockToolsApi = vi.hoisted(() => ({
   putConnectionInstalls: vi.fn(),
 }));
 
+const mockAppSettings = vi.hoisted(() => vi.fn());
+vi.mock("@/api/github-project-apps", () => ({ githubProjectAppsApi: { settings: mockAppSettings } }));
 vi.mock("../api/tools", () => ({ toolsApi: mockToolsApi }));
 
 // Render the company-aware Link as a plain anchor so we don't need a Router.
@@ -106,6 +108,7 @@ describe("AgentToolsTab", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    mockAppSettings.mockResolvedValue({ available: false, canManage: false, enabled: false, revision: "", checkedAt: null, roles: [], blockedAgentIds: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
     mockToolsApi.getEffectiveProfilesForAgent.mockReset();
@@ -338,6 +341,20 @@ describe("AgentToolsTab", () => {
     expect(text).toContain("takes precedence over the responsible person's GitHub");
     expect(container.querySelector('a[href="/apps/conn-github/permissions"]')?.textContent).toBe("Manage GitHub identity");
     expect(text).not.toContain("Connect my GitHub");
+  });
+
+  it.each([false, true])("shows the existing GitHub identity section as App-managed and suppresses OAuth fallback (blocked %s)", async blocked => {
+    mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({ agentId: "agent-1", profiles: [], entries: [], bindings: [], allowedTools: [], allowedToolNames: [], installedConnections: [] });
+    mockToolsApi.listConnections.mockResolvedValue({ connections: [] });
+    mockToolsApi.listPolicies.mockResolvedValue({ policies: [] }); mockToolsApi.listCatalog.mockResolvedValue({ catalog: [] });
+    mockAppSettings.mockResolvedValue({ available: true, canManage: false, enabled: true, revision: "a".repeat(64), checkedAt: null,
+      blockedAgentIds: blocked ? ["agent-1"] : [], roles: blocked ? [] : [{ role: "implementer", agentId: "agent-1", login: "paperclip-implementer[bot]", status: "verified" }] });
+    await renderTab();
+    await vi.waitFor(() => expect(container.textContent).toContain(blocked ? "Managed GitHub access paused" : "paperclip-implementer[bot]"));
+    expect(container.textContent).toContain("GitHub identity");
+    expect(container.textContent).not.toContain("Connect my GitHub");
+    expect(container.textContent).not.toContain("Sign in with GitHub");
+    expect(container.textContent).toContain("Managed by an administrator");
   });
 
   it("does not display a grant from a disabled or uninstalled GitHub connection", async () => {

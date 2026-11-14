@@ -1,4 +1,5 @@
 import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
+import { assertControllerSafeEnvironment } from "../controller-execution-protection.js";
 import { heartbeatExternalProvider, nativeExecutionUsesTaskWorkspace } from "./external-provider.js";
 import { heartbeatRuns, issues, projects, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
@@ -324,6 +325,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       : selectedEnvironmentId
         ? await environmentsSvc.getById(selectedEnvironmentId)
         : null;
+  assertControllerSafeEnvironment(selectedEnvironmentForConfig);
   const nativeChatWorkspaceScope = controllerOnly ? null : await findNativeChatWorkspaceScope(db, {
     adapterType: agent.adapterType,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,

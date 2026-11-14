@@ -1,4 +1,8 @@
+import { githubProjectAppRoleSchema, githubProjectAppConfirmationSchema, githubProjectAppSettingsInputSchema,
+  githubProjectAppRotateInputSchema, githubProjectAppActivateInputSchema, githubProjectAppVerificationSchema } from "@paperclipai/shared";
 import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai/shared";
+import { workerCheckInSchema, workerSupervisionStateSchema } from "@paperclipai/shared";
+import { checkpointContinuationSchema, CHECKPOINT_CONTINUATION_MAX_ATTEMPTS } from "../services/heartbeat/checkpoint-continuation.js";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
@@ -1381,6 +1385,7 @@ const RUNTIME_TOOLS_SECURITY: Array<Record<string, string[]>> = [
 
 const RUNTIME_TOOLS_OPERATIONS = new Set([
   "POST /runtime-tools/github/credentials",
+  "POST /runtime-tools/github/project",
   "GET /mcp/runtime-tools",
   "POST /mcp/runtime-tools",
   "POST /runtime-tools/connections/search",
@@ -1689,6 +1694,8 @@ function resolveOperationAuthLevel(
   path: string,
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
+  if (path === "/api/companies/{companyId}/github-project-apps" || path.startsWith("/api/companies/{companyId}/github-project-apps/"))
+    return method.toUpperCase() === "GET" ? "board" : "instance_admin";
   if (key === "GET /api/mcp/requests/{id}" || key === "GET /api/mcp/device"
       || key === "POST /api/mcp/requests/{id}/dot-pairing"
       || key === "POST /api/mcp/requests/{id}/dot-pairing/preview"
@@ -1708,6 +1715,8 @@ function resolveOperationAuthLevel(
   // Agents may read their own commentary, or all of it with commentary:view; the routes enforce that.
   if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "authenticated";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
+  if (key === "POST /api/issues/{id}/checkpoint-continuation") return "agent_run";
+  if (key === "POST /api/heartbeat-runs/{runId}/check-in") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
   if (
@@ -1802,6 +1811,11 @@ function applyDocumentFixups(document: any): any {
               : authLevel === "authenticated"
                 ? { actor: "board_or_agent" }
                 : { actor: "public" };
+
+      if (path === "/api/companies/{companyId}/github-project-apps/keys/{role}/rotate") {
+        const keyInput = operation.requestBody?.content?.["application/json"]?.schema?.properties?.privateKey;
+        if (keyInput) Object.assign(keyInput, { writeOnly: true, description: "Write-only PEM input. No response or log includes this value." });
+      }
 
       if (isVoiceSessionOperation(path)) {
         operation.security = [{[BOARD_SESSION_AUTH_SCHEME]: []}];
@@ -4923,6 +4937,38 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/heartbeat-runs/{runId}/check-in",
+  tags: ["agents"],
+  summary: "Report health for the current supervised worker execution",
+  description: "Only a signed run-bound agent JWT for the current execution may report a fresh monotonic sequence; static agent keys with run headers are refused. Report a fresh monotonic sequence for its controller-issued generation. Opt-in legacy Codex CLI check-ins reset a 180-second liveness deadline, without a fixed total runtime limit. An identical sequence is idempotent and does not extend the deadline. Missing check-ins mark possible disconnection; they do not terminate execution, release ownership or authorize retry. Stop, budget and verified-stop gates remain independent.",
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }), body: jsonBody(workerCheckInSchema) },
+  responses: { 200: r.ok(workerSupervisionStateSchema.extend({ accepted: z.literal(true), duplicate: z.boolean() })),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/checkpoint-continuation",
+  tags: ["issues"],
+  summary: "Register a bounded checkpoint continuation",
+  description: "Requires the assigned agent's current running ordinary legacy task run and existing issue read/mutate authority. Records intent only: completion, process settlement and normal dispatch admission remain required. An identical request is idempotent; changed intent, lost ownership or exhausted continuation budget conflicts. The controller permits at most three successors and does not enable timer wakes or generic recovery.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(checkpointContinuationSchema),
+  },
+  responses: {
+    202: r.ok(z.object({
+      accepted: z.literal(true),
+      sourceRunId: z.string().uuid(),
+      maxAttempts: z.literal(CHECKPOINT_CONTINUATION_MAX_ATTEMPTS),
+    }).strict()),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+    404: r.notFound, 409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/issues/{id}/release",
   tags: ["issues"],
   summary: "Release an issue",
@@ -5602,6 +5648,26 @@ registry.registerPath({
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
+
+// GitHub App administration belongs to the board, never execution agents.
+for (const operation of [
+  { method: "get", suffix: "", summary: "Read managed GitHub App status and controller signing metadata", schema: undefined },
+  { method: "put", suffix: "", summary: "Confirm role assignment or issuance changes", schema: githubProjectAppSettingsInputSchema },
+  { method: "post", suffix: "/verify", summary: "Verify the fixed Apps and selected repository inventory", schema: githubProjectAppVerificationSchema },
+  { method: "post", suffix: "/migrate", summary: "Confirm native encryption and verified prepared-key cleanup", schema: githubProjectAppConfirmationSchema },
+  { method: "post", suffix: "/keys/{role}/rotate", summary: "Validate a write-only replacement signing key and activate its encrypted version", schema: githubProjectAppRotateInputSchema },
+  { method: "post", suffix: "/keys/{role}/activate", summary: "Verify and activate a pinned retained signing-key version", schema: githubProjectAppActivateInputSchema },
+] as const) {
+  registry.registerPath({
+    method: operation.method,
+    path: `/api/companies/{companyId}/github-project-apps${operation.suffix}`,
+    tags: ["secrets"], summary: operation.summary,
+    description: "Board company access is required. Writes additionally require instance administration, connection management, a current revision and same-origin browser requests. Key values are write-only and never returned. Controller keys cannot be runtime bindings. App IDs, installations and permission ceilings remain fixed.",
+    request: { params: operation.suffix.includes("{role}") ? z.object({ companyId: z.string().uuid(), role: githubProjectAppRoleSchema }) : z.object({ companyId: z.string().uuid() }),
+      ...(operation.schema ? { body: jsonBody(operation.schema) } : {}) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+  });
+}
 
 // ─── Secrets ─────────────────────────────────────────────────────────────────
 
@@ -11508,6 +11574,15 @@ registerCurrentRoute({
     params: z.record(z.string(), z.unknown()).optional(),
   }),
   responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/runtime-tools/github/project",
+  tags: ["connection-intents"],
+  summary: "Provision the configured Coordinator's current project repository and enroll only the two fixed worker installations",
+  body: z.object({}).strict(),
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: { description: "GitHub refused the narrow permission request" } },
 });
 
 registerCurrentRoute({

@@ -498,3 +498,14 @@ Scope: ui
 Storybook: Saved follow-up waiting on stop cleanup, pause/budget gate, one eligible continuation and result/failure.
 Production: Confirm previous execution stopped before delivery, preserve message, avoid duplicate wakes and honor actual task/ancestor/budget gate in separate legacy/native paths.
 Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [legacy-continuation.ts](../../server/src/services/recovery/legacy-continuation.ts), [native-restart-recovery.ts](../../server/src/services/native-runtime/native-restart-recovery.ts). Tests: [legacy-continuation.test.ts](../../server/src/services/recovery/legacy-continuation.test.ts), [native-restart-recovery.test.ts](../../server/src/services/native-runtime/native-restart-recovery.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts), [legacy-failure-continuation.spec.ts](../../tests/e2e/legacy-failure-continuation.spec.ts)
+
+Scoped saved-input regression (2026-11-11, `recovery/user-continuation`): a
+system-suppressed scheduled disposition repair can be proven never dispatched
+from its exact cancelled system wake and scheduler cancellation receipt or
+retained historical lifecycle event. Absence of a PID alone is insufficient.
+Reconsider the existing saved user input through ordinary admission once, with
+no duplicate comment or new recovery control. Any executed predecessor still
+requires independent process termination and environment cleanup evidence.
+Missing provenance, active execution, operator Stop and ordinary admission holds
+remain closed. Real-Postgres and owned-child-process fixtures cover this narrow
+exception; the existing live pilot request has not been modified or qualified.

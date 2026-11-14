@@ -50,6 +50,7 @@ import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { assertControllerSourcePathAllowed } from "@paperclipai/adapter-utils/controller-source-protection";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { createRunUsageRecorder } from "../usage-receipts.js";
@@ -104,6 +105,7 @@ import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
   runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
+import { provisionRunProjectRepository } from "../github-project-app-runtime.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
 import { syncManagedAiCredentials, type ManagedAiCredentialWritebackBinding } from "../managed-ai-credential-writeback.js";
 import { createNativeCredentialStore } from "./native-credential-store.js";
@@ -11370,6 +11372,7 @@ async function executePaperclipNativeSessionAttempt(
           cwd: input.execution.workspace.cwd!,
           env: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
           resolveCredentials: (binding) => resolveGitHubOperationCredentials(input.db, binding),
+          provisionProject: (binding, assertActive) => provisionRunProjectRepository(input.db, binding, assertActive),
           onLog: input.onLog,
         }));
         executionContext?.assertOpen();
@@ -13367,6 +13370,7 @@ export async function stageRemoteRunnerFile(input: {
   targetPath: string;
   mode: number;
 }): Promise<void> {
+  await assertControllerSourcePathAllowed(input.sourcePath);
   const runner = input.runner;
   if (runner.syncIn) {
     await runner.syncIn([
@@ -13453,6 +13457,7 @@ export async function stageRemoteRunnerDirectory(input: {
   mode: number;
   excludeEntries?: readonly string[];
 }): Promise<void> {
+  await assertControllerSourcePathAllowed(input.sourcePath);
   const excludeArgs = archiveExcludeArgs(input.excludeEntries ?? []);
   if (input.runner.syncIn) {
     let stagingRoot: string | null = null;
@@ -13849,6 +13854,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   mode: number;
   excludeEntries?: readonly string[];
 }): Promise<void> {
+  await assertControllerSourcePathAllowed(input.targetPath, true);
   if (
     !(await remoteRunnerPathExists({
       runner: input.runner,

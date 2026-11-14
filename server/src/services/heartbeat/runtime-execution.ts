@@ -9,6 +9,9 @@ import { describeFailedAttachment } from "../native-runtime/remote-warm-session-
 
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
 import { INTERACTION_DELIVERY_DENIED, preparedRunInteractionDeliveryDenied } from "../agent-interaction-delivery.js";
+import { assertControllerSafeExecutionTarget } from "../controller-execution-protection.js";
+import { startWorkerSupervision, settleWorkerSupervision } from "../worker-supervision.js";
+import type { WorkerSupervisionState } from "@paperclipai/shared";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
 import { environmentService } from "../environments.js";
@@ -245,6 +248,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { issueRef, issueContext, context, issueId, taskKey, executionContinuation } = input.task;
   const { nativeRuntimeResolution, nativeExecution, nativeRunnerInstanceId, adapter, runtimeForAdapter, getNativeFreshSessionHandoff, getFreshSessionHandoff, runOptions } = input.runtime;
   const { persistedExecutionWorkspace, executionWorkspace, executionTarget, workspaceOperationRecorder, nativeWorkspaceSync, workspaceRestoreSource, remoteExecution } = input.workspace;
+  assertControllerSafeExecutionTarget(executionTarget);
   const remoteWorkspaceAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
   const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, observability, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
   const { runtimeSessionParamsForAdapter, configuredModel, sessionConfigMetadata, goalCheckpointSession } = input.session;
@@ -294,6 +298,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
     );
   }
+  let workerSupervision: WorkerSupervisionState | null = null;
   let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
   let preserveRunGatewayTokens = false;
   let pluginWorkspaceFinalization: Record<string, unknown> | null = null;
@@ -529,6 +534,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     context.goalControlRequestId,
   );
   try {
+    workerSupervision = await startWorkerSupervision(db, run, agent, runtimeConfig, {
+      transport: executionTarget?.kind === "remote" ? executionTarget.transport : "local",
+    });
     if (nativeRuntimeResolution.kind === "native") {
       if (!nativeExecution || !nativeRunnerInstanceId)
         throw new Error("native_runtime_selection_not_persisted");
@@ -869,6 +877,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               agent,
               runtime: runtimeForAdapter,
               config: runtimeConfig,
+              ...(workerSupervision ? { workerSupervision: {
+                mode: "check_in" as const, generation: workerSupervision.generation,
+                timeoutMs: workerSupervision.timeoutMs,
+              } } : {}),
               context: adapterContext,
               executionContinuation: executionContinuation ?? null,
               runtimeCommandSpec:
@@ -1296,6 +1308,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     }
     throw adapterErr;
   } finally {
+    if (workerSupervision) {
+      try { await settleWorkerSupervision(db, run.id, run.companyId, workerSupervision.generation); }
+      catch (err) { logger.warn({ err, runId: run.id }, "worker supervision settlement remains pending; physical stop authority is unchanged"); }
+    }
     try {
       if (!preserveRunGatewayTokens) await revokeHeartbeatRunGatewayTokens({
         db,

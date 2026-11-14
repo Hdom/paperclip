@@ -465,3 +465,23 @@ Evidence: `source-only` — Reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7
 Verification: `not-run` — trusted lifecycle fixture save/rotate/restart/read in owner plugin only, stale version/phase/lease/company/plugin/agent denied, remove/cascade; ordinary binding/catalog/value read cannot access it; no value in logs/activity/evidence. This is a deliberate server custody restriction, not ordinary agent delivery.
 
 Gaps: The enumerated source contract is reviewed; live verification remains not-run for the named actors, surfaces and dependencies. No broader provider/runtime qualification is claimed.
+
+## `controller-signing-keys`
+
+Capability ID: `secrets/controller-signing-keys`.
+
+Review: `operation-reviewed`.
+
+### `manage-controller-github-signing-identities`
+
+API: `present` — `GET`/`PUT /api/companies/{companyId}/github-project-apps`; `POST` suffixes `/verify`, `/migrate`, `/keys/{role}/rotate`, `/keys/{role}/activate`.
+
+Agent access: `restricted` — board-only status and instance-admin mutations. Agents cannot read/decrypt these secrets, change their lifecycle, bind them as ordinary references, or assume the dedicated controller signing capability. An assigned worker may separately receive its authorized one-repository, short-lived installation token through the existing run-bound GitHub operation.
+
+Policy: company board access; mutation also requires instance administration, connection management, same-origin browser requests, revision checks and explicit confirmation. The signer checks company, fixed role/App, native provider, active numeric version and its private capability before decrypting. Scope cannot be changed into an agent-deliverable secret through generic APIs.
+
+Evidence: `verified` — isolated [scope tests](../../server/src/__tests__/controller-signing-secrets.test.ts), [admin tests](../../server/src/__tests__/github-project-app-admin.test.ts), and [API discovery contract](../../server/src/__tests__/github-project-app-api-contract.test.ts).
+
+Verification: `passed` — synthetic RSA/GitHub simulator and disposable PostgreSQL; explicit generic-access, forged-capability, inactive-version and active-grant binding denials. UI fixtures cover review/confirmation and write-only input without query-cache exposure.
+
+Gaps: No live signing-key migration or production release activation is claimed. Local/controller custody remains an application boundary; shared worker processes are not strongly isolated. Existing installation tokens can survive pause until expiry.

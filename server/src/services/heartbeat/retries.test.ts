@@ -1,6 +1,8 @@
+import { recoveryService } from "../recovery/service.js";
+import { requestCheckpointContinuation } from "./checkpoint-continuation.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, environmentLeases, agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -261,6 +263,8 @@ describePostgres("heartbeat retry module database wiring", () => {
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   afterEach(async () => {
+    await db.delete(environmentLeases);
+    await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -482,6 +486,196 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(await boundRetries().retries.scheduleBoundedRetry(run.id, { now })).toMatchObject({ outcome: "scheduled", run: { id: successor.id }, reusedExisting: true });
     expect(first.deps.appendRunEvent).toHaveBeenCalledTimes(1);
     expect(second.deps.appendRunEvent).toHaveBeenCalledTimes(1);
+  });
+
+  async function checkpointFixture() {
+    const f = await fixture();
+    const [run] = await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "legacy",
+      errorCode: null, error: null, resultJson: { checkpointCompletionReceipt: { version: 1, sourceRunId: f.run.id } }, finishedAt: null,
+    }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const input = { companyId: f.companyId, issueId: f.issue.id, agentId: f.agent.id, runId: run.id,
+      request: { version: 1 as const, summary: "Saved implementation", nextAction: "Verify tests" } };
+    return { ...f, run, input };
+  }
+
+  it("records one durable request, creates one successor concurrently, and promotes without timer wakes", async () => {
+    const f = await checkpointFixture();
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } } }).where(eq(agents.id, f.agent.id));
+    const accepted = await Promise.all([requestCheckpointContinuation(db, f.input), requestCheckpointContinuation(db, f.input)]);
+    expect(accepted.every(value => value.accepted)).toBe(true);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
+    await expect(requestCheckpointContinuation(db, { ...f.input, request: { ...f.input.request, nextAction: "Changed" } })).rejects.toThrow(/different checkpoint/);
+    const [source] = await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: now }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const first = boundRetries(), second = boundRetries();
+    const options = { retryReason: "checkpoint_continuation", wakeReason: "checkpoint_continuation", delayMs: 1000, now };
+    await Promise.all([first.retries.scheduleBoundedRetryForRun(source, f.agent, options), second.retries.scheduleBoundedRetryForRun(source, f.agent, options)]);
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1,
+      contextSnapshot: { checkpointContinuationAttempts: 1, previousCheckpoint: { sourceRunId: source.id } } });
+    expect(successors[0].contextSnapshot?.checkpointContinuationRequest).toBeUndefined();
+    expect(await first.retries.promoteDueScheduledRetries(new Date(now.getTime() + 1000))).toMatchObject({ promoted: 1 });
+    expect(await first.deps.getRun(successors[0].id)).toMatchObject({ status: "queued" });
+    await expect(requestCheckpointContinuation(db, f.input)).rejects.toThrow(/no longer owns/);
+  });
+
+  it.each(["timed_out", "cancelled", "failed"] as const)("never continues a %s checkpoint source", async status => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    const [source] = await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun(source, f.agent, { retryReason: "checkpoint_continuation" })).toMatchObject({ outcome: "not_scheduled" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(0);
+  });
+
+  it.each([3, -1, "0", null, 1.5])("fails closed for exhausted or malformed checkpoint counter %s", async count => {
+    const f = await checkpointFixture();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issue.id, checkpointContinuationAttempts: count } }).where(eq(heartbeatRuns.id, f.run.id));
+    await expect(requestCheckpointContinuation(db, f.input)).rejects.toThrow(/limit/);
+  });
+
+  it.each(["reassigned", "done", "blocked", "review", "lock", "checkout", "foreign_agent", "foreign_company", "native", "recovery"])("rejects checkpoint request after %s", async kind => {
+    const f = await checkpointFixture();
+    if (["done", "blocked", "review"].includes(kind)) await db.update(issues).set({ status: kind === "review" ? "in_review" : kind }).where(eq(issues.id, f.issue.id));
+    if (kind === "reassigned") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issue.id));
+    if (kind === "lock" || kind === "checkout") await db.update(issues).set(kind === "lock" ? { executionRunId: null } : { checkoutRunId: (await fixture()).run.id }).where(eq(issues.id, f.issue.id));
+    if (kind === "foreign_agent") f.input.agentId = (await fixture()).agent.id;
+    if (kind === "foreign_company") f.input.companyId = (await fixture()).companyId;
+    if (kind === "native") await db.update(heartbeatRuns).set({ runtimeMode: "native" }).where(eq(heartbeatRuns.id, f.run.id));
+    if (kind === "recovery") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issue.id, allowDeliverableWork: false } }).where(eq(heartbeatRuns.id, f.run.id));
+    await expect(requestCheckpointContinuation(db, f.input)).rejects.toThrow();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
+  });
+
+  it.each(["paused_agent", "disabled_wakes", "blocked", "done", "reassigned", "stopped"])("rechecks %s between acceptance and scheduling", async kind => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    const [source] = await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    if (kind === "paused_agent") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
+    if (kind === "disabled_wakes") await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } }).where(eq(agents.id, f.agent.id));
+    if (kind === "blocked" || kind === "done") await db.update(issues).set({ status: kind }).where(eq(issues.id, f.issue.id));
+    if (kind === "reassigned") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issue.id));
+    if (kind === "stopped") await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issue.id));
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun(source, f.agent, { retryReason: "checkpoint_continuation", now })).toMatchObject({ outcome: "not_scheduled" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
+  });
+
+  it("bounds the complete chain to three successors even when a caller requests more", async () => {
+    const f = await checkpointFixture();
+    let run = f.run;
+    const binding = boundRetries();
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await requestCheckpointContinuation(db, { ...f.input, runId: run.id });
+      const [source] = await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: now, resultJson: { checkpointCompletionReceipt: { version: 1, sourceRunId: run.id } } }).where(eq(heartbeatRuns.id, run.id)).returning();
+      const result = await binding.retries.scheduleBoundedRetryForRun(source, f.agent, { retryReason: "checkpoint_continuation", now, maxAttempts: 999, delayMs: 1000 });
+      if (result.outcome !== "scheduled") throw new Error(JSON.stringify(result));
+      expect(result.run.contextSnapshot?.checkpointContinuationAttempts).toBe(attempt);
+      const [next] = await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, result.run.id)).returning();
+      run = next;
+    }
+    await expect(requestCheckpointContinuation(db, { ...f.input, runId: run.id })).rejects.toThrow(/limit/);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(4);
+  });
+
+  it("revalidates authority after scheduling before dispatch", async () => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    const [source] = await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const binding = boundRetries();
+    const scheduled = await binding.retries.scheduleBoundedRetryForRun(source, f.agent, { retryReason: "checkpoint_continuation", now, delayMs: 1000 });
+    if (scheduled.outcome !== "scheduled") throw new Error(JSON.stringify(scheduled));
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
+    expect(await binding.retries.promoteDueScheduledRetries(new Date(now.getTime() + 1000))).toMatchObject({ promoted: 0 });
+    expect((await binding.deps.getRun(scheduled.run.id))?.status).not.toBe("queued");
+  });
+
+  it("does not carry failed checkpoint intent into an infrastructure retry", async () => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    const [source] = await db.update(heartbeatRuns).set({ status: "failed", errorCode: "codex_transient_upstream",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(source, f.agent, { now });
+    if (result.outcome !== "scheduled") throw new Error(JSON.stringify(result));
+    expect(result.run.contextSnapshot?.checkpointContinuationRequest).toBeUndefined();
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, result.run.id));
+    await expect(requestCheckpointContinuation(db, { ...f.input, runId: result.run.id })).resolves.toMatchObject({ accepted: true });
+  });
+
+  function checkpointRecovery(binding = boundRetries()) {
+    const enqueueWakeup = vi.fn(async () => { throw new Error("Checkpoint must not fall through to generic recovery"); });
+    const recovery = recoveryService(db, { enqueueWakeup,
+      replayCheckpointContinuation: id => binding.retries.replayCheckpointContinuation(id, { now }),
+    });
+    return { binding, recovery, enqueueWakeup };
+  }
+
+  it("replays terminal-before-admission across concurrent cold recovery and stale-lock sweeps exactly once", async () => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: now }).where(eq(heartbeatRuns.id, f.run.id));
+    const a = checkpointRecovery(), b = checkpointRecovery();
+    await Promise.all([a.recovery.reconcileLegacyContinuation(f.run.id), b.recovery.sweepStaleIssueLocks()]);
+    await checkpointRecovery().recovery.reconcileStrandedAssignedIssues();
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ scheduledRetryReason: "checkpoint_continuation", scheduledRetryAttempt: 1 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    expect(issue.executionRunId).toBe(successors[0].id);
+    expect(a.enqueueWakeup).not.toHaveBeenCalled(); expect(b.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it.each(["live_controller", "undated_controller", "pending_cleanup", "unknown_cleanup", "unverified_process"])("retains the source claim until %s settles", async kind => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    await db.update(heartbeatRuns).set({ status: "succeeded",
+      ...(kind === "live_controller" ? { controllerLeaseExpiresAt: new Date(now.getTime() + 60_000) } : {}),
+      ...(kind === "undated_controller" ? { controllerBootId: randomUUID(), controllerLeaseExpiresAt: null } : {}),
+      ...(kind === "unverified_process" ? { processPid: 999999, processGroupId: 999999, processStartedAt: now } : {}),
+    }).where(eq(heartbeatRuns.id, f.run.id));
+    if (kind === "pending_cleanup") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.run.id, provider: "local", status: "pending_cleanup" });
+    if (kind === "unknown_cleanup") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.run.id, provider: "local", status: "released", releasedAt: now, cleanupStatus: "unknown" });
+    const a = checkpointRecovery();
+    await a.recovery.sweepStaleIssueLocks();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.run.id);
+    expect(a.enqueueWakeup).not.toHaveBeenCalled();
+    await db.update(heartbeatRuns).set({ controllerBootId: null, controllerLeaseExpiresAt: null, processPid: null, processGroupId: null }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(environmentLeases).set({ status: "released", releasedAt: now, cleanupStatus: "success" }).where(eq(environmentLeases.heartbeatRunId, f.run.id));
+    await checkpointRecovery().recovery.sweepStaleIssueLocks();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(1);
+  });
+
+  it.each([true, false])("requires exact remote termination even when PID fields are retained: %s", async retainedPid => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    await db.update(heartbeatRuns).set({ status: "succeeded", processPid: retainedPid ? process.pid : null, processGroupId: retainedPid ? process.pid : null, processStartedAt: retainedPid ? now : null }).where(eq(heartbeatRuns.id, f.run.id));
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.run.id,
+      provider: "ssh", providerLeaseId: "test-remote", status: "released", releasedAt: now, cleanupStatus: "success" }).returning();
+    const receipt = { schema: "paperclip.remote-termination.v1", companyId: f.companyId, runId: f.run.id,
+      leaseId: lease.id, provider: "ssh", providerLeaseId: "test-remote", state: "stopped" };
+    await db.update(environmentLeases).set({ metadata: { remoteExecutionTermination: { ...receipt, runId: "foreign-run" } } }).where(eq(environmentLeases.id, lease.id));
+    expect(await boundRetries().retries.replayCheckpointContinuation(f.run.id, { now })).toBe("pending");
+    await db.update(environmentLeases).set({ metadata: { remoteExecutionTermination: receipt } }).where(eq(environmentLeases.id, lease.id));
+    expect(await boundRetries().retries.replayCheckpointContinuation(f.run.id, { now })).toBe("scheduled");
+  });
+
+  it.each(["missing_receipt", "stopped", "paused", "reassigned", "exhausted"])("does not replay or grant generic repair after %s", async kind => {
+    const f = await checkpointFixture();
+    await requestCheckpointContinuation(db, f.input);
+    await db.update(heartbeatRuns).set({ status: "succeeded",
+      ...(kind === "missing_receipt" ? { resultJson: {} } : {}),
+      ...(kind === "exhausted" ? { contextSnapshot: { ...(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0].contextSnapshot, checkpointContinuationAttempts: 3 } } : {}),
+    }).where(eq(heartbeatRuns.id, f.run.id));
+    if (kind === "stopped") await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issue.id));
+    if (kind === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
+    if (kind === "reassigned") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issue.id));
+    const a = checkpointRecovery();
+    await a.recovery.reconcileLegacyContinuation(f.run.id);
+    await a.recovery.sweepStaleIssueLocks();
+    await a.recovery.reconcileLegacyContinuation(f.run.id);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
+    expect(a.enqueueWakeup).not.toHaveBeenCalled();
+    expect((await a.binding.deps.getRun(f.run.id))?.resultJson?.checkpointContinuationReplayClosed).toBe(true);
   });
 
   it("promotes only due retries and publishes after commit", async () => {

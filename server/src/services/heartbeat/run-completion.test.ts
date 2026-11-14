@@ -434,6 +434,21 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     return { issue, native, binding, execution };
   }
 
+  it.each([false, true])("loads a checkpoint registered during execution and respects Stop winning=%s", async stopped => {
+    const f = await fixture();
+    // Intent was registered after the executor's original run snapshot.
+    await db.update(heartbeatRuns).set({ contextSnapshot: { checkpointContinuationRequest: { version: 1, sourceRunId: f.run.id } },
+      ...(stopped ? { status: "cancelled" as const } : {}),
+    }).where(eq(heartbeatRuns.id, f.run.id));
+    await f.completion.completeRun(f.input);
+    if (stopped) expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    else {
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ status: "succeeded", contextSnapshot: { checkpointContinuationRequest: { version: 1, sourceRunId: f.run.id } } }), f.agent,
+        expect.objectContaining({ retryReason: "checkpoint_continuation" }));
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledBefore(f.deps.releaseIssueExecutionAndPromote);
+    }
+  });
+
   it.each(["completeRun", "failRun"] as const)("settles the outgoing agent after a case handoff in %s", async operation => {
     const f = await fixture();
     await db.update(agents).set({ status: "running", lifecycleState: "ready" }).where(eq(agents.id, f.agent.id));

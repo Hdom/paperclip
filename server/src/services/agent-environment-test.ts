@@ -1,3 +1,4 @@
+import { assertControllerSafeEnvironment, assertControllerSafeExecutionTarget } from "./controller-execution-protection.js";
 import { join } from "node:path";
 import { probePluginRunnerEnvironment } from "./native-runtime/plugin-runner-probe.js";
 import { pluginRunnerAiConnectionRequiredTestResult } from "./plugin-runner-ai-connection.js";
@@ -97,6 +98,7 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     const noopRelease = async () => {};
 
     if (!input.environmentId) {
+      assertControllerSafeEnvironment(null);
       return {
         executionTarget: null,
         environmentName: null,
@@ -106,6 +108,7 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     }
 
     const requestedEnvironment = await environmentsSvc.getById(input.environmentId);
+    assertControllerSafeEnvironment(requestedEnvironment);
     if (!requestedEnvironment) {
       return {
         executionTarget: null,
@@ -534,6 +537,7 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
   }
 
   async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>, agentId?: string) {
+    assertControllerSafeExecutionTarget(context.executionTarget);
     const startedAt = new Date();
     if (adapterType === "paperclip_runner" && binding.provider === "google" && context.config.provider === "acpx"
       && context.config.acpxAgent === "antigravity" && managed.home) {

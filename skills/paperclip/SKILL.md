@@ -11,6 +11,16 @@ description: >
 
 You run in **heartbeats** — short execution windows triggered by Paperclip. Each heartbeat, you wake up, check your work, do something useful, and exit. You do not run continuously.
 
+A controller-issued check-in-supervised execution is an explicit exception to the
+short-window guidance above. When `PAPERCLIP_WORKER_CHECK_IN_GENERATION` is present,
+there is no fixed total runtime limit. While healthy and making progress, explicitly
+run `node "$CODEX_HOME/skills/paperclip/scripts/worker-check-in.mjs"` about every
+60 seconds. Do not create a background loop that reports health independently of
+progress. A missed 180-second check-in means possible disconnection; it grants no
+retry, replacement or stop authority. Stop, pause, budget and execution permissions
+still apply. Without the controller-issued generation, use ordinary heartbeats.
+
+
 ## Terminology
 
 In Paperclip, **task** and **issue** refer to the same work item. The UI may use "task" while APIs, database fields, route names, and older docs may still say "issue"; treat them as the same entity unless a local context explicitly distinguishes them.
@@ -231,6 +241,8 @@ Before ending any heartbeat, apply this final-disposition checklist:
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
 - If work is delegated, use blockers when the current issue must wait for that work. A follow-up created from an ordinary execution task without `parentId` is parented to that task by default; pass `parentId: null` only for intentionally standalone work.
 - Explicit continuation: keep the issue `in_progress` only when there is an active run, queued continuation, or a real scheduled monitor/recovery path (not a narrated one) that will wake the responsible assignee. Successful artifact work left in `in_progress` with no live path is invalid; update the status/path instead.
+
+**Checkpoint continuation (legacy CLI/SSH runs).** When the assigned task remains unfinished but you have saved a concrete checkpoint and need another bounded run, request `POST /api/issues/{issueId}/checkpoint-continuation` with the normal authentication and `X-Paperclip-Run-Id` headers and body `{ "version": 1, "summary": "What is saved and verified", "nextAction": "The concrete remaining step" }`. Verify the returned acceptance before ending successfully. This records a request, not proof that another run has started: the harness schedules it only after successful completion and rechecks current task ownership, approval, pause, Stop and budget authority. Keep the issue `in_progress`; do not mark it blocked merely because the current run is ending, and do not post a self-comment to manufacture a wake. Never use this operation during a recovery-only run, to evade a real blocker or review, or instead of finishing work that fits this run. Continuation is bounded; if refused, preserve your checkpoint and report the refusal rather than retrying indefinitely. Native Runner uses its existing semantic continuation contract instead.
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
@@ -809,3 +821,12 @@ provider, and keep the agent assigned with `continuationPolicy: "wake_assignee"`
 so the answer resumes verification. A handoff comment asking the user to comment
 back or reassign the task is not a confirmation card. The card records the user's
 answer; verify the provider's gate and publish result before continuing.
+
+
+## Controller-managed project GitHub Apps (optional fork feature)
+
+If the operator configured this agent as the project Coordinator, create a fresh project's repository through `POST /runtime-tools/github/project` from that project's currently owned task run. The controller fixes the Hdom owner and the two worker installations. Send an empty object; do not choose a repository, installation, role, or permission in the request. Use the environment's GitHub runtime broker capability, never a Board key, personal token, or App private key. Bind the returned repository URL through the normal project workspace API before handing code work to Implementer or Reviewer. An enrollment permission refusal is a blocker; do not request broader administration or enroll an unrelated repository.
+
+Configured Implementer and Reviewer agents use the existing Git/gh launchers. The controller issues the role's one-repository installation token at operation time. Personal OAuth GitHub MCP tools and host credentials are not substitutes for these App identities. An archived or hidden pilot task cannot provision or acquire a project App token. The feature does not make historical company records invisible to agents; follow the operator's separate context-access policy before starting a real project.
+
+See `references/api-reference.md` for the scoped provisioning request. Do not start a real project run until the operator confirms that live App setup and integration verification are complete.

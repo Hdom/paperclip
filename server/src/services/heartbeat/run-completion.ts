@@ -55,7 +55,7 @@ import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitrat
 import { conversationTurnPresentsAnswer } from "../native-runtime/native-governance.js";
 import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js";
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
-import { MAX_TURN_CONTINUATION_RETRY_REASON, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
+import { CHECKPOINT_CONTINUATION_RETRY_REASON, MAX_TURN_CONTINUATION_RETRY_REASON, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -673,6 +673,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               : {}),
             ...(outcome === "cancelled" ? controllerLeaseLossResultJson(signal) : {}),
             ...(failureCause ? { failureCause } : {}),
+            // Controller-authored settlement receipt travels with the winning
+            // terminal CAS. A synthetic success from orphan repair cannot mint it.
+            checkpointCompletionReceipt: outcome === "succeeded" && run.runtimeMode === "legacy"
+              ? { version: 1, sourceRunId: run.id } : null,
             configFreshness: configFreshnessResultMetadata,
           },
           errorFamily: adapterResult.errorFamily ?? null,
@@ -975,7 +979,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           `[paperclip] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
         );
       }
-      if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
+      if (outcome === "succeeded" && livenessRun.contextSnapshot?.checkpointContinuationRequest) {
+        await scheduleBoundedRetryForRun(livenessRun, agent, {
+          retryReason: CHECKPOINT_CONTINUATION_RETRY_REASON,
+          wakeReason: "checkpoint_continuation", delayMs: 1000,
+        });
+      } else if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
         const policy = parseMaxTurnContinuationPolicy(agent);
         if (policy.enabled && policy.maxAttempts > 0) {
           await scheduleBoundedRetryForRun(livenessRun, agent, {

@@ -341,6 +341,28 @@ ordinary run output access.
 The new bridge surface does not qualify retry, cancellation, workspace repair or
 session-control access. Deployed diagnostic usefulness remains unverified.
 
+Scoped checkpoint continuation update (2026-11-11): legacy assigned agents may
+`POST /api/issues/{id}/checkpoint-continuation` using their current running task's
+run ID. The strict versioned request records intent only; board callers, wrong
+company/agent/task, stale locks, native/recovery runs, malformed or exhausted
+counters are denied. Successful completion admits at most three successors
+through the existing retry and dispatch gates; each successor needs its own
+request. Timer wakes may remain disabled; on-demand wakes, Stop, pause, budget,
+review, dependencies and responsible-user authority remain controlling.
+The saved agent checkpoint enters low-trust continuation evidence, never the user
+objective. Source: [request owner](../../server/src/services/heartbeat/checkpoint-continuation.ts),
+[completion](../../server/src/services/heartbeat/run-completion.ts),
+[retry admission](../../server/src/services/heartbeat/retries.ts).
+HTTP and real-Postgres negative/concurrency tests are in
+[route tests](../../server/src/__tests__/issue-scheduled-retry-routes.test.ts) and
+[retry tests](../../server/src/services/heartbeat/retries.test.ts).
+No live provider or pilot execution is claimed. Crash replay reuses the same
+admission through legacy reconciliation and stale-lock settlement. It requires a
+controller-written completion receipt and the unchanged source execution claim;
+live controller leases, unverified processes and pending environment cleanup hold
+the claim. Missing proof or revoked authority never creates a replacement claim
+or falls through to a fresh disposition-repair allowance.
+
 ## `session`
 
 Native OpenCode semantic tool requests wait under the existing durable Runner
@@ -778,3 +800,9 @@ Policy: existing agent configuration permission plus `tools:manage_profiles`, cu
 Evidence: `verified` — the production-authenticated [integration suite](../../server/src/__tests__/connection-management.integration.test.ts) saves a personal account and binds it to the fresh standard agent; provider response is a fixture.
 Verification: `passed` — binding persistence and loss of profile-management authority tested with actual agent credentials. Other adapter/provider combinations remain source-reviewed.
 Gaps: live provider setup is outside this delivery.
+Worker check-in supervision (`runs-adapters/runs`): opt-in legacy Codex CLI
+runs use authenticated current-run check-ins and a 180-second missed-check-in
+threshold without a total runtime cap. Missing check-ins retain ownership;
+verified stop and ordinary admission remain required before another dispatch.
+See [the contract](../../doc/worker-check-in-supervision.md). Source/integration
+verification is separate from deployed or real-model qualification.

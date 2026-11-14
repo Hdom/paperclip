@@ -235,6 +235,9 @@ export interface AgentRuntimeIdentity {
 }
 
 export interface AdapterExecutionContext {
+  /** Controller-owned check-in supervision. No elapsed-runtime or output-silence kill.
+   * Explicit Stop and budget cancellation remain independent. */
+  workerSupervision?: { mode: "check_in"; generation: string; timeoutMs: number };
   /** Company-owned exporter credentials. Transient; never persist or merge into config. */
   observability?: import("./agent-observability.js").ProviderObservabilityLaunch;
   /** Server-owned credentials. Never persist this object or merge it into config. */

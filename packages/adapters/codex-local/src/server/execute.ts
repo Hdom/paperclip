@@ -590,6 +590,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     };
   }
+  if (ctx.workerSupervision && engineSelection.engine !== "cli") {
+    return { exitCode: 1, signal: null, timedOut: false, errorCode: "worker_supervision_engine_unsupported",
+      errorMessage: "Check-in supervision requires the explicitly selected Codex CLI engine",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+  }
   if (engineSelection.engine === "acp") {
     return executeCodexAcp(ctx);
   }
@@ -833,7 +838,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         desiredSkillNames,
       },
     );
-    const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
+    const timeoutSec = ctx.workerSupervision?.mode === "check_in" ? 0 : resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
       asNumber(config.timeoutSec, 0),
     );
@@ -1033,6 +1038,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         Object.assign(env, paperclipBridge.env);
       }
     }
+    if (ctx.workerSupervision) {
+      env.PAPERCLIP_WORKER_CHECK_IN_GENERATION = ctx.workerSupervision.generation;
+      env.PAPERCLIP_WORKER_CHECK_IN_TIMEOUT_SECONDS = String(ctx.workerSupervision.timeoutMs / 1000);
+      env.PAPERCLIP_WORKER_CHECK_IN_INTERVAL_SECONDS = "60";
+    }
     const effectiveEnv = Object.fromEntries(
       Object.entries({ ...process.env, ...env }).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -1111,11 +1121,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resolvedCommand,
     });
 
-    const monitorResolution = resolveCodexInactivityTimeout(config.outputInactivityTimeoutMs);
+    const monitorResolution = resolveCodexInactivityTimeout(ctx.workerSupervision ? null : config.outputInactivityTimeoutMs);
     if (monitorResolution.mode === "disabled") {
       await onLog(
         "stdout",
-        `[paperclip] Codex output inactivity monitor is DISABLED via adapterConfig.outputInactivityTimeoutMs=null. Hung codex runs will only be detected by the platform-level silent-run safety net.\n`,
+        ctx.workerSupervision
+          ? "[paperclip] Explicit worker check-ins own liveness; elapsed-runtime and output-silence termination are disabled. Stop and budget controls remain active.\n"
+          : `[paperclip] Codex output inactivity monitor is DISABLED via adapterConfig.outputInactivityTimeoutMs=null. Hung codex runs will only be detected by the platform-level silent-run safety net.\n`,
       );
     } else if (monitorResolution.mode === "default" && "reason" in monitorResolution) {
       await onLog(
@@ -1262,6 +1274,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : renderTemplate(promptTemplate, templateData);
       const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
       const prompt = joinPromptSections([
+        ctx.workerSupervision ? [
+          "Worker check-in supervision is enabled. There is no fixed total runtime limit.",
+          "While you are healthy and making progress, explicitly check in about every 60 seconds with:",
+          'node "$CODEX_HOME/skills/paperclip/scripts/worker-check-in.mjs"',
+          "Do not start a background loop that reports health independently of your progress.",
+          "A missed 180-second check-in marks execution as potentially disconnected; it does not prove that you stopped or authorize a replacement.",
+        ].join("\n") : "",
         promptInstructionsPrefix,
         renderedBootstrapPrompt,
         selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),

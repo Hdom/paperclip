@@ -1,3 +1,5 @@
+import { createControllerSourceSnapshot } from "./controller-source-materialization.js";
+import { assertControllerSourcePathAllowed, controllerExecutionProtected } from "./controller-source-protection.js";
 import type { WorkspaceCheckpointMetrics } from "./workspace-checkpoint.js";
 import { workspaceSeedGeneration, workspaceSeedCloneSnapshot, readWorkspaceSeedGeneration, publishWorkspaceSeedGeneration } from "./workspace-seed-cache.js";
 import { writeCheckpointBaseline, workspaceCheckpointScript, readCheckpointSnapshot, validateCheckpointPayload } from "./workspace-checkpoint.js";
@@ -938,24 +940,31 @@ export async function createTarballFromDirectory(input: {
   exclude?: string[];
   followSymlinks?: boolean;
 }): Promise<void> {
-  const excludeArgs = ["._*", ...(input.exclude ?? [])].flatMap((entry) => ["--exclude", entry]);
-  // Archive the directory's top-level entries BY NAME rather than ".". Archiving
-  // "." embeds a "./" self-entry whose mode/mtime tar then tries to restore onto
-  // the extraction target directory; that chmod/utime fails with "Operation not
-  // permitted" when the target is a directory the extracting (non-root) user does
-  // not own, e.g. an emptyDir mount in a hardened/gVisor sandbox pod. Enumerating
-  // entries avoids the self-entry entirely and is portable across GNU/BSD/busybox
-  // tar (no GNU-only --no-overwrite-dir needed). --exclude still filters nested
-  // matches and any named entry it matches.
-  await withTempDir("paperclip-tar-list-", async (directory) => {
-    const list = path.join(directory, "entries.nul");
-    const file = await fs.open(list, "wx", 0o600);
-    try {
-      for await (const entry of await fs.opendir(input.localDir)) await file.writeFile(`${entry.name}\0`);
-    } finally { await file.close(); }
-    await execTar(["-c", "--no-xattrs", ...(input.followSymlinks ? ["-h"] : []),
-      "-f", input.archivePath, "-C", input.localDir, ...excludeArgs, "--null", "-T", list]);
-  });
+  await assertControllerSourcePathAllowed(input.localDir);
+  const snapshot = controllerExecutionProtected() && input.followSymlinks
+    ? await createControllerSourceSnapshot(input.localDir) : null;
+  const localDir = snapshot?.directory ?? input.localDir;
+  const followSymlinks = snapshot ? false : input.followSymlinks;
+  try {
+    const excludeArgs = ["._*", ...(input.exclude ?? [])].flatMap((entry) => ["--exclude", entry]);
+    // Archive the directory's top-level entries BY NAME rather than ".". Archiving
+    // "." embeds a "./" self-entry whose mode/mtime tar then tries to restore onto
+    // the extraction target directory; that chmod/utime fails with "Operation not
+    // permitted" when the target is a directory the extracting (non-root) user does
+    // not own, e.g. an emptyDir mount in a hardened/gVisor sandbox pod. Enumerating
+    // entries avoids the self-entry entirely and is portable across GNU/BSD/busybox
+    // tar (no GNU-only --no-overwrite-dir needed). --exclude still filters nested
+    // matches and any named entry it matches.
+    await withTempDir("paperclip-tar-list-", async (directory) => {
+      const list = path.join(directory, "entries.nul");
+      const file = await fs.open(list, "wx", 0o600);
+      try {
+        for await (const entry of await fs.opendir(localDir)) await file.writeFile(`${entry.name}\0`);
+      } finally { await file.close(); }
+      await execTar(["-c", "--no-xattrs", ...(followSymlinks ? ["-h"] : []),
+        "-f", input.archivePath, "-C", localDir, ...excludeArgs, "--null", "-T", list]);
+    });
+  } finally { await snapshot?.cleanup(); }
 }
 
 async function extractTarballToDirectory(input: {

@@ -15,6 +15,8 @@ import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisiti
 import { createOwnedSandbox, recoverSandboxCreations, recoverablePluginCreation } from "./sandbox-creation-operations.js";
 import { dueRunLeaseReleaseCondition, pendingRunLeaseReleaseCondition } from "./environment-lease-release-state.js";
 import { flushDeferredEnvironmentCleanup, registerDeferredEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { assertControllerSourcePathAllowed } from "@paperclipai/adapter-utils/controller-source-protection";
+import { assertControllerSafeEnvironment, controllerExecutionProtected } from "./controller-execution-protection.js";
 import { executeEnvironmentTask, pluginEnvironmentSupportsTasks, settleDispatchedEnvironmentTask } from "./environment-task-runtime.js";
 import type { PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { allowLegacyShutdownWorkspaceCleanup, legacyShutdownWorkspaceResourceProtected } from "./legacy-shutdown-workspace-settlement.js";
@@ -3908,6 +3910,12 @@ export function environmentRuntimeService(
 
     /** Dispatch plugin-provided Runner execution, including resource preparation and task lifecycle. */
     async task(input: { companyId: string; leaseId: string; operation: PluginEnvironmentTaskOperation; executionContext?: unknown; expectedTaskId?: string }) {
+      if (controllerExecutionProtected() && !["describe", "status", "read_state", "archive_state", "complete", "stop"].includes(input.operation.kind)) {
+        const lease = await environmentsSvc.getLeaseById(input.leaseId);
+        const environment = lease?.environmentId ? await environmentsSvc.getById(lease.environmentId) : null;
+        assertControllerSafeEnvironment(environment);
+        if (lease) assertControllerSafeEnvironment({ driver: getLeaseDriverKey(lease, environment), config: environment?.config });
+      }
       if (!options.pluginWorkerManager) throw new Error("Plugin-provided Runner execution worker manager unavailable");
       return executeEnvironmentTask(db, options.pluginWorkerManager, input);
     },
@@ -3952,6 +3960,7 @@ export function environmentRuntimeService(
        */
       assertCompanyBinding?: boolean;
     }): Promise<EnvironmentRuntimeLeaseRecord> {
+      assertControllerSafeEnvironment(input.environment);
       if (input.environment.status !== "active") {
         throw new Error(`Environment "${input.environment.name}" is not active.`);
       }
@@ -4475,6 +4484,8 @@ export function environmentRuntimeService(
     },
 
     async resumeRunLease(input: EnvironmentDriverResumeInput): Promise<PluginEnvironmentLease | EnvironmentLease | null> {
+      assertControllerSafeEnvironment(input.environment);
+      assertControllerSafeEnvironment({ driver: getLeaseDriverKey(input.lease, input.environment), config: input.environment.config });
       if (await legacyShutdownWorkspaceResourceProtected(db, input.lease)) return null;
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.resumeRunLease) {
@@ -4516,6 +4527,8 @@ export function environmentRuntimeService(
     async realizeWorkspace(
       input: EnvironmentDriverRealizeWorkspaceInput,
     ): Promise<PluginEnvironmentRealizeWorkspaceResult> {
+      assertControllerSafeEnvironment(input.environment);
+      assertControllerSafeEnvironment({ driver: getLeaseDriverKey(input.lease, input.environment), config: input.environment.config });
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.realizeWorkspace) {
         throw new Error(`Environment driver "${driver.driver}" does not support workspace realization.`);
@@ -4528,6 +4541,8 @@ export function environmentRuntimeService(
     },
 
     async execute(input: EnvironmentDriverExecuteInput): Promise<PluginEnvironmentExecuteResult> {
+      assertControllerSafeEnvironment(input.environment);
+      assertControllerSafeEnvironment({ driver: getLeaseDriverKey(input.lease, input.environment), config: input.environment.config });
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.execute) {
         throw new Error(`Environment driver "${driver.driver}" does not support command execution.`);
@@ -4561,6 +4576,10 @@ export function environmentRuntimeService(
     },
 
     async syncIn(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {
+      for (const operation of input.operations) for (const file of operation.files) {
+        if (controllerExecutionProtected() && file.followSymlinks) throw new Error("Controller signing-key protection forbids dereferenced source archives");
+        await assertControllerSourcePathAllowed(file.sourcePath);
+      }
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.syncIn) {
         throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
@@ -4569,6 +4588,7 @@ export function environmentRuntimeService(
     },
 
     async syncOut(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {
+      for (const operation of input.operations) for (const file of operation.files) await assertControllerSourcePathAllowed(file.targetPath, true);
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.syncOut) {
         throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
@@ -4579,6 +4599,8 @@ export function environmentRuntimeService(
     async openDuplexChannel(
       input: EnvironmentDriverOpenDuplexChannelInput,
     ): Promise<CommandManagedDuplexChannel> {
+      assertControllerSafeEnvironment(input.environment);
+      assertControllerSafeEnvironment({ driver: getLeaseDriverKey(input.lease, input.environment), config: input.environment.config });
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.openDuplexChannel) {
         throw new Error(`Environment driver "${driver.driver}" does not support duplex channels.`);

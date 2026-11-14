@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, createSign, randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -647,7 +647,21 @@ type SecretBindingContext = Omit<SecretConsumerContext, "consumerType"> & {
 type InstanceSecretOwner = { pluginId: string } & ({ agentId: string; projectId?: never } | { projectId: string; agentId?: never });
 type InstanceSecretScope = InstanceSecretOwner & { companyId: string };
 
+const controllerSigningCapability = Symbol("controller-signing-only");
+const controllerSigningRoles = ["coordinator", "implementer", "reviewer"] as const;
+type ControllerSigningRole = typeof controllerSigningRoles[number];
+const controllerSigningKey = (role: ControllerSigningRole) => `github-app-signing.${role}`;
+function controllerSigningMaterial(value: string) {
+  if (Buffer.byteLength(value) > 16384) throw unprocessable("Signing key exceeds the supported size");
+  try {
+    const key = createPrivateKey(value);
+    if (key.asymmetricKeyType !== "rsa") throw new Error("not RSA");
+    const fingerprint = `SHA256:${createHash("sha256").update(createPublicKey(key).export({ type: "spki", format: "der" })).digest("base64")}`;
+    return { key, fingerprint };
+  } catch { throw unprocessable("A valid RSA signing key is required"); }
+}
 type SecretResolutionOptions = {
+  controllerSigningCapability?: typeof controllerSigningCapability;
   bindingContext?: SecretBindingContext;
   accessContext?: SecretConsumerContext;
   allowUserSecretScope?: boolean;
@@ -1371,10 +1385,11 @@ export function secretService(db: Db | DbTransaction) {
     const secret = preloaded && preloaded.secret.id === secretId ? preloaded.secret : await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
+    const controllerOwned = secret.scope === "controller" && options?.controllerSigningCapability === controllerSigningCapability;
     const instanceOwned = secret.scope === "instance" && options?.instanceOwner &&
       secret.ownerAgentId === (options.instanceOwner.agentId ?? null) &&
       secret.ownerProjectId === (options.instanceOwner.projectId ?? null) && secret.ownerPluginId === options.instanceOwner.pluginId;
-    if (secret.scope !== "company" && !(secret.scope === "user" && options?.allowUserSecretScope) && !instanceOwned) {
+    if (secret.scope !== "company" && !(secret.scope === "user" && options?.allowUserSecretScope) && !instanceOwned && !controllerOwned) {
       throw unprocessable("User-scoped secrets must be resolved through user secret declarations", {
         code: "secret_scope_invalid",
       });
@@ -1897,6 +1912,7 @@ export function secretService(db: Db | DbTransaction) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
+    if (secret.scope === "controller") throw forbidden("Controller signing keys cannot be used as runtime references");
     const resolvedVersion = version === "latest" ? secret.latestVersion : version;
     if (secret.status === "deleted") {
       throw new HttpError(404, "Secret not found", { code: "secret_deleted" });
@@ -2445,9 +2461,12 @@ export function secretService(db: Db | DbTransaction) {
       preserveAiSessionEpoch?: boolean;
     },
     actor?: { userId?: string | null; agentId?: string | null },
+    controllerCapability?: typeof controllerSigningCapability,
   ) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
+    if (secret.scope === "controller" && controllerCapability !== controllerSigningCapability)
+      throw forbidden("Controller signing keys require their managed lifecycle");
     if (secret.status !== "active") throw unprocessable("Cannot rotate a non-active secret");
     if (input.expectedLatestVersion !== undefined && secret.latestVersion !== input.expectedLatestVersion) {
       throw conflict(SECRET_VERSION_STALE_CONFLICT);
@@ -2667,6 +2686,7 @@ export function secretService(db: Db | DbTransaction) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.status === "deleted") throw notFound("Secret not found");
+    if (secret.scope === "controller") throw forbidden("Controller signing keys require their managed lifecycle");
 
     if (patch.name && patch.name !== secret.name) {
       const duplicate = await getByName(secret.companyId, patch.name);
@@ -3426,6 +3446,7 @@ export function secretService(db: Db | DbTransaction) {
   async function removeSecretUnlocked(secretId: string, options: RemoveSecretOptions = {}) {
     const secret = await getById(secretId);
     if (!secret) return null;
+    if (secret.scope === "controller") throw forbidden("Controller signing keys require their managed lifecycle");
     const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
     const providerId = secret.provider as SecretProvider;
     const provider = getSecretProvider(providerId);
@@ -4648,6 +4669,61 @@ export function secretService(db: Db | DbTransaction) {
       };
     },
 
+    // Controller-scoped keys use the native encrypted provider and versions.
+    // No generic binding/value API can resolve this scope. Only a signed JWT
+    // and public fingerprint leave these dedicated controller methods.
+    listControllerSigningKeys: async (companyId: string) => db.select().from(companySecrets)
+      .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "controller"), ne(companySecrets.status, "deleted"))),
+    createControllerSigningKey: async (companyId: string, role: ControllerSigningRole, appId: number, value: string, actorUserId: string) => {
+      if (!controllerSigningRoles.includes(role) || !Number.isSafeInteger(appId) || appId <= 0) throw unprocessable("Invalid signing identity");
+      controllerSigningMaterial(value);
+      const key = controllerSigningKey(role), name = `GitHub App ${role} signing key`;
+      // Local encryption prepares no remote resource. Publish native metadata
+      // and its first encrypted version in one transaction, without a reserved
+      // half-created row or any extra plaintext file.
+      const prepared = await getSecretProvider("local_encrypted").createSecret({ value, externalRef: null, providerConfig: null,
+        context: { companyId, secretKey: key, secretName: name, version: 1 } });
+      try {
+        return await db.transaction(async tx => {
+          const [secret] = await tx.insert(companySecrets).values({ companyId, scope: "controller", key, name,
+            provider: "local_encrypted", status: "active", managedMode: "paperclip_managed", latestVersion: 1,
+            providerMetadata: { consumer: "github_project_apps", role, appId },
+            description: "Controller signing only. Never available to agents, environment bindings or connection credentials.", createdByUserId: actorUserId }).returning();
+          await tx.insert(companySecretVersions).values({ secretId: secret!.id, version: 1, material: prepared.material,
+            valueSha256: prepared.valueSha256, fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
+            status: "current", createdByUserId: actorUserId });
+          return secret!;
+        });
+      } catch (error) {
+        const cause = error as { code?: string; cause?: { code?: string } };
+        if (cause.code === "23505" || cause.cause?.code === "23505") throw conflict("Controller signing identity already exists");
+        throw unprocessable("Controller signing secret could not be stored");
+      }
+    },
+    rotateControllerSigningKey: async (companyId: string, secretId: string, role: ControllerSigningRole, appId: number, value: string, expectedLatestVersion: number, actorUserId: string) => {
+      const secret = await getById(secretId);
+      if (!secret || secret.companyId !== companyId || secret.scope !== "controller" || secret.key !== controllerSigningKey(role) ||
+          secret.provider !== "local_encrypted" || secret.providerMetadata?.appId !== appId || secret.providerMetadata?.role !== role)
+        throw forbidden("Controller signing key identity mismatch");
+      controllerSigningMaterial(value);
+      return rotateUnlocked(secretId, { value, expectedLatestVersion }, { userId: actorUserId }, controllerSigningCapability);
+    },
+    signControllerGitHubAppJwt: async (companyId: string, secretId: string, version: number, role: ControllerSigningRole, appId: number) => {
+      if (!controllerSigningRoles.includes(role) || !Number.isSafeInteger(appId) || appId < 1 || !Number.isSafeInteger(version) || version < 1)
+        throw forbidden("Signing keys require an exact App role and pinned version");
+      const secret = await getById(secretId);
+      if (!secret || secret.companyId !== companyId || secret.scope !== "controller" || secret.key !== controllerSigningKey(role) ||
+          secret.provider !== "local_encrypted" || secret.managedMode !== "paperclip_managed" || secret.providerMetadata?.appId !== appId || secret.providerMetadata?.role !== role)
+        throw forbidden("Controller signing key identity mismatch");
+      const value = (await resolveSecretValueInternal(companyId, secretId, version, {
+        controllerSigningCapability, accessContext: { consumerType: "tool_connection", consumerId: "github_project_apps", actorType: "system", actorId: "github_project_apps" },
+      })).value;
+      const { key, fingerprint } = controllerSigningMaterial(value);
+      const encode = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+      const now = Math.floor(Date.now() / 1000);
+      const payload = `${encode({ alg: "RS256", typ: "JWT" })}.${encode({ iat: now - 60, exp: now + 540, iss: String(appId) })}`;
+      return { jwt: `${payload}.${createSign("RSA-SHA256").update(payload).sign(key, "base64url")}`, publicFingerprint: fingerprint };
+    },
     getById,
     getByName,
     getByKey,

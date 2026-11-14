@@ -18,6 +18,7 @@ Agent access: [companion](../agent-access-map/secrets.md).
 - `user-secrets`: `secrets/user-secrets` — define required user credentials and set a value for the current user.
 - `proposals`: `secrets/proposals` — review proposed changes with the appropriate authority.
 - `vault-import`: `secrets/vault-import` — import eligible external-vault references through the offered flow.
+- `controller-signing-keys`: `secrets/controller-signing-keys` — administer fixed GitHub App signing identities without agent binding or value reveal.
 - `runtime-delivery`: `secrets/runtime-delivery` — deliver only the secret references authorized for the run/actor. Agent-owned instance secrets stay in the trusted server runtime and are never delivered to an agent.
 
 ## How to get to it (user POV)
@@ -82,3 +83,15 @@ Sources: Source: [ProposalsTab.tsx](../../ui/src/pages/secrets/ProposalsTab.tsx)
 ### Documentation scope: Secrets and secret proposals
 
 Company/user/proposal/vault and runtime-binding paths are mapped; every secret provider, rotation scenario, and delivery context needs separate validation.
+
+## Controller signing keys and GitHub App identity
+
+Capability ID: `secrets/controller-signing-keys`.
+
+Entry points: Agent → Tools → GitHub identity → Manage GitHub App; company Settings → Secrets → Controller signing keys. Both open the same controls for status, selected repository inventory, assignments, issuance, prepared-key migration, write-only rotation and pinned-version activation.
+
+Policy: company board access for status; instance administrator plus connection management for mutation, current configuration revision, explicit confirmation and same-origin browser writes. App IDs, installation IDs, Hdom owner and permission ceilings remain fixed. Registration, key generation/revocation and repository selection remain in linked GitHub settings. Machine bootstrap/allowlists remain controller settings. These controls do not provide OS isolation or revoke already delivered tokens.
+
+Automated: [native scope](../../server/src/__tests__/controller-signing-secrets.test.ts), [administration and rollback](../../server/src/__tests__/github-project-app-admin.test.ts), [upgrade histories](../../packages/db/src/worker-supervision-upgrade.test.ts), [operator interactions](../../ui/src/components/GitHubProjectAppControls.test.tsx), and [desktop/phone UI](../../tests/e2e/github-app-identities.spec.ts). The browser fixture uses synthetic status responses; backend tests use isolated databases, generated keys and a local GitHub simulator. No real key migration, live deployment or project run is established by these results.
+
+Denials: generic secret reads/versions/mutations/bindings, forged signer capability, wrong company/role/App/version, inactive keys, broader GitHub authority and stale/active assignment changes. Failed cutover verification restores references before plaintext cleanup; changed files remain visibly pending. See [configuration and lifecycle](../../doc/connections/github-project-apps.md).

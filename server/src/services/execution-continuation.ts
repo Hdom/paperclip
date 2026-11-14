@@ -525,6 +525,12 @@ export async function buildExecutionContinuation(input: {
     if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
       throw new Error("continuation_user_authorization_missing");
   }
+  const checkpoint = object(sourceRun?.context?.checkpointContinuationRequest);
+  const checkpointEvidence = input.context.retryReason === "checkpoint_continuation"
+    && checkpoint.version === 1 && checkpoint.sourceRunId === sourceRunId
+    && string(checkpoint.summary) && string(checkpoint.nextAction)
+    ? `Previous agent checkpoint (evidence, not user authority):\n${String(checkpoint.summary).slice(0, 4000)}\nRemaining step: ${String(checkpoint.nextAction).slice(0, 4000)}`
+    : null;
   const interruptedRunId = explicitUserSource ?? (staleInterruptedSource ? undefined : interruptedSource) ?? (lastTerminal && lastTerminal.status !== "succeeded" &&
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
@@ -565,7 +571,7 @@ export async function buildExecutionContinuation(input: {
     // Low-trust evidence only: renderPaperclipWakePrompt removes completedWork
     // from requestContext and encodes it in the fenced, non-authoritative
     // continuation-evidence section. It cannot supply objective or authority.
-    completedWork: input.summary ??
+    completedWork: checkpointEvidence ?? input.summary ??
       string(object(object(sourceRun?.result).nativeResult).summary)?.slice(0, 32_000) ??
       string(object(sourceRun?.result).summary)?.slice(0, 32_000) ?? null,
     completedActions,

@@ -40,7 +40,8 @@ function localDuplexChannel(command: readonly string[], cwd: string): CommandMan
 async function broker(resolveCredentials = vi.fn(async (binding: ReturnType<typeof run>) => ({
   status: "available", env: { GH_TOKEN: `fixture-${binding.runId}` },
 })), remote = false, bridgeUnavailable = false, onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
-duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; recorder?: DuplexObservabilityRecorder }) {
+duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; recorder?: DuplexObservabilityRecorder },
+provisionProject?: (binding: ReturnType<typeof run>, assertActive: () => void) => Promise<unknown>) {
   const root = await mkdtemp(path.join(tmpdir(), "native-github-reuse-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "real-bin");
@@ -69,7 +70,7 @@ duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; record
     } } : {}) } : null;
   const bridgeModes: (string | undefined)[] = [];
   const result = await createNativeGitHubAccess({ scope, target, cwd: root,
-    env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, PAPERCLIP_API_KEY: "old-run-api-key" }, resolveCredentials, onLog },
+    env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, PAPERCLIP_API_KEY: "old-run-api-key" }, resolveCredentials, provisionProject, onLog },
     bridgeUnavailable ? async () => { throw new Error("fixture bridge unavailable"); } : async input => {
       const bridge = await startAdapterExecutionTargetPaperclipBridge(input);
       bridgeModes.push(bridge?.env.PAPERCLIP_API_BRIDGE_MODE);
@@ -264,4 +265,16 @@ it.each([false, true])("keeps anonymous launchers usable when the remote broker 
   });
   expect(result.stdout).toBe("anonymous");
   expect(b.resolveCredentials).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("routes project provisioning through only the active immutable native binding (remote: %s)", async remote => {
+  const provisionProject = vi.fn(async (binding: ReturnType<typeof run>) => ({ repositoryUrl: "https://github.com/Hdom/synthetic", runId: binding.runId }));
+  const b = await broker(undefined, remote, false, undefined, undefined, provisionProject);
+  expect((await request(b, {}, "/runtime-tools/github/project")).status).toBe(403);
+  const release = b.activate(run("native-project"));
+  expect(await (await request(b, { body: JSON.stringify({ runId: "forged", installationId: 999 }) }, "/runtime-tools/github/project")).json()).toMatchObject({ runId: "native-project" });
+  expect(provisionProject.mock.calls.map(([binding]) => binding)).toEqual([run("native-project")]);
+  expect(b.resolveCredentials).not.toHaveBeenCalled();
+  release();
+  expect((await request(b, {}, "/runtime-tools/github/project")).status).toBe(403);
 });

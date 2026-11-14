@@ -105,6 +105,8 @@ const heartbeatRunListColumns = {
   processPid: heartbeatRuns.processPid,
   processGroupId: heartbeatRunProcessGroupIdColumn,
   processStartedAt: heartbeatRuns.processStartedAt,
+  workerSupervision: heartbeatRuns.workerSupervision,
+  workerCheckInDeadlineAt: heartbeatRuns.workerCheckInDeadlineAt,
   lastOutputAt: heartbeatRuns.lastOutputAt,
   lastOutputSeq: heartbeatRuns.lastOutputSeq,
   lastOutputStream: heartbeatRuns.lastOutputStream,
@@ -315,6 +317,7 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
 // only the evidence used by eligibility; never retrieve provider diagnostics.
 const heartbeatRunExecutionEvidenceColumn = sql<Record<string, unknown> | null>`
   case when ${heartbeatRuns.resultJson} is null then null else jsonb_build_object(
+    'preDispatchScheduledRetryCancellation', ${heartbeatRuns.resultJson} -> 'preDispatchScheduledRetryCancellation',
     'startupCancellation', ${heartbeatRuns.resultJson} -> 'startupCancellation',
     'startupPreparationSettledAt', ${heartbeatRuns.resultJson} -> 'startupPreparationSettledAt',
     'stopReason', ${heartbeatRuns.resultJson} -> 'stopReason',
@@ -409,6 +412,8 @@ const heartbeatRunIssueSummaryColumns = {
   continuationAttempt: heartbeatRuns.continuationAttempt,
   lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
   nextAction: heartbeatRuns.nextAction,
+  workerSupervision: heartbeatRuns.workerSupervision,
+  workerCheckInDeadlineAt: heartbeatRuns.workerCheckInDeadlineAt,
   lastOutputAt: heartbeatRuns.lastOutputAt,
   lastOutputSeq: heartbeatRuns.lastOutputSeq,
   lastOutputStream: heartbeatRuns.lastOutputStream,

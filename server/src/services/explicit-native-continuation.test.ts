@@ -1,3 +1,4 @@
+import { isPreDispatchRepairCancellationVerified } from "./pre-dispatch-repair-cancellation.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
@@ -1501,6 +1502,135 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
     return f;
   }
+
+  async function seedCancelledDispositionRepair(machineReceipt = false, event = true) {
+    const f = await seed();
+    const finishedAt = new Date("2026-09-11T10:00:00Z"), dueAt = new Date("2026-09-11T09:59:00Z");
+    const fingerprint = `repair:${f.sourceRunId}`, wakeId = randomUUID();
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, f.agentId));
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId: f.companyId, agentId: f.agentId,
+      source: "automation", triggerDetail: "system", reason: "issue_disposition_repair", runId: f.sourceRunId,
+      status: "cancelled", finishedAt, requestedByActorType: "system",
+      idempotencyKey: `issue_disposition_repair:${f.issueId}:${fingerprint}:1`,
+      payload: { issueId: f.issueId, dispositionRepairFingerprint: fingerprint, dispositionRepairAttempt: 1 },
+    });
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", scopeKind: "issue", issueId: f.issueId,
+      nativeIssueId: null, processPid: null, processGroupId: null, processStartedAt: null,
+      status: "cancelled", startedAt: null, finishedAt, wakeupRequestId: wakeId,
+      errorCode: "issue_disposition_repair_superseded",
+      error: "Scheduled disposition repair suppressed because the source state changed or gained a durable path",
+      scheduledRetryAt: dueAt, scheduledRetryReason: "issue_disposition_repair", scheduledRetryAttempt: 1,
+      contextSnapshot: { issueId: f.issueId, retryReason: "issue_disposition_repair", dispositionRepairFingerprint: fingerprint, dispositionRepairAttempt: 1 },
+      resultJson: machineReceipt ? { preDispatchScheduledRetryCancellation: { version: 1, runId: f.sourceRunId,
+        previousStatus: "scheduled_retry", errorCode: "issue_disposition_repair_superseded" } } : null,
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" }).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    if (event) await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
+      eventType: "lifecycle", stream: "system", level: "warn",
+      message: "Scheduled disposition repair suppressed because the source state changed or gained a durable path",
+      payload: { expectedFingerprint: fingerprint, scheduledRetryReason: "issue_disposition_repair", scheduledRetryAttempt: 1, scheduledRetryAt: dueAt.toISOString() },
+    });
+    return { ...f, wakeId };
+  }
+
+  it.each([false, true])("admits a user turn after positively verified never-dispatched repair (machine receipt: %s)", async receipt => {
+    const f = await seedCancelledDispositionRepair(receipt, !receipt);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(await isPreDispatchRepairCancellationVerified(db, run)).toBe(true);
+    expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0].status).toBe("cancelled");
+  });
+
+  it("persists a future non-execution receipt in the real scheduled cancellation transaction", async () => {
+    const f = await seedCancelledDispositionRepair(false, false);
+    await db.update(heartbeatRuns).set({ status: "scheduled_retry", finishedAt: null, error: null, errorCode: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(agentWakeupRequests).set({ status: "queued", finishedAt: null }).where(eq(agentWakeupRequests.id, f.wakeId));
+    expect(await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({ companyId: f.companyId, runId: f.sourceRunId, now: new Date("2026-09-11T10:00:00Z") }))
+      .toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_disposition_repair_superseded" });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(run.resultJson).toMatchObject({ preDispatchScheduledRetryCancellation: { version: 1, runId: run.id, previousStatus: "scheduled_retry" } });
+    expect(await isPreDispatchRepairCancellationVerified(db, run)).toBe(true);
+  });
+
+  it.each(["missing_event", "foreign_receipt", "started", "pid", "stage", "controller", "profile", "transcript", "provider_event", "launch_event", "lease", "coordinator", "wake", "fingerprint", "operator_stop"])("does not mistake contradictory %s evidence for non-execution", async kind => {
+    const f = await seedCancelledDispositionRepair(kind === "foreign_receipt", kind !== "missing_event" && kind !== "foreign_receipt");
+    if (kind === "foreign_receipt") await db.update(heartbeatRuns).set({ resultJson: { preDispatchScheduledRetryCancellation: { version: 1, runId: "foreign", previousStatus: "scheduled_retry", errorCode: "issue_disposition_repair_superseded" } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (kind === "started") await db.update(heartbeatRuns).set({ startedAt: new Date() }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (kind === "pid") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (kind === "stage") await db.update(heartbeatRuns).set({ executionStage: "dispatching" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (kind === "controller") await db.update(heartbeatRuns).set({ controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now()+60_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (kind === "profile") await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (kind === "transcript") await db.update(heartbeatRuns).set({ stdoutExcerpt: "Provider ran" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (kind === "provider_event" || kind === "launch_event") await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId, eventType: kind === "provider_event" ? "provider.event" : PROCESS_START_REQUESTED, stream: "system", level: "info", message: "Execution evidence" });
+    if (kind === "lease") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.sourceRunId, provider: "local", status: "active" });
+    if (kind === "coordinator") {
+      await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issueId, runId: f.sourceRunId, phase: "terminal_failure", attempt: 0 });
+    }
+    if (kind === "wake") await db.update(agentWakeupRequests).set({ status: "queued" }).where(eq(agentWakeupRequests.id, f.wakeId));
+    if (kind === "fingerprint") await db.update(agentWakeupRequests).set({ payload: { issueId: f.issueId, dispositionRepairFingerprint: "foreign", dispositionRepairAttempt: 1 } }).where(eq(agentWakeupRequests.id, f.wakeId));
+    if (kind === "operator_stop") await db.update(heartbeatRuns).set({ resultJson: { cancellation: { source: "operator", expected: true } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(await isPreDispatchRepairCancellationVerified(db, run)).toBe(false);
+    expect(await admit(f)).toBeNull();
+  });
+
+  it("does not hide an actual predecessor with missing or live stop evidence", async () => {
+    const f = await seedCancelledDispositionRepair();
+    const [parent] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", runtimeMode: "legacy", status: "failed", startedAt: new Date("2026-09-11T09:00:00Z"), finishedAt: new Date("2026-09-11T09:01:00Z"), contextSnapshot: { issueId: f.issueId } }).returning();
+    const [repair] = await db.update(heartbeatRuns).set({ retryOfRunId: parent.id, contextSnapshot: { ...(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0].contextSnapshot, retryOfRunId: parent.id } }).where(eq(heartbeatRuns.id, f.sourceRunId)).returning();
+    expect(await isPreDispatchRepairCancellationVerified(db, repair)).toBe(false);
+    await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, parent.id));
+    expect(await isPreDispatchRepairCancellationVerified(db, repair)).toBe(false);
+    expect(await admit(f)).toBeNull();
+  });
+
+  it("accepts a suppressed repair only after its executed predecessor is proven stopped", async () => {
+    const f = await seedCancelledDispositionRepair();
+    const processStartedAt = new Date();
+    const child = execFile(process.execPath, ["-e", "process.exit(0)"]);
+    await new Promise(resolve => child.on("exit", resolve));
+    const [parent] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      issueId: f.issueId, scopeKind: "issue", runtimeMode: "legacy", status: "failed",
+      startedAt: processStartedAt, finishedAt: new Date(), processPid: child.pid, processStartedAt,
+      contextSnapshot: { issueId: f.issueId } }).returning();
+    const [repair] = await db.update(heartbeatRuns).set({ retryOfRunId: parent.id,
+      contextSnapshot: { ...(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0].contextSnapshot,
+        retryOfRunId: parent.id } }).where(eq(heartbeatRuns.id, f.sourceRunId)).returning();
+    expect(await isPreDispatchRepairCancellationVerified(db, repair)).toBe(false);
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: parent.id, agentId: f.agentId,
+      eventType: "native.process_identity_recorded", stream: "system", level: "info", message: "Owned test child exited",
+      payload: { targetKind: "local", hostname: os.hostname(), processPid: child.pid,
+        processGroupId: null, processStartedAt: processStartedAt.toISOString() } });
+    expect(await isPreDispatchRepairCancellationVerified(db, repair)).toBe(true);
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: parent.id, agentId: f.agentId,
+      eventType: "native.local_process_stopped", stream: "system", level: "info", message: "Old stop receipt" });
+    await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, parent.id));
+    // Even a server stop receipt cannot excuse a currently retained live PID.
+    expect(await isPreDispatchRepairCancellationVerified(db, repair)).toBe(false);
+    expect(await admit(f)).toBeNull();
+    await db.update(heartbeatRuns).set({ processPid: child.pid }).where(eq(heartbeatRuns.id, parent.id));
+    expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId });
+  });
+
+  it("adopts the existing saved input exactly once even if it predates a system-suppressed repair", async () => {
+    const f = await seedCancelledDispositionRepair();
+    await db.update(issueComments).set({ createdAt: new Date("2026-09-11T09:59:30Z") }).where(eq(issueComments.id, f.commentId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const [saved] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "board", updatedAt: new Date(0),
+      payload: { issueId: f.issueId, commentId: f.commentId, executionWait: { reason: "execution_recovery" },
+        _paperclipWakeContext: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: f.commentId, wakeCommentIds: [f.commentId] } },
+    }).returning();
+    const heartbeat = heartbeatService(db);
+    await Promise.all([heartbeat.resumeExecutionWaitComments(), heartbeatService(db).resumeExecutionWaitComments()]);
+    await heartbeat.resumeExecutionWaitComments();
+    const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(queued).toHaveLength(1);
+    expect(queued[0].contextSnapshot).toMatchObject({ wakeCommentIds: [f.commentId], explicitUserContinuation: { commentId: f.commentId }, forceFreshSession: true });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, saved.id)))[0]).toMatchObject({ status: "coalesced", runId: queued[0].id });
+  });
 
   async function seedCancelledReviewWait() {
     const f = await seedHistoricalCancelledPreparation();

@@ -410,7 +410,7 @@ export function parseIssueAssigneeAdapterOverrides(
 ): ParsedIssueAssigneeAdapterOverrides | null {
   const parsed = parseObject(raw);
   const parsedAdapterConfig = Object.fromEntries(
-    Object.entries(parseObject(parsed.adapterConfig)).filter(([key]) => key !== "homeMode"),
+    Object.entries(parseObject(parsed.adapterConfig)).filter(([key]) => !["homeMode", "instructionsBundleMode", "instructionsRootPath", "instructionsEntryFile", "instructionsFilePath", "agentsMdPath"].includes(key)),
   );
   const adapterConfig =
     Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
@@ -484,7 +484,8 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
     }
   }
 
-  return { ...nextConfig, ...input.adapterConfigOverrides };
+  const safeOverrides = Object.fromEntries(Object.entries(input.adapterConfigOverrides ?? {}).filter(([key]) => !["homeMode", "instructionsBundleMode", "instructionsRootPath", "instructionsEntryFile", "instructionsFilePath", "agentsMdPath"].includes(key)));
+  return { ...nextConfig, ...safeOverrides };
 }
 
 export function taskWorkspaceRuntimeSelectionEnabled(input: {

@@ -57,6 +57,9 @@ export const companySecrets = pgTable(
     companyNameUq: uniqueIndex("company_secrets_company_name_uq")
       .on(table.companyId, table.name)
       .where(sql`${table.scope} = 'company' and ${table.deletedAt} is null`),
+    controllerKeyUq: uniqueIndex("company_secrets_controller_key_uq")
+      .on(table.companyId, table.key)
+      .where(sql`${table.scope} = 'controller' and ${table.deletedAt} is null`),
     companyKeyUq: uniqueIndex("company_secrets_company_key_uq")
       .on(table.companyId, table.key)
       .where(sql`${table.scope} = 'company' and ${table.deletedAt} is null`),
@@ -66,7 +69,7 @@ export const companySecrets = pgTable(
     scopeShapeCheck: check(
       "company_secrets_scope_shape_check",
       sql`(
-        ${table.scope} = 'company'
+        ${table.scope} in ('company', 'controller')
         and ${table.ownerUserId} is null
         and ${table.userSecretDefinitionId} is null
         and ${table.ownerAgentId} is null and ${table.ownerProjectId} is null and ${table.ownerPluginId} is null

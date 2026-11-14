@@ -3,6 +3,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { HelpCircle, PackageCheck } from "lucide-react";
 import type {
   AgentDetail as AgentDetailRecord,
+  GitHubProjectAppSettings,
   ConnectionGrant,
   ToolCatalogEntry,
   ToolConnection,
@@ -13,6 +14,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { toolsApi } from "../api/tools";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
+import { GitHubProjectAppManager, useGitHubProjectApps } from "@/components/GitHubProjectAppControls";
 import { GithubIcon } from "@/components/icons/github-icon";
 import { InlineBanner } from "@/components/InlineBanner";
 import { EnforcementBanner } from "../components/EnforcementBanner";
@@ -38,6 +40,7 @@ function isEligibleGitHubIdentityConnection(connection: ToolConnection, agentId:
 }
 
 function GitHubIdentitySection({
+  companyId, agentId, appSettings,
   agentName,
   dedicatedIdentity,
   personalIdentity,
@@ -45,6 +48,7 @@ function GitHubIdentitySection({
   loadError,
   onRetry,
 }: {
+  companyId: string; agentId: string; appSettings?: GitHubProjectAppSettings;
   agentName: string;
   dedicatedIdentity: { connection: ToolConnection; grant: ConnectionGrant } | null;
   personalIdentity: { connection: ToolConnection; grant: ConnectionGrant } | null;
@@ -52,6 +56,8 @@ function GitHubIdentitySection({
   loadError: boolean;
   onRetry: () => void;
 }) {
+  const managedApp = appSettings?.roles.find(row => row.agentId === agentId);
+  const managedBlocked = appSettings?.blockedAgentIds.includes(agentId);
   const dedicatedLogin = dedicatedIdentity?.grant.providerTenant?.github?.login;
   const personalLogin = personalIdentity?.grant.providerTenant?.github?.login;
 
@@ -72,6 +78,12 @@ function GitHubIdentitySection({
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   Paperclip could not verify this agent&apos;s current connection. Your existing setup was not changed.
                 </p>
+              </>
+            ) : managedApp || managedBlocked ? (
+              <>
+                <p className="mt-0.5 text-sm font-medium text-foreground">{managedApp ? `${managedApp.role} GitHub App${managedApp.login ? ` · ${managedApp.login}` : ""}` : "Managed GitHub access paused"}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{managedApp ? `${managedApp.status}. ${managedApp.role === "coordinator" ? "Creates and enrolls project repositories; its token is never delivered to the agent." : "Uses a short-lived token limited to the current project repository."}` : "Its previous App assignment was removed. An administrator must explicitly release it before other GitHub connection rules apply."}</p>
+                <p className="mt-1 text-xs text-muted-foreground">Personal GitHub and host credentials are not substituted. Signing keys remain in controller-only Paperclip Secrets.</p>
               </>
             ) : dedicatedIdentity ? (
               <>
@@ -102,6 +114,8 @@ function GitHubIdentitySection({
           <div className="flex flex-wrap items-center gap-2">
             {loadError ? (
               <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>
+            ) : managedApp || managedBlocked ? (
+              appSettings?.canManage ? <GitHubProjectAppManager companyId={companyId} agentId={agentId} /> : <span className="text-xs text-muted-foreground">Managed by an administrator</span>
             ) : dedicatedIdentity ? (
               <Button variant="outline" size="sm" asChild>
                 <Link to={`/apps/${dedicatedIdentity.connection.id}/permissions`}>Manage GitHub identity</Link>
@@ -122,6 +136,7 @@ function GitHubIdentitySection({
                 </Button>
               </>
             )}
+            {!managedApp && !managedBlocked && appSettings?.canManage && <GitHubProjectAppManager companyId={companyId} agentId={agentId} label="Use a GitHub App" />}
           </div>
         ) : null}
       </div>
@@ -333,6 +348,8 @@ const DENIED_TOOLS_DISPLAY_LIMIT = 30;
  * which access profiles and rules shape the final list.
  */
 export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; companyId: string }) {
+  const appIdentityQuery = useGitHubProjectApps(companyId);
+  const managedAppIdentity = appIdentityQuery.data?.roles.some(row => row.agentId === agent.id) || appIdentityQuery.data?.blockedAgentIds.includes(agent.id);
   const queryClient = useQueryClient();
   const [installDraft, setInstallDraft] = useState<Record<string, boolean>>({});
   const lastSavedInstallRef = useRef<Record<string, boolean>>({});
@@ -576,12 +593,14 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
       />
 
       <GitHubIdentitySection
+        companyId={companyId} agentId={agent.id} appSettings={appIdentityQuery.data}
         agentName={agent.name}
         dedicatedIdentity={dedicatedGitHubIdentity}
         personalIdentity={personalGitHubIdentity}
-        loading={connectionsQuery.isLoading || githubGrantQueries.some((query) => query.isLoading)}
-        loadError={connectionsQuery.isError || githubGrantQueries.some((query) => query.isError)}
+        loading={appIdentityQuery.isLoading || (!managedAppIdentity && (connectionsQuery.isLoading || githubGrantQueries.some((query) => query.isLoading)))}
+        loadError={appIdentityQuery.isError || (!managedAppIdentity && (connectionsQuery.isError || githubGrantQueries.some((query) => query.isError)))}
         onRetry={() => {
+          if (appIdentityQuery.isError) void appIdentityQuery.refetch();
           if (connectionsQuery.isError) void connectionsQuery.refetch();
           for (const query of githubGrantQueries) {
             if (query.isError) void query.refetch();

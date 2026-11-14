@@ -73,6 +73,7 @@ import type {
   ScheduledRetryFacts,
 } from "../domain/policy.js";
 import {
+  CHECKPOINT_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   allowsIssueInteractionWake,
@@ -160,6 +161,7 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
+  if (retryReason === CHECKPOINT_CONTINUATION_RETRY_REASON) return "checkpoint_continuation";
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
   if ((retryReason === "ai_connection_busy" || retryReason === "ai_connection_pool_wait")) return "ai_connection_wait";
@@ -360,7 +362,7 @@ export function createPostgresRunDispatchAdapter(
       runAgentId: input.agentId,
       issueId,
       retryReasonKind,
-      enforceIssueExecutionLock: retryReasonKind === "max_turn_continuation" || retryReasonKind === "ai_connection_wait",
+      enforceIssueExecutionLock: retryReasonKind === "checkpoint_continuation" || retryReasonKind === "max_turn_continuation" || retryReasonKind === "ai_connection_wait",
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, input.contextSnapshot),
       budgetBlock: null,
       agentInvokable: true,
@@ -815,6 +817,12 @@ export function createPostgresRunDispatchAdapter(
         ...(pauseSuppression ? {
           resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(pauseSuppression)}::jsonb`,
         } : {}),
+        ...(input.errorCode === "issue_disposition_repair_superseded" ? {
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+            preDispatchScheduledRetryCancellation: { version: 1, runId: input.runId,
+              previousStatus: "scheduled_retry", errorCode: input.errorCode },
+          })}::jsonb`,
+        } : {}),
         updatedAt: input.now,
       })
       .where(
@@ -943,6 +951,7 @@ export function createPostgresRunDispatchAdapter(
         !gate.allowed &&
         gate.errorCode === "issue_not_found" &&
         factsResult.facts.retryReasonKind !== "max_turn_continuation" &&
+        factsResult.facts.retryReasonKind !== "checkpoint_continuation" &&
         factsResult.facts.retryReasonKind !== "native_safe_replacement";
 
       if (!gate.allowed && !isLegacyMissingIssueException) {

@@ -1,3 +1,4 @@
+import { readControllerSourceFile } from "@paperclipai/adapter-utils/controller-source-materialization";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -77,12 +78,12 @@ async function collectSeedFiles(
     const exists = await pathExists(sourcePath);
     if (name === "settings.json") {
       if (!exists && defaultMode === "default") continue;
-      const raw = exists ? (await fs.readFile(sourcePath)).toString("utf8") : null;
+      const raw = exists ? (await readControllerSourceFile(sourcePath)).toString("utf8") : null;
       files.push({ name, sourcePath, contents: Buffer.from(sanitizeRemoteClaudeSettings(raw, defaultMode), "utf8") });
       continue;
     }
     if (!exists) continue;
-    files.push({ name, sourcePath, contents: await fs.readFile(sourcePath) });
+    files.push({ name, sourcePath, contents: await readControllerSourceFile(sourcePath) });
   }
   return files;
 }

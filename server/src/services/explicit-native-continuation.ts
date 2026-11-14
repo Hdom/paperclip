@@ -1,5 +1,6 @@
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
+import { isPreDispatchRepairCancellationVerified } from "./pre-dispatch-repair-cancellation.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { canSelectFreshWorkspace, retainedIssueWorkspaceForRetry, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
 import { verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
@@ -440,7 +441,8 @@ export async function admitExplicitNativeContinuation(input: {
       return blocked("workspace_repair_required", "Paperclip is recovering saved work before continuing. Your message is saved.");
     }
     const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
-    if (partiallyDeliveredQueue && run.runtimeMode !== "native" && !unusedAdmission && !cancelledStartup && !failedPreparation) return null;
+    const neverDispatchedRepair = await isPreDispatchRepairCancellationVerified(db, run);
+    if (partiallyDeliveredQueue && run.runtimeMode !== "native" && !unusedAdmission && !cancelledStartup && !failedPreparation && !neverDispatchedRepair) return null;
     if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission &&
         !(queuedRequest && run.runtimeMode === "native" &&
           (run.status !== "cancelled" || authorizedAt > stoppedAt)) &&
@@ -450,7 +452,7 @@ export async function admitExplicitNativeContinuation(input: {
         !(queuedInterrupt && response?.source.requiresFreshSession && run.runtimeMode === "native")) return null;
     // A saved native message sent after Stop is a new user direction. Older
     // input cannot restart a cancelled run merely because it is still queued.
-    if (queuedRequest && !queuedInterrupt && run.status === "cancelled" && !unusedAdmission &&
+    if (queuedRequest && !queuedInterrupt && run.status === "cancelled" && !unusedAdmission && !neverDispatchedRepair &&
         !canContinueCancelledRun(run) && !(run.runtimeMode === "native" && authorizedAt > stoppedAt) &&
         !(cancelledStartup && authorizedAt > run.finishedAt!)) return null;
     if (retry && run.status === "cancelled" && !canContinueCancelledRun(run) && !cancelledStartup)
@@ -507,7 +509,7 @@ export async function admitExplicitNativeContinuation(input: {
       }))) return null;
     } else {
       if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return blocked("local_cleanup", "Waiting for the previous environment to finish cleanup. Your message will start automatically.");
-      if (!unusedAdmission && !cancelledStartup && !failedPreparation) {
+      if (!unusedAdmission && !cancelledStartup && !failedPreparation && !neverDispatchedRepair) {
         if (freshIntent && (run.processPid || run.processGroupId) && !await recordedLocalExecutionStopped(db, run))
           return blocked("process_identity_missing", "Paperclip is verifying that the previous session stopped.");
         // A missing process identity is not evidence that a provider exited.

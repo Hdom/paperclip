@@ -628,6 +628,34 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     });
   });
 
+  it.each(["valid", "board", "missing_run", "foreign_run", "foreign_company", "extra_fields", "blank_summary"])("checkpoint HTTP boundary: %s", async kind => {
+    const f = await seedIssueWithRetry({ retryStatus: "running" });
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", scopeKind: "issue", issueId: f.issueId }).where(eq(heartbeatRuns.id, f.retryRunId));
+    let actor = agentActor(f.companyId, f.agentId);
+    actor.runId = f.retryRunId;
+    if (kind === "board") actor = boardActor(f.companyId);
+    if (kind === "missing_run") actor.runId = undefined;
+    if (kind === "foreign_run") actor.runId = f.sourceRunId;
+    if (kind === "foreign_company") actor.companyId = randomUUID();
+    const body = { version: 1, summary: "Saved checkpoint", nextAction: "Run verification",
+      ...(kind === "extra_fields" ? { maxAttempts: 999, issueId: f.issueId } : {}),
+      ...(kind === "blank_summary" ? { summary: "   " } : {}),
+    };
+    const response = await request(createApp(actor)).post(`/api/issues/${f.issueId}/checkpoint-continuation`).send(body);
+    if (kind === "valid") {
+      expect(response.status).toBe(202);
+      expect(response.body).toMatchObject({ accepted: true, sourceRunId: f.retryRunId, maxAttempts: 3 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+      expect(run.contextSnapshot).toMatchObject({ checkpointContinuationRequest: { summary: body.summary, sourceRunId: run.id } });
+      const audit = await db.select().from(activityLog).where(eq(activityLog.action, "issue.checkpoint_continuation_requested"));
+      expect(audit).toHaveLength(1);
+    } else {
+      expect([400, 401, 403, 404, 409, 422]).toContain(response.status);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+      expect(run.contextSnapshot?.checkpointContinuationRequest).toBeUndefined();
+    }
+  });
+
   it("finishes a parked retry cancellation after its owner loses the final database write", async () => {
     const f = await seedIssueWithRetry({ agentStatus: "paused" });
     const unrelated = await seedIssueWithRetry({ agentStatus: "paused" });

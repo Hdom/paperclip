@@ -1,3 +1,4 @@
+import { assertControllerSourcePathAllowed, assertControllerGitWorkspaceSafe, controllerExecutionProtected } from "./controller-source-protection.js";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants, createReadStream, createWriteStream, promises as fs } from "node:fs";
@@ -336,6 +337,7 @@ async function runLocalGit(
     maxBuffer?: number;
   } = {},
 ): Promise<SshCommandResult> {
+  await assertControllerGitWorkspaceSafe(localDir);
   return await execFileText("git", ["-C", localDir, ...args], options);
 }
 
@@ -1410,6 +1412,10 @@ export async function syncDirectoryToSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
+  await assertControllerSourcePathAllowed(input.localDir);
+  await assertControllerGitWorkspaceSafe(input.localDir);
+  if (controllerExecutionProtected() && input.followSymlinks) throw new Error("Controller signing-key protection forbids dereferenced source archives");
+  const safeExclude = [...(input.exclude ?? []), ...(controllerExecutionProtected() ? [".git", ".git/*", "*/.git", "*/.git/*"] : [])];
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
@@ -1431,7 +1437,7 @@ export async function syncDirectoryToSsh(input: {
       label: input.progressLabel,
       totalBytes: estimateLocalDirSize({
         localDir: input.localDir,
-        exclude: input.exclude,
+        exclude: safeExclude,
         followSymlinks: input.followSymlinks,
       }),
       estimated: true,
@@ -1444,7 +1450,7 @@ export async function syncDirectoryToSsh(input: {
       ...(input.followSymlinks ? ["-h"] : []),
       "-C",
       input.localDir,
-      ...tarExcludeArgs(input.exclude),
+      ...tarExcludeArgs(safeExclude),
       "-cf",
       "-",
       ".",
@@ -1649,6 +1655,8 @@ export async function prepareWorkspaceForSshExecution(input: {
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
 }): Promise<{ gitBacked: boolean; repositories?: string[]; excludedPaths?: string[] }> {
+  await assertControllerSourcePathAllowed(input.localDir);
+  await assertControllerGitWorkspaceSafe(input.localDir);
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const gitSnapshot = input.workspaceFileMode === "all" ? null : await readLocalGitWorkspaceSnapshot(input.localDir);
   const excludedPaths = await listProjectRepositoryStagingPaths(input.localDir);
@@ -1762,6 +1770,10 @@ async function restoreWorkspaceRootFromSsh(input: {
   progressLabel: string;
   hasProjectRepositories?: boolean;
 }): Promise<void> {
+  await assertControllerSourcePathAllowed(input.localDir, true);
+  await assertControllerGitWorkspaceSafe(input.localDir);
+  if (controllerExecutionProtected() && (!input.baselineSnapshot || ![".git", "*/.git", "*/.git/*"].every(pattern => input.baselineSnapshot!.exclude.includes(pattern))))
+    throw new Error("Controller signing-key protection requires a fresh protected workspace baseline; preserve legacy workspaces for reconciliation");
   const remoteDir = input.remoteDir;
   if (input.baselineSnapshot) {
     const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));

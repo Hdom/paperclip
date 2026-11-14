@@ -22,6 +22,21 @@ it("redacts a routine caller run token on ordinary HTTP routes", async () => {
 });
 
 describe("HTTP logger redaction", () => {
+  it.each([200, 400, 500])("never logs App key uploads or provider echoes at status %i", async status => {
+    const sentinel = "synthetic-app-private-key-canary", headerCanary = "synthetic-key-header-canary";
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express(); app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream))); app.use(express.json());
+    app.use((_req, res, next) => { res.setHeader("x-provider-echo", headerCanary); if (status === 500) return next(new Error(sentinel)); res.status(status).json({ ok: true }); });
+    app.use(errorHandler);
+    for (const route of ["/api/companies/test/github-project-apps/keys/reviewer/rotate", "/API/companies/test/github-project-apps/malformed"]) {
+      const response = await request(app).post(route).set("x-unexpected", headerCanary).send({ privateKey: sentinel, unexpected: sentinel });
+      expect(JSON.stringify(response.body)).not.toContain(sentinel);
+    }
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(chunks.join("")).not.toContain(sentinel); expect(chunks.join("")).not.toContain(headerCanary);
+  });
+
   it.each([200, 400, 500])("keeps connector and observability credentials out of %i logs", async status => {
     const canaries = ["configuration-canary", "signing-canary", "client-canary", "bot-canary", "oauth-code-canary", "provider-echo-canary"];
     const chunks: string[] = [];

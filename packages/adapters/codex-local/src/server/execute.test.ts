@@ -118,7 +118,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     );
   }
 
-  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void>; withIdentity?: boolean; env?: Record<string, string> }) {
+  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void>; withIdentity?: boolean; env?: Record<string, string>; workerSupervision?: boolean }) {
     const rootDir = await mkdtemp(
       path.join(os.tmpdir(), "paperclip-codex-copyback-e2e-"),
     );
@@ -140,6 +140,8 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     const commandArgs: string[] = [];
     const executionResult = await execute({
       runId: "run-copyback-e2e",
+      ...(input.workerSupervision ? { workerSupervision: { mode: "check_in" as const,
+        generation: "c153fa75-d850-4c74-9ae3-c6c9b43842f8", timeoutMs: 180_000 } } : {}),
       ...(input.withIdentity ? {
         authToken: "assigned-run-token",
         agentIdentity: { keyId: "sha256:test", publicKeyPem: "public", privateKeyPem: "private" },
@@ -157,6 +159,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       config: {
         command: "codex",
         engine: "cli",
+        ...(input.workerSupervision ? { timeoutSec: 0.01, outputInactivityTimeoutMs: 1 } : {}),
         // External CODEX_HOME (outside the managed company tree) so no managed
         // seeding rewrites auth.json before teardown; equals the shared host home.
         env: { CODEX_HOME: sharedHostHome, ...input.env },
@@ -189,6 +192,24 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       executionResult,
     };
   }
+
+  it("controller check-in supervision overrides fixed/output timers and injects the current generation", async () => {
+    const original = runChildProcess.getMockImplementation()!;
+    runChildProcess.mockImplementationOnce(async (...args) => {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return original(...args);
+    });
+    const result = await runTeardown({ sandboxAuth: "{}", hostAuth: "{}", workerSupervision: true,
+      env: { PAPERCLIP_WORKER_CHECK_IN_GENERATION: "untrusted-env-override" } });
+    expect(result.executionResult.errorCode).not.toBe("codex_output_inactivity_monitor");
+    const calls = runChildProcess.mock.calls as unknown as Array<[string, string, string[], { timeoutSec: number; stdin?: string; env: Record<string, string> }]>;
+    const invocation = calls.find(call => call[3].stdin !== undefined);
+    expect(invocation).toBeDefined();
+    expect(invocation![3].timeoutSec).toBe(0);
+    expect(invocation![3].env.PAPERCLIP_WORKER_CHECK_IN_GENERATION).toBe("c153fa75-d850-4c74-9ae3-c6c9b43842f8");
+    expect(invocation![3].stdin).toContain("worker-check-in.mjs");
+    expect(invocation![3].stdin).toContain("Do not start a background loop");
+  });
 
   it.each([true, false])("delivers configured service tokens to CLI shells while isolating host and provider credentials (identity: %s)", async (withIdentity) => {
     vi.stubEnv("DATABASE_URL", "postgres://operator:host-password@host/private");
