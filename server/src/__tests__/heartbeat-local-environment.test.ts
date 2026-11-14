@@ -18,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { environmentService } from "../services/environments.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -227,10 +228,12 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     expect(captured.apiUrl).toEqual(expect.stringMatching(/^https?:\/\//));
   });
   it.each(["default", "project", "task"])("refuses %s Local placement through public heartbeat before dispatch", async selection => {
-    const companyId = randomUUID(), agentId = randomUUID(), localId = randomUUID(), projectId = randomUUID(), issueId = randomUUID();
+    const companyId = randomUUID(), agentId = randomUUID(), projectId = randomUUID(), issueId = randomUUID();
     const tempDir = await mkdtemp(join(tmpdir(), "protected-heartbeat-")), marker = join(tempDir, "spawned");
     await db.insert(companies).values({ id: companyId, name: "Protected", issuePrefix: `KEY${selection.toUpperCase()}`, requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
-    await db.insert(environments).values({ id: localId, name: `Protected Local ${companyId}`, driver: "local", status: "active", config: {} });
+    // Use the canonical singleton. Migrations can already seed Local when
+    // this focused test runs without the earlier lifecycle cases.
+    const { id: localId } = await environmentService(db).ensureLocalEnvironment();
     await db.insert(agents).values({ id: agentId, companyId, name: "Blocked Local", role: "engineer", status: "idle", adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'executed')`] }, runtimeConfig: {}, permissions: {} });
     await db.insert(projects).values({ id: projectId, companyId, name: "No dispatch", executionWorkspacePolicy: selection === "project" ? { enabled: true, defaultMode: "shared_workspace", environmentId: localId } : null });
     await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Refuse Local", assigneeAgentId: agentId, executionWorkspaceSettings: selection === "task" ? { mode: "shared_workspace", environmentId: localId } : null });
