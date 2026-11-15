@@ -166,3 +166,33 @@ python3 scripts/operations/verify-utility-provenance.py --root .
 
 These source checks do not prove a live rollout, real-key migration, safe model
 execution or strong worker isolation. Docker isolation remains deferred.
+
+
+## Direct GitHub App MCP compatibility probe
+
+`verify-github-app-mcp.mjs` uses an already released server's native signer in a
+protected controller process. It verifies the two fixed Hdom worker App
+registrations/installations and requests metadata-read-only tokens restricted to
+the known bootstrap repository. It sends only protocol initialization and
+`tools/list` to GitHub's fixed hosted endpoint, plus an invalid-bearer negative
+control. It does not use Paperclip Cloud, dispatch an agent or tool, create a
+repository, change installation access, export a key or deliver a token.
+
+Run only with explicit operator authorization. Pass one protected non-secret JSON
+options file containing `payload`, `sourceCommit`, `instanceConfig`, `appConfig`
+and a new `receipt` path. Existing key material stays in native Secrets; use the
+existing instance master, never a copied master or inline environment value.
+The native signer may append its normal secret-access audit records.
+
+The receipt distinguishes catalog acceptance, the negative authentication control,
+scope verification and token revocation. A successful catalog is not a successful
+tool invocation. Metadata-only rejection does not establish that a full worker
+token is unsupported, or that Paperclip Cloud is required. Cleanup is retried
+within a fixed budget; uncertain cleanup or scope stops later token mints and is
+reported without retaining or printing credentials.
+
+```sh
+node --test scripts/operations/verify-github-app-mcp.test.mjs
+# On the protected controller, using its released runtime:
+node verify-github-app-mcp.mjs /protected/operator-options.json
+```
