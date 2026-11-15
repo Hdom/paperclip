@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { probeMcpCatalog, readBoundedJson, revokeVerificationToken, validateMetadataToken, verifyGitHubAppMcp } from './verify-github-app-mcp.mjs';
+import { probeMcpRepositoryMetadata, probeMcpCatalog, readBoundedJson, revokeVerificationToken, validateMetadataToken, verifyGitHubAppMcp } from './verify-github-app-mcp.mjs';
 
 test('verification tokens require exact metadata-only scope, approved starter and one-hour maximum', () => {
   const now = Date.now(), value = { token: 'synthetic-token', permissions: { metadata: 'read' }, expires_at: new Date(now + 3_600_000).toISOString(), repositories: [{ id: 1457227143 }] };
@@ -79,5 +79,33 @@ test('failed released-module import restores the prior master-file environment w
     if (previousFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE; else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previousFile;
     if (previousInline === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY; else process.env.PAPERCLIP_SECRETS_MASTER_KEY = previousInline;
     fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('separately reviewed metadata mode invokes only the literal read-only fixture search and checks its exact identity', async () => {
+  const seen = [], token = 'synthetic-token';
+  const transport = { initializeMcpHttpSession: async ({ headers }) => headers, mcpHttpRequestHeaders: headers => headers, readMcpHttpResponse: response => response.json() };
+  const result = await probeMcpRepositoryMetadata(token, transport, async (url, init) => {
+    const body = JSON.parse(init.body); seen.push(body); assert.equal(url, 'https://api.githubcopilot.com/mcp/'); assert.equal(init.redirect, 'manual');
+    const result = body.method === 'tools/list' ? { tools: [{ name: 'search_repositories', annotations: { readOnlyHint: true }, inputSchema: { properties: { query: { type: 'string' } }, required: ['query'] } }] }
+      : { content: [{ type: 'text', text: JSON.stringify({ total_count: 1, items: [{ id: 1457227143, full_name: 'Hdom/paperclip-app-bootstrap-verification-20261113' }] }) }] };
+    return new Response(JSON.stringify({ result }));
+  });
+  assert.equal(result.toolInvocationVerified, true); assert.equal(result.repositoryMetadataMatched, true);
+  assert.deepEqual(seen.map(row => row.method), ['tools/list', 'tools/call']);
+  assert.deepEqual(seen[1].params, { name: 'search_repositories', arguments: { query: 'repo:Hdom/paperclip-app-bootstrap-verification-20261113' } });
+  assert.ok(!JSON.stringify(result).includes(token));
+});
+test('metadata probe refuses an unreviewed schema or writable tool before invocation and rejects wrong results', async () => {
+  const transport = { initializeMcpHttpSession: async ({ headers }) => headers, mcpHttpRequestHeaders: headers => headers, readMcpHttpResponse: response => response.json() };
+  for (const variant of ['write', 'schema', 'wrong-result', 'provider-error']) {
+    const seen = [];
+    const result = await probeMcpRepositoryMetadata('synthetic', transport, async (_url, init) => {
+      const body = JSON.parse(init.body); seen.push(body.method);
+      if (body.method === 'tools/list') return new Response(JSON.stringify({ result: { tools: [{ name: 'search_repositories', annotations: { readOnlyHint: variant !== 'write' }, inputSchema: { properties: { query: { type: 'string' } }, required: variant === 'schema' ? ['query', 'unexpected'] : ['query'] } }] } }));
+      return new Response(JSON.stringify({ result: variant === 'provider-error' ? { isError: true, content: [{ text: 'secret-error-canary' }] } : { structuredContent: { total_count: 1, items: [{ id: 99, full_name: 'other/repo' }] } } }));
+    });
+    assert.equal(result.toolInvocationVerified, false); assert.ok(!JSON.stringify(result).includes('secret-error-canary'));
+    assert.deepEqual(seen, variant === 'write' || variant === 'schema' ? ['tools/list'] : ['tools/list', 'tools/call']);
   }
 });

@@ -196,3 +196,13 @@ node --test scripts/operations/verify-github-app-mcp.test.mjs
 # On the protected controller, using its released runtime:
 node verify-github-app-mcp.mjs /protected/operator-options.json
 ```
+
+
+The MCP verifier defaults to catalog-only behavior. A separately reviewed and
+explicitly authorized `probe: "repository-metadata"` option permits exactly one
+`search_repositories` call for the known private bootstrap fixture, after checking
+its metadata identity with GitHub REST. It requires the advertised tool to be
+read-only and its query schema to match the fixed call, validates the exact
+repository result, and keeps the same metadata-only token scope and revocation
+budget. It cannot verify contents or PR operations and never grants installation
+access or creates repositories. Catalog-only approval does not authorize this mode.
