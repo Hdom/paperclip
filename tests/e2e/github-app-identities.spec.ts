@@ -106,6 +106,19 @@ for (const mobile of [false, true]) {
     await expect(page.getByText("Test from an active project task", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Test", exact: true })).toHaveCount(0);
     await expect(page.getByText("Bootstrap only; never an agent project token target", { exact: false })).toBeVisible();
+    // Exercise the actual company-aware deep link. A legacy /settings URL
+    // silently redirects to General and drops the selected signing key.
+    await page.getByRole("link", { name: "Signing key in Secrets", exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/company/settings/secrets\\?signingKey=${data.roles[1].secretId}$`));
+    const linkedKey = page.getByRole("dialog", { name: "GitHub App implementer signing key", exact: true });
+    await expect(linkedKey.getByText("Active version: 1", { exact: false })).toBeVisible();
+    await expect(linkedKey.getByText("Latest stored version", { exact: true })).toBeVisible();
+    await expect(linkedKey.getByRole("textbox", { name: "Signing key name", exact: true })).toHaveValue("GitHub App implementer signing key");
+    await page.screenshot({ path: testInfo.outputPath("github-app-connection-secret-roundtrip.png"), fullPage: !mobile });
+    await linkedKey.getByRole("link", { name: "View GitHub connection", exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/apps/${connectionIds[1]}/permissions$`));
+    await expect(page.getByRole("heading", { name: "GitHub identity", exact: true })).toBeVisible();
+    expect(changes).toHaveLength(0);
     await page.getByLabel("Assigned GitHub App agent", { exact: true }).selectOption(agents[3].id);
     await page.getByRole("button", { name: "Review assignment", exact: true }).click();
     const assign = page.getByRole("button", { name: "Assign identity", exact: true });

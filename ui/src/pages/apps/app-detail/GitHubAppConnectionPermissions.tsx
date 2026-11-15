@@ -59,7 +59,7 @@ export function GitHubAppConnectionPermissions({ companyId, connectionId }: { co
       {app.message && <p role="status" className="text-sm text-destructive">{app.message}</p>}
       <div className="flex flex-wrap gap-3 text-sm"><a className="underline underline-offset-4" href={app.appUrl ?? "https://github.com/settings/apps"} target="_blank" rel="noreferrer">GitHub App settings ↗</a>
         <a className="underline underline-offset-4" href={app.installationUrl} target="_blank" rel="noreferrer">Repository selection ↗</a></div>
-      {app.secretId && <div className="flex flex-col gap-1 text-sm"><Link className="underline underline-offset-4" to={`/settings/secrets?signingKey=${encodeURIComponent(app.secretId)}`}>Signing key in Secrets</Link><span className="text-xs text-muted-foreground">Active version v{app.pinnedVersion} · latest stored v{app.latestVersion}</span></div>}
+      {app.secretId && <div className="flex flex-col gap-1 text-sm"><Link className="underline underline-offset-4" to={`/company/settings/secrets?signingKey=${encodeURIComponent(app.secretId)}`}>Signing key in Secrets</Link><span className="text-xs text-muted-foreground">Active version v{app.pinnedVersion} · latest stored v{app.latestVersion}</span></div>}
       {data.canManage && <Button className="self-start" variant="outline" disabled={busy} onClick={() => void change(() => githubProjectAppsApi.verify(companyId, data.revision))}>Refresh access</Button>}
       <details className="text-sm"><summary>Granted GitHub permissions</summary><p className="text-xs text-muted-foreground">{permissions[app.role]}</p></details>
     </section>
