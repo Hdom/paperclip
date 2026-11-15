@@ -31,6 +31,38 @@ and back up the controller database/configuration before stopping anything.
 Create a supported filesystem snapshot when available. A snapshot is not stop
 proof. Restart preserves files; it does not authorize replay of old actions.
 
+## Lifecycle-only stop recovery
+
+Old cancelled SSH runs can leave an agent in `pausing` when their released
+leases lack termination receipts. The controller must retain that stop barrier.
+Do not mark a lease stopped from process absence or edit the agent to `ready`.
+
+For this case, use `purpose: "agent_lifecycle_stop"` and `requestIds: []` in the
+root descriptor. Each source run must be an acknowledged legacy cancellation
+with retained controller boot identity, no controller lease expiry, and its exact
+server post-cleanup `task.run.measured` event. The event must report `cancelled`,
+durable settlement, a valid duration, and occur after the run finished. This
+settles controller ownership only; a fresh worker stop is still mandatory.
+Every affected agent must be in `pausing` with status `paused` and an explicit
+`manual` lifecycle hold.
+Apply that hold through the supported agent Pause action before fencing the
+controller. A temporary company hold alone is insufficient: reactivating the
+company removes it. Preparation fingerprints the exact agent holds and
+operation generations. Apply locks agent writes and rejects changed state.
+
+The fresh authenticated worker stop and all lease, controller, file and audit
+checks below still apply. This mode writes only stop receipts and their audit
+record. It does not resume agents, create or consume requests, change run
+outcomes, or authorize task replay. Keep the manual holds after restarting the
+controller. Verify that normal lifecycle processing finishes at `paused` and
+that no work is queued. Resume work only under separate authorization.
+
+The default `explicit_continuation` purpose retains the nonempty deferred-user
+request requirement. Unknown purposes and request IDs in lifecycle-only mode
+are rejected. This stays an offline root operation: a Board or agent UI cannot
+attest a physical host-manager stop. Agent pause and status remain in the
+existing agent UI.
+
 ## Protocol
 
 1. Stop and runtime-mask `paperclip.service`. Verify inactive/dead, MainPID zero,
@@ -63,6 +95,8 @@ proof. Restart preserves files; it does not authorize replay of old actions.
    controller. Let existing admission claim the saved request. Do not invoke an
    operator recovery delivery that would create an additional automation wake.
    Recheck the queue and successor count; supervise to native review/human wait.
+   For lifecycle-only recovery, retain the manual holds instead of continuing
+   saved input. Confirm settled `paused` agents and no new wakeups.
 
 ## Failure and rollback
 

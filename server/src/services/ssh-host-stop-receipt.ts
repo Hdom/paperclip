@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { activityLog, agentWakeupRequests, environmentLeases, environments, heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db/schema/index";
+import { activityLog, agents, agentWakeupRequests, environmentLeases, environments, heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db/schema/index";
 import type { Db } from "@paperclipai/db/client";
 import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "./remote-execution-termination.js";
-import { hasSuccessfulLegacyControllerSettlement } from "./legacy-controller-settlement.js";
+import { hasSuccessfulLegacyControllerSettlement, hasCancelledLegacyControllerSettlement } from "./legacy-controller-settlement.js";
 
 /** Offline maintenance only. No HTTP route or agent-facing command imports this
  * module. Root is the attesting authority; provider JSON is not a signature.
  * The desktop producer must independently observe the authenticated host API.
  */
+export type SshHostStopPurpose = "explicit_continuation" | "agent_lifecycle_stop";
+
 export type SshHostStopPreparation = {
+  purpose?: SshHostStopPurpose;
   operationId: string; preparedAt: string; companyId: string; environmentId: string;
   leaseIds: string[]; requestIds: string[]; snapshot: string;
 };
@@ -45,9 +48,13 @@ export function validateSshHostStopObservation(prepared: SshHostStopPreparation,
       Math.abs(parseInt(parts[4]!, 16) * 1000 - times[1]!) >= 1000) reject();
 }
 
-async function snapshot(db: Db, input: Pick<SshHostStopPreparation, "companyId" | "environmentId" | "leaseIds" | "requestIds">) {
-  if (!input.leaseIds.length || input.leaseIds.length > 25 || new Set(input.leaseIds).size !== input.leaseIds.length ||
-      !input.requestIds.length || input.requestIds.length > 25 || new Set(input.requestIds).size !== input.requestIds.length) reject();
+async function snapshot(db: Db, input: Pick<SshHostStopPreparation, "companyId" | "environmentId" | "leaseIds" | "requestIds" | "purpose">) {
+  const lifecycleOnly = input.purpose === "agent_lifecycle_stop";
+  if (input.purpose !== undefined && !["explicit_continuation", "agent_lifecycle_stop"].includes(input.purpose)) reject();
+  if (!Array.isArray(input.leaseIds) || !Array.isArray(input.requestIds) ||
+      !input.leaseIds.length || input.leaseIds.length > 25 || new Set(input.leaseIds).size !== input.leaseIds.length ||
+      (lifecycleOnly ? input.requestIds.length !== 0 : !input.requestIds.length) ||
+      input.requestIds.length > 25 || new Set(input.requestIds).size !== input.requestIds.length) reject();
   const [env] = await db.select().from(environments).where(eq(environments.id, input.environmentId));
   if (env?.driver !== "ssh" || typeof env.config.host !== "string" || typeof env.config.username !== "string" ||
       typeof env.config.remoteWorkspacePath !== "string" || !env.config.remoteWorkspacePath.startsWith("/") ||
@@ -65,8 +72,25 @@ async function snapshot(db: Db, input: Pick<SshHostStopPreparation, "companyId" 
     inArray(heartbeatRuns.id, leases.map(l => l.heartbeatRunId!)))).orderBy(heartbeatRuns.id);
   if (runs.length !== new Set(leases.map(l => l.heartbeatRunId)).size || runs.some(r => !terminal.includes(r.status) || !r.finishedAt ||
       (r.controllerLeaseExpiresAt && r.controllerLeaseExpiresAt > new Date()))) reject();
-  for (const run of runs) if (run.controllerBootId && !run.controllerLeaseExpiresAt &&
-      !await hasSuccessfulLegacyControllerSettlement(db, run)) reject();
+  for (const run of runs) {
+    if (lifecycleOnly) {
+      if (!await hasCancelledLegacyControllerSettlement(db, run)) reject();
+    } else if (run.controllerBootId && !run.controllerLeaseExpiresAt &&
+        !await hasSuccessfulLegacyControllerSettlement(db, run)) reject();
+  }
+  // Lifecycle repair records physical stop evidence only. Every affected
+  // agent must retain an explicit manual hold after the controller restarts.
+  // Bind that hold and operation generation into the offline fingerprint.
+  const agentIds = [...new Set(runs.map(run => run.agentId))];
+  const lifecycleAgents = lifecycleOnly ? await db.select({
+    id: agents.id, companyId: agents.companyId, status: agents.status,
+    lifecycleState: agents.lifecycleState, lifecycleHolds: agents.lifecycleHolds,
+    lifecycleVersion: agents.lifecycleVersion, lifecycleOperation: agents.lifecycleOperation,
+    pauseReason: agents.pauseReason, pausedAt: agents.pausedAt,
+  }).from(agents).where(and(eq(agents.companyId, input.companyId), inArray(agents.id, agentIds))).orderBy(agents.id) : [];
+  if (lifecycleOnly && (runs.some(run => run.status !== "cancelled") || lifecycleAgents.length !== agentIds.length ||
+      lifecycleAgents.some(agent => agent.status !== "paused" || agent.lifecycleState !== "pausing" ||
+        !agent.lifecycleHolds.includes("manual")))) reject();
   const coordinators = await db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
     inArray(nativeRunFinalizations.runId, runs.map(r => r.id))));
   if (coordinators.some(c => c.leaseOwner || c.failureDetail?.successorRunId)) reject();
@@ -80,7 +104,7 @@ async function snapshot(db: Db, input: Pick<SshHostStopPreparation, "companyId" 
   const identity = { environment: { id: env.id, driver: env.driver, status: env.status, config: env.config, updatedAt: env.updatedAt },
     leases: leases.map(({ metadata, cleanupStatus, updatedAt, ...l }) => ({ ...l,
       metadata: Object.fromEntries(Object.entries(metadata ?? {}).filter(([k]) => !["remoteExecutionTermination", "sshHostStop"].includes(k))) })),
-    runs, requests, coordinators };
+    runs, requests, coordinators, ...(lifecycleOnly ? { purpose: input.purpose, lifecycleAgents } : {}) };
   return { env, leases, runs, snapshot: digest(identity) };
 }
 
@@ -103,6 +127,7 @@ export async function recordSshHostStop(db: Db, prepared: SshHostStopPreparation
     await tx.execute(sql`set local statement_timeout = '10s'`);
     // Offline maintenance locks out all acquisitions and run/request changes,
     // including a second importer. No read-then-write authority gap.
+    if (prepared.purpose === "agent_lifecycle_stop") await tx.execute(sql`lock table agents in share row exclusive mode`);
     await tx.execute(sql`lock table environments, environment_leases, heartbeat_runs, heartbeat_run_events, native_run_finalizations, agent_wakeup_requests in share row exclusive mode`);
     assertFenced();
     const state = await snapshot(tx as unknown as Db, prepared);
@@ -141,7 +166,8 @@ export async function recordSshHostStop(db: Db, prepared: SshHostStopPreparation
     await tx.insert(activityLog).values({ companyId: prepared.companyId, actorType: "system", actorId: "root:ssh-host-stop-maintenance",
       action: "environment.ssh_host_stop_verified", entityType: "environment", entityId: prepared.environmentId,
       details: { operationId: prepared.operationId, proofHash, preparedAt: prepared.preparedAt, proof,
-        leaseIds: prepared.leaseIds, preservedRequestIds: prepared.requestIds, actionOutcomes: "unchanged" } });
+        leaseIds: prepared.leaseIds, preservedRequestIds: prepared.requestIds, actionOutcomes: "unchanged",
+        ...(prepared.purpose ? { purpose: prepared.purpose } : {}) } });
     return { applied: true, replay: false, leaseIds: prepared.leaseIds };
   });
 }

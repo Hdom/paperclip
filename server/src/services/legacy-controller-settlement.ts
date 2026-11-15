@@ -7,9 +7,11 @@ type Run = typeof heartbeatRuns.$inferSelect;
  * Absence of expiry alone proves nothing: require the server's post-cleanup
  * settlement event. This only settles controller ownership, never the provider.
  */
-export async function hasSuccessfulLegacyControllerSettlement(db: Db, run: Run): Promise<boolean> {
-  if (run.runtimeMode !== "legacy" || run.status !== "succeeded" || !run.startedAt || !run.finishedAt ||
+async function hasLegacyControllerSettlement(db: Db, run: Run, outcome: "succeeded" | "cancelled"): Promise<boolean> {
+  if (run.runtimeMode !== "legacy" || run.status !== outcome || !run.startedAt || !run.finishedAt ||
       !run.controllerBootId || run.controllerLeaseExpiresAt !== null) return false;
+  if (outcome === "cancelled" &&
+      (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state !== "acknowledged") return false;
   const events = await db.select().from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     eq(heartbeatRunEvents.agentId, run.agentId), eq(heartbeatRunEvents.eventType, "lifecycle"),
@@ -17,6 +19,16 @@ export async function hasSuccessfulLegacyControllerSettlement(db: Db, run: Run):
     eq(heartbeatRunEvents.message, "task.run.measured"), isNull(heartbeatRunEvents.sourceEventId),
   ));
   return events.some(event => event.createdAt >= run.finishedAt! && event.payload?.phase === "task.run.measured" &&
-    event.payload.outcome === "succeeded" && event.payload.durableSettlement === true &&
+    event.payload.outcome === outcome && event.payload.durableSettlement === true &&
     typeof event.payload.durationMs === "number" && Number.isFinite(event.payload.durationMs) && event.payload.durationMs >= 0);
+}
+
+export function hasSuccessfulLegacyControllerSettlement(db: Db, run: Run): Promise<boolean> {
+  return hasLegacyControllerSettlement(db, run, "succeeded");
+}
+
+/** Lifecycle-only maintenance may settle an acknowledged cancellation, never
+ * infer success or authorize continuation from a cancelled source. */
+export function hasCancelledLegacyControllerSettlement(db: Db, run: Run): Promise<boolean> {
+  return hasLegacyControllerSettlement(db, run, "cancelled");
 }

@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createDb, closeRegisteredClients } from "@paperclipai/db/client";
-import { prepareSshHostStop, recordSshHostStop, type SshHostStopObservation, type SshHostStopPreparation } from "../services/ssh-host-stop-receipt.js";
+import { prepareSshHostStop, recordSshHostStop, type SshHostStopObservation, type SshHostStopPreparation, type SshHostStopPurpose } from "../services/ssh-host-stop-receipt.js";
 
 const directory = "/var/lib/paperclip-maintenance/ssh-host-stop";
 function rootOnly() { if (process.getuid?.() !== 0) throw new Error("Root-only offline maintenance"); }
@@ -56,6 +56,7 @@ async function main() {
       const preparation = await prepareSshHostStop(db, {
         operationId, companyId: String(input.companyId), environmentId: String(input.environmentId),
         leaseIds: input.leaseIds as string[], requestIds: input.requestIds as string[],
+        ...(input.purpose !== undefined ? { purpose: input.purpose as SshHostStopPurpose } : {}),
       }, assertFenced);
       writeFileSync(`${directory}/${operationId}.prepared.json`, JSON.stringify(preparation) + "\n", { flag: "wx", mode: 0o600 });
       console.log(JSON.stringify(preparation));

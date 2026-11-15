@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, companies, createDb, environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
 import { prepareSshHostStop, recordSshHostStop, validateSshHostStopObservation, type SshHostStopObservation } from "./ssh-host-stop-receipt.js";
 import { heartbeatService } from "./heartbeat.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
@@ -56,6 +57,83 @@ const support = await getEmbeddedPostgresTestSupport();
   async function leases(f: Awaited<ReturnType<typeof seed>>) {
     return db.select().from(environmentLeases).where(eq(environmentLeases.environmentId, f.environmentId)).orderBy(environmentLeases.id);
   }
+  async function lifecycleSeed() {
+    const f = await seed();
+    await db.update(agents).set({ status: "paused", lifecycleState: "pausing", lifecycleHolds: ["manual"], pauseReason: "manual",
+      lifecycleVersion: 7, lifecycleRequiredPluginIds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 3, resumeState: "ready" },
+    }).where(eq(agents.id, f.agentId));
+    await db.update(heartbeatRuns).set({ status: "cancelled", controllerBootId: randomUUID(), controllerLeaseExpiresAt: null,
+      resultJson: { executionCancellation: { state: "acknowledged" } },
+    }).where(eq(heartbeatRuns.companyId, f.companyId));
+    for (const runId of f.runIds) await appendHeartbeatRunEvent(db, { companyId: f.companyId, agentId: f.agentId, runId,
+      eventType: "lifecycle", stream: "system", level: "info", message: "task.run.measured",
+      payload: { phase: "task.run.measured", outcome: "cancelled", durableSettlement: true, durationMs: 60000 } });
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.companyId, f.companyId));
+    const descriptor = { operationId: randomUUID(), companyId: f.companyId, environmentId: f.environmentId,
+      leaseIds: f.leaseIds, requestIds: [] as string[], purpose: "agent_lifecycle_stop" as const };
+    return { ...f, descriptor, proof: { ...f.proof, operationId: descriptor.operationId } };
+  }
+  it("repairs lifecycle-only stop evidence without requests, agent changes, task replay or wakeups", async () => {
+    const f = await lifecycleSeed();
+    const beforeAgents = await db.select().from(agents).where(eq(agents.companyId, f.companyId));
+    const beforeRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    const beforeRequests = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(await agentExecutionsHaveStopped(db, [f.agentId])).toBe(false);
+    const prepared = await asRoot(() => prepareSshHostStop(db, f.descriptor, f.fenced));
+    expect(prepared).toMatchObject({ purpose: "agent_lifecycle_stop", requestIds: [] });
+    const started = Math.floor(Date.now() / 1000);
+    const proof = { ...f.proof, taskStartedAt: new Date(started * 1000).toISOString(), taskEndedAt: new Date().toISOString(), observedAt: new Date().toISOString(),
+      upid: `UPID:pve:00000100:00000200:${started.toString(16).toUpperCase()}:vzstop:124:operator@pam!desktop:` };
+    expect(await asRoot(() => recordSshHostStop(db, prepared, proof, f.fenced))).toMatchObject({ applied: true });
+    expect((await leases(f)).every(hasRemoteTerminationReceipt)).toBe(true);
+    expect(await agentExecutionsHaveStopped(db, [f.agentId])).toBe(true);
+    expect(await db.select().from(agents).where(eq(agents.companyId, f.companyId))).toEqual(beforeAgents);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toEqual(beforeRuns);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual(beforeRequests);
+    const audit = await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId));
+    expect(audit).toHaveLength(1);
+    expect(audit[0].details).toMatchObject({ purpose: "agent_lifecycle_stop", preservedRequestIds: [], actionOutcomes: "unchanged" });
+    expect(await asRoot(() => recordSshHostStop(db, prepared, proof, f.fenced))).toMatchObject({ applied: false, replay: true });
+  });
+  it("rejects an unrecognized maintenance purpose instead of treating it as continuation", async () => {
+    const f = await seed();
+    await expect(asRoot(() => prepareSshHostStop(db, { ...f.prepared, purpose: "unknown" as never }, f.fenced))).rejects.toThrow();
+  });
+  it("retains the continuation request requirement and rejects request IDs in lifecycle-only mode", async () => {
+    const f = await lifecycleSeed();
+    await expect(asRoot(() => prepareSshHostStop(db, { ...f.descriptor, purpose: undefined }, f.fenced))).rejects.toThrow();
+    await expect(asRoot(() => prepareSshHostStop(db, { ...f.descriptor, requestIds: f.requestIds }, f.fenced))).rejects.toThrow();
+    expect((await leases(f)).some(hasRemoteTerminationReceipt)).toBe(false);
+  });
+  it.each(["no_manual_hold", "company_hold_only", "ready_agent", "noncancelled_run", "foreign_agent"])("rejects unsafe lifecycle-only preparation: %s", async kind => {
+    const f = await lifecycleSeed();
+    if (kind === "no_manual_hold") await db.update(agents).set({ lifecycleHolds: [], pauseReason: null }).where(eq(agents.id, f.agentId));
+    if (kind === "company_hold_only") await db.update(agents).set({ lifecycleHolds: ["company_paused"], pauseReason: "company_paused" }).where(eq(agents.id, f.agentId));
+    if (kind === "ready_agent") await db.update(agents).set({ lifecycleState: "ready", status: "idle" }).where(eq(agents.id, f.agentId));
+    if (kind === "noncancelled_run") await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runIds[0]));
+    if (kind === "foreign_agent") { const other = await seed(); await db.update(agents).set({ companyId: other.companyId }).where(eq(agents.id, f.agentId)); }
+    await expect(asRoot(() => prepareSshHostStop(db, f.descriptor, f.fenced))).rejects.toThrow();
+    expect((await leases(f)).some(hasRemoteTerminationReceipt)).toBe(false);
+  });
+  it.each(["missing_acknowledgement", "missing_settlement", "wrong_outcome", "active_controller_lease"])("requires positive cancelled controller settlement: %s", async kind => {
+    const f = await lifecycleSeed();
+    if (kind === "missing_acknowledgement") await db.update(heartbeatRuns).set({ resultJson: {} }).where(eq(heartbeatRuns.id, f.runIds[0]));
+    if (kind === "missing_settlement") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runIds[0]));
+    if (kind === "wrong_outcome") await db.update(heartbeatRunEvents).set({ payload: { phase: "task.run.measured", outcome: "succeeded", durableSettlement: true, durationMs: 60000 } }).where(eq(heartbeatRunEvents.runId, f.runIds[0]));
+    if (kind === "active_controller_lease") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60000) }).where(eq(heartbeatRuns.id, f.runIds[0]));
+    await expect(asRoot(() => prepareSshHostStop(db, f.descriptor, f.fenced))).rejects.toThrow();
+    expect((await leases(f)).some(hasRemoteTerminationReceipt)).toBe(false);
+  });
+  it.each(["hold_removed", "version_changed", "operation_changed"])("fences lifecycle changes after preparation: %s", async kind => {
+    const f = await lifecycleSeed(), prepared = await asRoot(() => prepareSshHostStop(db, f.descriptor, f.fenced));
+    if (kind === "hold_removed") await db.update(agents).set({ lifecycleHolds: [], pauseReason: null }).where(eq(agents.id, f.agentId));
+    if (kind === "version_changed") await db.update(agents).set({ lifecycleVersion: 8 }).where(eq(agents.id, f.agentId));
+    if (kind === "operation_changed") await db.update(agents).set({ lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 } }).where(eq(agents.id, f.agentId));
+    await expect(asRoot(() => recordSshHostStop(db, prepared, f.proof, f.fenced))).rejects.toThrow();
+    expect((await leases(f)).some(hasRemoteTerminationReceipt)).toBe(false);
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId))).toHaveLength(0);
+  });
   it("records exact canonical receipts once and preserves pending input, checkpoint metadata and run history", async () => {
     const f = await seed(), beforeRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
     const beforeRequests = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
