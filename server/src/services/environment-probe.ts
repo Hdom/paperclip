@@ -1,6 +1,6 @@
 import type { Environment, EnvironmentProbeResult } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
-import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
+import { ensureSshWorkspaceReady, probeSshRunScope } from "@paperclipai/adapter-utils/ssh";
 import {
   parseEnvironmentDriverConfig,
   resolveEnvironmentDriverConfigForRuntime,
@@ -285,18 +285,21 @@ export async function probeEnvironment(
   }
 
   try {
+    await probeSshRunScope(parsed.config);
     const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
 
     return {
       ok: true,
       driver: "ssh",
-      summary: `Connected to ${parsed.config.username}@${parsed.config.host} and verified the remote workspace path.`,
+      summary: `Connected to ${parsed.config.username}@${parsed.config.host} and verified the workspace and supervised execution prerequisites.`,
       details: {
         host: parsed.config.host,
         port: parsed.config.port,
         username: parsed.config.username,
         remoteWorkspacePath: parsed.config.remoteWorkspacePath,
         remoteCwd,
+        processOwnership: "linux_subreaper_v1",
+        startupBoundary: "SSH login startup must be trusted and must not launch agent work",
       },
     };
   } catch (error) {

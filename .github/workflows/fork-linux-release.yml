@@ -99,7 +99,18 @@ jobs:
           server/src/__tests__/heartbeat-handoff-execution-wait.test.ts
           server/src/__tests__/issue-wake-diagnostics-routes.test.ts
           server/src/__tests__/server-startup-feedback-export.test.ts
-      - name: Scoped GitHub Apps and native controller secrets qualification
+      - name: SSH lifecycle qualification prerequisites
+        run: |
+          if ! command -v sshd >/dev/null 2>&1; then
+            # No ambient SSH listener: only the tests start loopback fixtures.
+            sudo systemctl mask --runtime ssh.service ssh.socket
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends openssh-server
+          fi
+          command -v sshd
+          python3 --version
+          git --version
+      - name: Scoped GitHub Apps, native secrets and SSH lifecycle qualification
         working-directory: source
         run: node scripts/fork-github-app-regressions.mjs
       - name: Operator utility source and safety regressions

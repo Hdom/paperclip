@@ -1,3 +1,4 @@
+import { remoteTerminationScopeSql } from "./remote-execution-termination.js";
 import { and, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
@@ -76,6 +77,7 @@ export function abandonedWarmSandboxCondition() {
     sql`${environmentLeases.metadata}#>>'{remoteExecutionTermination,state}' = 'stopped'`,
     sql`${environmentLeases.metadata}#>>'{remoteExecutionTermination,leaseId}' = ${environmentLeases.id}::text`,
     sql`${environmentLeases.metadata}#>>'{remoteExecutionTermination,runId}' = ${environmentLeases.heartbeatRunId}::text`,
+    sql.raw(remoteTerminationScopeSql("environment_leases")),
     newestRowForSandbox(),
     or(eq(environmentLeases.status, "failed"), and(eq(environmentLeases.status, "released"), taskMovedToAnotherWorkspace())));
 }

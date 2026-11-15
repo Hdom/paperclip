@@ -156,7 +156,9 @@ export async function recordSshHostStop(db: Db, prepared: SshHostStopPreparation
     )).limit(1);
     if (active || unreleased || newer || state.runs.some(r => r.finishedAt! > new Date(proof.taskStartedAt))) reject();
     for (const lease of state.leases) {
-      const receipt = remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" });
+      const receipt = remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "stopped",
+        ...(Object.hasOwn(lease.metadata ?? {}, "remoteExecutionScope") ? { resourceScope: lease.metadata!.remoteExecutionScope } : {}),
+      });
       if (!receipt) reject();
       await tx.update(environmentLeases).set({ cleanupStatus: "success", updatedAt: new Date(), metadata: {
         ...lease.metadata, remoteExecutionTermination: { ...receipt, confirmedAt: proof.observedAt },

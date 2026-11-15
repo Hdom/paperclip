@@ -31,6 +31,11 @@ and back up the controller database/configuration before stopping anything.
 Create a supported filesystem snapshot when available. A snapshot is not stop
 proof. Restart preserves files; it does not authorize replay of old actions.
 
+New SSH leases use [supervised execution](ssh-supervised-execution.md) to
+produce exact automatic stop receipts. This tool remains the explicit recovery
+path for historical unscoped leases or missing/crashed ownership. It never
+replaces a failed automatic stop with process-absence evidence.
+
 ## Lifecycle-only stop recovery
 
 Old cancelled SSH runs can leave an agent in `pausing` when their released

@@ -1,3 +1,4 @@
+import { remoteTerminationScopeSql } from "./remote-execution-termination.js";
 import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 
 /** Fixed SQL aliases only. These predicates do not accept request input. */
@@ -147,7 +148,8 @@ export function finishedFailedIdleLease(alias: string): string {
       AND ${receipt}->>'leaseId' = ${alias}.id::text
       AND ${receipt}->>'provider' = ${alias}.provider
       AND ${receipt}->>'providerLeaseId' = ${alias}.provider_lease_id
-      AND ${receipt}->>'state' IN ('stopped', 'destroyed'))
+      AND ${receipt}->>'state' IN ('stopped', 'destroyed')
+      AND ${remoteTerminationScopeSql(alias)})
         OR (${verifiedResourceCleanup(alias, 'lease')}))))
     AND ((${alias}.heartbeat_run_id IS NULL AND ${alias}.provider <> 'local'
       AND (${verifiedResourceCleanup(alias, 'lease')})) OR EXISTS (SELECT 1 FROM heartbeat_runs r WHERE r.id = ${alias}.heartbeat_run_id

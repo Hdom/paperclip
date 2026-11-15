@@ -1,3 +1,4 @@
+import { acquireSshRunLease, releaseSshRunLease, verifySshLeaseStopped } from "./ssh-environment-runtime.js";
 import { readPluginLoginCredential } from "./plugin-login-credential.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller.js";
 import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
@@ -63,7 +64,6 @@ import type {
   PluginEnvironmentSyncResult,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
-import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -1195,47 +1195,20 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
 }
 
 function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
-  const environmentsSvc = environmentService(db);
 
   return {
     driver: "ssh",
 
     async acquireRunLease(input) {
-      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment, {
-        issueId: input.issueId,
-        heartbeatRunId: input.heartbeatRunId,
-        applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
-      });
-      if (parsed.driver !== "ssh") {
-        throw new Error(`Expected SSH environment config for driver "${input.environment.driver}".`);
-      }
-
-      const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
-      return await environmentsSvc.acquireLease({
-        companyId: input.companyId,
-        environmentId: input.environment.id,
-        executionWorkspaceId: input.executionWorkspaceId,
-        issueId: input.issueId,
-        heartbeatRunId: input.heartbeatRunId,
-        leasePolicy: "ephemeral",
-        provider: "ssh",
-        assertCompanyBinding: input.assertCompanyBinding,
-        providerLeaseId: `ssh://${parsed.config.username}@${parsed.config.host}:${parsed.config.port}${remoteCwd}`,
-        metadata: {
-          ...(input.agentId ? { agentId: input.agentId } : {}),
-          driver: input.environment.driver,
-          executionWorkspaceMode: input.executionWorkspaceMode,
-          host: parsed.config.host,
-          port: parsed.config.port,
-          username: parsed.config.username,
-          remoteWorkspacePath: parsed.config.remoteWorkspacePath,
-          remoteCwd,
-        },
-      });
+      return await acquireSshRunLease(db, input);
     },
 
     async releaseRunLease(input) {
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      return await releaseSshRunLease(db, input);
+    },
+
+    async retryPendingSandboxTeardown({ environment, lease }) {
+      return await verifySshLeaseStopped(db, environment, lease);
     },
 
     async realizeWorkspace(input) {

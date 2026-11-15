@@ -25,6 +25,8 @@ for (const file of [
   "src/__tests__/heartbeat-task-context.test.ts", "src/__tests__/issue-scheduled-retry-routes.test.ts",
   "src/services/explicit-native-continuation.test.ts", "src/services/ssh-host-stop-receipt.test.ts",
   "src/services/worker-supervision.test.ts",
+  "src/__tests__/closed-native-receipt-accounting.test.ts",
+  "src/__tests__/ssh-automatic-stop.test.ts", "src/__tests__/heartbeat-ssh-stop.test.ts", "src/services/remote-execution-scope.test.ts", "src/__tests__/environment-probe.test.ts", "src/__tests__/environment-runtime-driver-contract.test.ts", "src/services/native-runtime/native-ssh-command-runner.test.ts", "src/services/execution-blocker-read.test.ts", "src/__tests__/environment-retained-orphan-sandbox.test.ts", "src/services/idle-deadline-proof.test.ts",
   "src/__tests__/github-project-apps.test.ts", "src/__tests__/github-project-app-runtime.test.ts",
   "src/__tests__/github-app-connection-import.test.ts", "src/services/github-app-connections.test.ts",
   "src/__tests__/github-app-tools.test.ts", "src/services/github-app-tool-catalog.test.ts",
@@ -50,7 +52,11 @@ test(root, ["packages/shared/src/app-definitions.test.ts"]);
 test(root, ["ui/src/pages/AgentToolsTab.test.tsx", "ui/src/pages/secrets/SigningKeysTab.test.tsx", "ui/src/components/GitHubProjectAppControls.test.tsx", "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx", "ui/src/components/AgentContextualSidebar.test.tsx", "ui/src/pages/agent-detail-navigation.test.ts"]);
 
 
-// Preserve the baseline inventory plus explicitly reviewed signing-key suites.
+test(root, ["packages/adapter-utils/src/ssh-run-scope.test.ts", "packages/adapter-utils/src/ssh-run-scope-kernel.test.ts",
+  "packages/adapter-utils/src/ssh-run-scope-transport.test.ts", "packages/adapter-utils/src/ssh-command-managed.test.ts",
+  "packages/adapter-utils/src/ssh-fixture.test.ts"]);
+
+// Preserve every baseline and signing-key suite plus reviewed SSH lifecycle coverage.
 // Only scheduling changes; every suite retains a fresh process and serial cases.
 if (process.argv.includes("--list")) {
   console.log(JSON.stringify(tasks.map(task => ({ ...task, cwd: task.cwd === root ? "." : task.cwd.slice(root.length + 1) }))));

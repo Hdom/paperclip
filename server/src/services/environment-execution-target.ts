@@ -1,3 +1,4 @@
+import { parseSshRunScope } from "@paperclipai/adapter-utils/ssh-run-scope";
 import { assertControllerSafeEnvironment } from "./controller-execution-protection.js";
 import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
 import type { Db } from "@paperclipai/db";
@@ -692,6 +693,13 @@ export async function resolveEnvironmentExecutionTarget(input: {
       ? input.leaseMetadata.remoteCwd.trim()
       : parsed.config.remoteWorkspacePath;
 
+  const metadata = input.leaseMetadata ?? {};
+  const hasScope = Object.hasOwn(metadata, "remoteExecutionScope") || Object.hasOwn(metadata, "remoteExecutionScopeRequired");
+  const runScope = hasScope ? parseSshRunScope(metadata.remoteExecutionScope) : undefined;
+  if (hasScope && (metadata.remoteExecutionScopeRequired !== true || runScope!.companyId !== input.companyId ||
+      runScope!.leaseId !== input.leaseId || input.lease && runScope!.runId !== input.lease.heartbeatRunId)) {
+    throw new Error("ssh_run_scope_unverified");
+  }
   return {
     kind: "remote",
     transport: "ssh",
@@ -699,6 +707,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
     leaseId: input.leaseId ?? null,
     remoteCwd,
     spec: {
+      ...(runScope ? { runScope } : {}),
       host: parsed.config.host,
       port: parsed.config.port,
       username: parsed.config.username,
