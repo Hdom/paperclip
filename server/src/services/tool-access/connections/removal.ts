@@ -1,3 +1,4 @@
+import { assertNotAppConnection } from "../../github-app-connections.js";
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
@@ -235,6 +236,7 @@ async function removeConnection(
   ): Promise<ToolConnectionRemovalResult> {
     await actor?.managementContext?.reauthorize();
     const connection = await getConnectionRow(connectionId, companyId);
+    assertNotAppConnection(connection);
     const [endpoint] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.connectionId, connection.id), eq(chatEndpoints.companyId, connection.companyId), eq(chatEndpoints.provider, "slack")));
     if (!endpoint) return removeConnectionUnlocked(connectionId, companyId, actor);
     return chatCredentialMutationLease(db)(endpoint, async lease => {
@@ -253,6 +255,7 @@ async function removeConnection(
   async function removeConnectionUnlocked(connectionId: string, companyId?: string, actor?: ActorInfo): Promise<ToolConnectionRemovalResult> {
     await actor?.managementContext?.reauthorize();
     const connection = await getConnectionRow(connectionId, companyId);
+    assertNotAppConnection(connection);
     forgetMcpHttpSessions(connection.id);
     const now = new Date();
     const binding = actorBinding(actor);

@@ -45,8 +45,15 @@ export function githubProjectAppRoutes(db: Db, service = githubProjectAppAdmin(d
   router.put("/companies/:companyId/github-project-apps", async (req, res) => {
     const { companyId } = await access(req, true); const input = settings.parse(req.body);
     await audit(req, "github_project_app.settings_change_requested", { enabled: input.enabled, bindings: input.bindings, releaseAgentId: input.releaseAgentId });
-    await service.configure(companyId, input.revision, input);
+    await service.configure(companyId, input.revision, input, req.actor.userId ?? "board");
     await audit(req, "github_project_app.settings_changed");
+    res.json(await service.settings(companyId, true));
+  });
+  router.post("/companies/:companyId/github-project-apps/connections/import", async (req, res) => {
+    const { companyId } = await access(req, true); const input = confirmation.strict().parse(req.body);
+    await audit(req, "github_project_app.connection_import_requested");
+    const connections = await service.importConnections(companyId, input.revision, req.actor.userId ?? "board");
+    await audit(req, "github_project_app.connections_imported", { connections });
     res.json(await service.settings(companyId, true));
   });
   router.post("/companies/:companyId/github-project-apps/migrate", async (req, res) => {
@@ -57,8 +64,9 @@ export function githubProjectAppRoutes(db: Db, service = githubProjectAppAdmin(d
     res.json({ ...await service.settings(companyId, true), migration });
   });
   router.post("/companies/:companyId/github-project-apps/keys/:role/rotate", async (req, res) => {
+    const body = { ...req.body }; if (req.body && typeof req.body === "object") delete req.body.privateKey;
     const { companyId } = await access(req, true); const selected = role.parse(req.params.role);
-    const input = rotate.parse(req.body); delete req.body.privateKey;
+    const input = rotate.parse(body);
     await audit(req, "github_project_app.key_rotation_requested", { role: selected, expectedLatestVersion: input.expectedLatestVersion });
     await service.rotate(companyId, input.revision, selected, input.privateKey, input.expectedLatestVersion, req.actor.userId ?? "board");
     await audit(req, "github_project_app.key_rotated", { role: selected });

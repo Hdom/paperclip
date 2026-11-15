@@ -552,10 +552,10 @@ function ActionRow({
               {PERMISSION_OPTIONS.find((option) => option.value === value)?.label}
             </span>
           )}
-          <Button type="button" size="sm" variant="outline" onClick={() => setTestOpen(true)}>
+          {action.annotations?.requiresActiveProjectRun === true ? <span className="text-xs text-muted-foreground">Test from an active project task</span> : <Button type="button" size="sm" variant="outline" onClick={() => setTestOpen(true)}>
             <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
             Test
-          </Button>
+          </Button>}
         </div>
       </div>
       <ActionTestDialog

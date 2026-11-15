@@ -1,3 +1,4 @@
+import { discoverGitHubAppTools } from "../../github-app-tools.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
 import { vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
@@ -72,6 +73,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
   ): Promise<McpToolDescriptor[]> {
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
+    if (connection.authKind === "github_app") throw unprocessable("GitHub App connector discovery requires the verified App method", { code: "github_app_tools_unverified" });
     let headers = credentialHeaders ?? {
       ...projectedConnectionHeaders(connection),
       ...(await resolveCredentialHeaders(connection, actor)),
@@ -427,6 +429,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
     if (connection.connectionPurpose === "ai") throw unprocessable("AI connections provide runtime authentication, not tool actions");
+    if (connection.authKind === "github_app") return discoverGitHubAppTools(db, connection);
     const restConnector = restConnectorFor(connection);
     if (restConnector) {
       const headers = credentialHeaders ?? await resolveCredentialHeaders(connection, actor);

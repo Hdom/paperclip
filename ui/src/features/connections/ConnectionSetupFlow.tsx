@@ -73,6 +73,7 @@ import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
 import { AgentMultiSelect, type AgentMultiSelectOption } from "@/components/AgentMultiSelect";
+import { GitHubAppSetup } from "./github-app/GitHubAppSetup";
 import { describeError } from "@/api/errors";
 import { InlineBanner } from "@/components/InlineBanner";
 import { useQueryView } from "@/components/QueryView";
@@ -1126,7 +1127,9 @@ function StandardConnectionSetupFlow({
     candidate.transport === "runtime_auth" && candidate.ai
     && candidate.key === (connectionMethodKey || requestedMethodKey),
   ));
-  const requestedDefinitionUsesManagedConnector = !selectedCustomOAuth && !selectedRuntimeAuth && Boolean(
+  const selectedAppInstallation = fullRequestedDefinition?.slug === "github"
+    && (connectionMethodKey || requestedMethodKey) === "app-installation";
+  const requestedDefinitionUsesManagedConnector = !selectedAppInstallation && !selectedCustomOAuth && !selectedRuntimeAuth && Boolean(
     fullRequestedDefinition?.methods.some((candidate) =>
       candidate.oauthStrategy === "paperclip_cloud_connector"
       || candidate.oauthStrategy === "paperclip_id_connector"
@@ -1353,11 +1356,11 @@ function StandardConnectionSetupFlow({
     : null;
   // Apps with an advanced PAT option still need OAuth progress and recovery
   // screens when their selected method is managed sign-in.
-  const entryAutomaticOAuthMethod = selectedSetupMethod && connectionMethodSupportsAutomaticOAuth(selectedSetupMethod)
+  const entryAutomaticOAuthMethod = selectedAppInstallation ? null : selectedSetupMethod && connectionMethodSupportsAutomaticOAuth(selectedSetupMethod)
     ? selectedSetupMethod
     : automaticOAuthMethod(entry);
   const automaticOAuthEntry = credentialSource === "paperclip_vault" && entryAutomaticOAuthMethod ? entry : null;
-  const directOAuthEntry = credentialSource === "paperclip_vault" && canUseAutomaticOAuthFastPath(entry) ? entry : null;
+  const directOAuthEntry = !selectedAppInstallation && credentialSource === "paperclip_vault" && canUseAutomaticOAuthFastPath(entry) ? entry : null;
   const directOAuthLookupPending = Boolean(directOAuthSource) && (
     !applicationsQuery.isFetchedAfterMount || !connectionsQuery.isFetchedAfterMount
   );
@@ -1982,6 +1985,8 @@ function StandardConnectionSetupFlow({
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select an organization to connect apps.</div>;
   }
+  if (selectedAppInstallation) return <GitHubAppSetup companyId={selectedCompanyId} requiredAgentId={requiredAgentId ?? requestedAgentId}
+    onComplete={onComplete} onCancel={onCancel ?? backToGallery} />;
 
   if (
     (resumeConnectionId || reconnectConnectionId)
@@ -2606,6 +2611,7 @@ function StandardConnectionSetupFlow({
           <p className="mt-2 text-sm text-muted-foreground">
             This instance is connected to Paperclip, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
           </p>
+          {entry.slug === "github" && <Button type="button" variant="outline" className="mt-4" onClick={() => setConnectionMethodKey("app-installation")}>Use a GitHub App installation</Button>}
           {customOAuthMethod ? (
             <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
               Use your own {entry.name} OAuth app
@@ -2631,11 +2637,12 @@ function StandardConnectionSetupFlow({
                   Connect with Paperclip
                 </h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  You must connect this instance to Paperclip to connect to {entry.name} (you only need to do this once).
+                  {entry.slug === "github" ? <>To use Paperclip-managed {entry.name} sign-in, connect this instance to Paperclip (you only need to do this once).</> : <>You must connect this instance to Paperclip to connect to {entry.name} (you only need to do this once).</>}
                 </p>
               </div>
             </div>
 
+            {entry.slug === "github" && <Button type="button" variant="outline" className="mt-4" onClick={() => setConnectionMethodKey("app-installation")}>Use a GitHub App installation</Button>}
             {customOAuthMethod ? (
               <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
                 Use your own {entry.name} OAuth app

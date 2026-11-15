@@ -1,3 +1,4 @@
+import { assertNotAppConnection } from "../../github-app-connections.js";
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
@@ -46,6 +47,7 @@ async function finalizeOAuthAccess(
     if (requestingAgentId)
       await assertAgentsInCompany(companyId, [requestingAgentId]);
     let connection = await getConnectionRow(connectionId, companyId);
+    assertNotAppConnection(connection);
     const preFinalizeLifecycle = {
       status: connection.status,
       enabled: connection.enabled,

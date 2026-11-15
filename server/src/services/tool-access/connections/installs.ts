@@ -1,3 +1,4 @@
+import { assertNotAppConnection } from "../../github-app-connections.js";
 import { assertAgentToolAssignmentInteractions } from "../../connection-management.js";
 import { connectionActorUserId } from "../actor.js";
 import { toConnection, toConnectionInstall } from "./projection.js";
@@ -151,6 +152,7 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
     ): Promise<ToolConnectionInstallSnapshot> => {
       await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(connectionId);
+      assertNotAppConnection(connection);
       const requested = new Map(
         input.installs.map((install) => [
           `${install.targetType}:${install.targetId}`,

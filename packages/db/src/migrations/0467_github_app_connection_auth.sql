@@ -1,0 +1,2 @@
+ALTER TABLE "tool_connections" DROP CONSTRAINT "tool_connections_auth_kind_check";--> statement-breakpoint
+ALTER TABLE "tool_connections" ADD CONSTRAINT "tool_connections_auth_kind_check" CHECK ("tool_connections"."auth_kind" in ('oauth', 'api_key', 'none', 'github_app'));

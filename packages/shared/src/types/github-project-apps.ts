@@ -4,6 +4,7 @@ export interface GitHubProjectAppIdentity {
   agentId: string;
   appId: number;
   installationId: number;
+  connectionId?: string | null;
   installationUrl: string;
   appUrl: string | null;
   login: string | null;

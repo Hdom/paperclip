@@ -1,6 +1,6 @@
 {
-  "id": "0287d884-1fee-4e8d-9ae0-2be0aac45b71",
-  "prevId": "f409684f-c629-4648-9123-a5e1064308ef",
+  "id": "3b2698d7-f559-4667-adf7-7fc3f4d7caef",
+  "prevId": "ebc060ab-46b5-4d3c-99fe-2a0c1b579a06",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -18387,6 +18387,28 @@
           "method": "btree",
           "with": {}
         },
+        "company_secrets_controller_key_uq": {
+          "name": "company_secrets_controller_key_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"company_secrets\".\"scope\" = 'controller' and \"company_secrets\".\"deleted_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "company_secrets_company_key_uq": {
           "name": "company_secrets_company_key_uq",
           "columns": [
@@ -18541,7 +18563,7 @@
       "checkConstraints": {
         "company_secrets_scope_shape_check": {
           "name": "company_secrets_scope_shape_check",
-          "value": "(\n        \"company_secrets\".\"scope\" = 'company'\n        and \"company_secrets\".\"owner_user_id\" is null\n        and \"company_secrets\".\"user_secret_definition_id\" is null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'user'\n        and \"company_secrets\".\"owner_user_id\" is not null\n        and \"company_secrets\".\"user_secret_definition_id\" is not null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'instance'\n        and \"company_secrets\".\"owner_user_id\" is null and \"company_secrets\".\"user_secret_definition_id\" is null\n        and (\"company_secrets\".\"owner_agent_id\" is not null) <> (\"company_secrets\".\"owner_project_id\" is not null)\n        and \"company_secrets\".\"owner_plugin_id\" is not null\n      )"
+          "value": "(\n        \"company_secrets\".\"scope\" in ('company', 'controller')\n        and \"company_secrets\".\"owner_user_id\" is null\n        and \"company_secrets\".\"user_secret_definition_id\" is null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'user'\n        and \"company_secrets\".\"owner_user_id\" is not null\n        and \"company_secrets\".\"user_secret_definition_id\" is not null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'instance'\n        and \"company_secrets\".\"owner_user_id\" is null and \"company_secrets\".\"user_secret_definition_id\" is null\n        and (\"company_secrets\".\"owner_agent_id\" is not null) <> (\"company_secrets\".\"owner_project_id\" is not null)\n        and \"company_secrets\".\"owner_plugin_id\" is not null\n      )"
         }
       },
       "isRLSEnabled": false
@@ -35021,6 +35043,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "worker_supervision": {
+          "name": "worker_supervision",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "worker_check_in_deadline_at": {
+          "name": "worker_check_in_deadline_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "execution_control_deadline_at": {
           "name": "execution_control_deadline_at",
           "type": "timestamp with time zone",
@@ -35830,6 +35864,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_worker_check_in_deadline_idx": {
+          "name": "heartbeat_runs_worker_check_in_deadline_idx",
+          "columns": [
+            {
+              "expression": "worker_check_in_deadline_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"worker_check_in_deadline_at\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -51058,6 +51108,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "git_authorization_grant_id": {
           "name": "git_authorization_grant_id",
           "type": "uuid",
@@ -51207,6 +51263,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_environment_id_environments_id_fk": {
+          "name": "projects_environment_id_environments_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "environments",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "projects_git_authorization_grant_id_connection_grants_id_fk": {
@@ -58493,7 +58562,7 @@
         },
         "tool_connections_auth_kind_check": {
           "name": "tool_connections_auth_kind_check",
-          "value": "\"tool_connections\".\"auth_kind\" in ('oauth', 'api_key', 'none')"
+          "value": "\"tool_connections\".\"auth_kind\" in ('oauth', 'api_key', 'none', 'github_app')"
         },
         "tool_connections_credential_source_check": {
           "name": "tool_connections_credential_source_check",
@@ -59602,6 +59671,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "''"
+        },
+        "pending_reveal": {
+          "name": "pending_reveal",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "allowed_actions": {
           "name": "allowed_actions",

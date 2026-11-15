@@ -32,11 +32,12 @@ export function createToolCatalogReader(db: Db, options: { catalogCacheTtlMs?: n
       // REST discovery has no remote MCP cache timer.
       const nativeProvider = nativeProviderCatalogFor(connection);
       const restConnector = restConnectorFor(connection);
+      const nativeTools = nativeProvider?.toolsForConnection?.(connection) ?? nativeProvider?.tools ?? [];
       const nativeRest = Boolean(nativeProvider || restConnector);
       const rowsByName = new Map(rows.map((row) => [row.toolName, row]));
       const nativeCatalogChanged = Boolean(nativeProvider) && connection.status === "active" && (
-        rows.some((row) => row.status !== "removed" && !nativeProvider!.isToolName(row.toolName))
-        || nativeProvider!.tools.some((tool) => {
+        rows.some((row) => row.status !== "removed" && !nativeTools.some(tool => tool.name === row.toolName))
+        || nativeTools.some((tool) => {
           const existing = rowsByName.get(tool.name);
           return !existing || existing.versionHash !== descriptorHash(tool, nativeProvider!.risk(tool.name));
         })
@@ -79,7 +80,7 @@ export function createToolCatalogReader(db: Db, options: { catalogCacheTtlMs?: n
       // Their database rows remain available to historical invocation records.
       return rows
         .filter((row) => !nativeRest || (row.status !== "removed" && (
-          nativeProvider ? nativeProvider.isToolName(row.toolName) : restConnector!.tools.some(tool => tool.name === row.toolName)
+          nativeProvider ? nativeTools.some(tool => tool.name === row.toolName) : restConnector!.tools.some(tool => tool.name === row.toolName)
         )))
         .map((row) => toCatalogEntryForConnection(row, connection));
     }

@@ -26,6 +26,9 @@ for (const file of [
   "src/services/explicit-native-continuation.test.ts", "src/services/ssh-host-stop-receipt.test.ts",
   "src/services/worker-supervision.test.ts",
   "src/__tests__/github-project-apps.test.ts", "src/__tests__/github-project-app-runtime.test.ts",
+  "src/__tests__/github-app-connection-import.test.ts", "src/services/github-app-connections.test.ts",
+  "src/__tests__/github-app-tools.test.ts", "src/services/github-app-tool-catalog.test.ts",
+  "src/__tests__/git-credentials.test.ts", "src/__tests__/github-operation-credentials.test.ts",
   "src/__tests__/controller-signing-secrets.test.ts", "src/__tests__/signing-keys-routes.test.ts", "src/secrets/signing-key-material.test.ts", "src/__tests__/github-project-app-admin.test.ts",
   "src/__tests__/github-project-app-api-contract.test.ts", "src/__tests__/http-log-redaction.test.ts",
   "src/__tests__/controller-execution-protection.test.ts", "src/__tests__/controller-native-staging-protection.test.ts",
@@ -42,6 +45,8 @@ test(resolve(root, "server"), ["src/__tests__/heartbeat-plugin-environment.test.
 test(root, ["packages/db/src/worker-supervision-upgrade.test.ts"]);
 test(root, ["packages/adapter-utils/src/controller-source-protection.test.ts", "packages/adapter-utils/src/controller-source-materialization.test.ts",
   "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"]);
+test(root, ["ui/src/pages/apps/AppDetail.test.tsx", "ui/src/pages/apps/AppsConnect.test.tsx", "ui/src/pages/apps/app-detail/GitHubAppConnectionPermissions.test.tsx", "ui/src/pages/secrets/GitHubAppKeyLifecycle.test.tsx"]);
+test(root, ["packages/shared/src/app-definitions.test.ts"]);
 test(root, ["ui/src/pages/AgentToolsTab.test.tsx", "ui/src/pages/secrets/SigningKeysTab.test.tsx", "ui/src/components/GitHubProjectAppControls.test.tsx", "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx", "ui/src/components/AgentContextualSidebar.test.tsx", "ui/src/pages/agent-detail-navigation.test.ts"]);
 
 

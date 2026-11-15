@@ -45,7 +45,7 @@ export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
 export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
 export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio", "chat_sdk", "voice"]);
 export const toolConnectionPurposeSchema = z.enum(["tool", "channel"]);
-export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
+export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none", "github_app"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
 export const toolConnectionCredentialSourceSchema = z.enum(["paperclip_vault", "vercel_connect"]);
 export const vercelConnectCredentialSummarySchema = z.object({
@@ -228,6 +228,11 @@ export const connectionGrantSchema = z.object({
       refreshTokenExpiresAt: z.string().datetime().optional(),
       refreshedAt: z.string().datetime().optional(),
     }).optional(),
+    githubApp: z.object({
+      role: z.enum(["coordinator", "implementer", "reviewer"]), appId: z.number().int().positive(),
+      installationId: z.number().int().positive(), login: z.string().max(100).nullable(),
+      scope: z.literal("current_project"), tools: z.enum(["unverified", "verified"]),
+    }).strict().optional(),
     github: z.object({
       userId: z.string().regex(/^[1-9][0-9]{0,30}$/),
       login: z.string().trim().min(1).max(100),

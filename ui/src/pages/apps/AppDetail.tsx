@@ -1,3 +1,5 @@
+import { ActionsSection } from "./app-detail/PermissionsPanel";
+import { GitHubAppConnectionPermissions } from "./app-detail/GitHubAppConnectionPermissions";
 import { AppNotFound, AppReadError } from "./app-detail/AppReadError";
 import { AiConnectionPoolConnector } from "@/components/ai-connections/AiConnectionPoolConnector";
 import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
@@ -318,7 +320,9 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
         enabledCatalogEntryIds: [...next.enabled],
         askFirstCatalogEntryIds: [...next.askFirst].filter((id) => next.enabled.has(id)),
         ...(next.reviewed ? { reviewedCatalogEntryIds: [...next.reviewed] } : {}),
-        access: next.access.mode === "all" ? "all_agents" : { agentIds: [...next.access.agentIds] },
+        access: connection?.authKind === "github_app" && managedIdentityGrant?.subjectAgentId
+          ? { agentIds: [managedIdentityGrant.subjectAgentId] }
+          : next.access.mode === "all" ? "all_agents" : { agentIds: [...next.access.agentIds] },
       });
     },
     onMutate: () => setPending(true),
@@ -613,7 +617,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
         }}
       />
 
-      {status.tone === "attention" && connection.requiresReauthorization === false && (
+      {connection.authKind !== "github_app" && status.tone === "attention" && connection.requiresReauthorization === false && (
         <AccessRetryBanner
           message={connection.healthMessage}
           error={refreshGitHubAccess.error}
@@ -621,7 +625,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
           onRetry={() => refreshGitHubAccess.mutate()}
         />
       )}
-      {needsReconnect && (
+      {connection.authKind !== "github_app" && needsReconnect && (
         <ReconnectCard
           connection={connection}
           galleryEntry={logoEntry}
@@ -653,7 +657,15 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
             />
       )}
       {activeTab === "permissions" && (
-        permissionsFailure
+        connection.authKind === "github_app" ? <div className="space-y-10">
+          <GitHubAppConnectionPermissions companyId={connection.companyId} connectionId={connection.id} />
+          {permissionsFailure ? <AppReadError failure={permissionsFailure} onRetry={() => { void catalogQuery.refetch(); void profilesQuery.refetch(); void policiesQuery.refetch(); void grantsQuery.refetch(); }} />
+            : permissionsLoading ? <ToolsLoading /> : <ActionsSection connectionId={connectionId} appName={appName} readOnly={readOnly} canChange={canChange}
+              quarantined={quarantined} enabledIds={enabledIds} askFirstIds={askFirstIds} disabled={pending || !managedIdentityGrant?.subjectAgentId}
+              refreshPending={refreshTools.isPending} canConfigure={grantsQuery.data?.capabilities.canConfigure === true}
+              permissionChangeWarning="These action permissions do not constrain shell Git or gh. The App identity and current-project repository scope remain fixed."
+              onRefreshActions={() => refreshTools.mutate()} onSetPermission={(ids, next) => apply(actionPermissionMutation(ids, next, enabledIds, askFirstIds))} onReviewQuarantined={reviewQuarantined} />}
+        </div> : permissionsFailure
           ? <AppReadError failure={permissionsFailure} onRetry={() => {
               void catalogQuery.refetch();
               void profilesQuery.refetch();
@@ -836,7 +848,7 @@ export function AppDetailHeader({
                 size="icon"
                 className="h-7 w-7 text-muted-foreground"
                 aria-label="Rename app"
-                disabled={!canRename}
+                disabled={!canRename || connection.authKind === "github_app"}
                 onClick={onRenameStart}
               >
                 <Pencil className="h-3.5 w-3.5" />

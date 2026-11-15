@@ -13,6 +13,7 @@ import {
   describeGitAuthFailure,
   isGitHubHttpsRemoteUrl,
   resolveGitHubApiCredential,
+  resolveManagedGitHubIdentitySelection,
   scrubGitCredentialText,
 } from "../services/git-credentials.ts";
 
@@ -184,6 +185,9 @@ describe("createGitRemoteAuthProvider", () => {
     });
     const db = {
       select: vi.fn()
+        .mockReturnValueOnce(query([])) // No native App configuration; legacy source is absent.
+        .mockReturnValueOnce(query([])) // Identity selection independently reads current native configuration.
+
         .mockReturnValueOnce(query([{
           id: "github-connection",
           companyId: "company-1",
@@ -209,7 +213,33 @@ describe("createGitRemoteAuthProvider", () => {
     expect(invocation?.source).toBe("company_secret");
     expect(invocation?.secretName).toBe("GH_TOKEN");
     expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("agent-b-legacy-token");
-    expect(db.select).toHaveBeenCalledTimes(2);
+    // Fresh native-authority checks plus the unchanged scoped connections/install reads.
+    expect(db.select).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("native App identity audience boundaries", () => {
+  const query = (rows: unknown[]) => ({ from: () => ({ where: async () => rows }) });
+  const native = ["coordinator", "implementer", "reviewer"].map(role => ({ id: role, companyId: "company-1", authKind: "github_app", config: { sourceTemplateKey: "github" } }));
+  function selectionDb(agentId: string, missingInstall = false, human = false) {
+    const humanConnection = { id: "human", companyId: "company-1", authKind: "oauth", enabled: true, status: "active", config: { sourceTemplateKey: "github" } };
+    const humanGrant = { id: "human-grant", companyId: "company-1", connectionId: "human", kind: "user", subjectUserId: "owner", status: "active", credentialSecretRefs: [], providerTenant: { github: { userId: "123", login: "human", installationCount: 1, repositoryCount: 1 } } };
+    return { select: vi.fn().mockReturnValueOnce(query([]))
+      .mockReturnValueOnce(query([...native, ...(human ? [humanConnection] : [])]))
+      .mockReturnValueOnce(query([...(!missingInstall ? native.map(row => ({ connectionId: row.id, targetType: "agent", targetId: row.id })) : []), ...(human ? [{ connectionId: "human", targetType: "agent", targetId: agentId }] : [])]))
+      .mockReturnValueOnce(query(native.map(row => ({ connectionId: row.id, kind: "agent", subjectAgentId: row.id }))))
+      .mockReturnValueOnce(query(human ? [humanGrant] : [])) } as unknown as Db;
+  }
+  it("preserves unrelated agent fallback despite three dedicated App connections", async () => {
+    expect(await resolveManagedGitHubIdentitySelection(selectionDb("unrelated"), "company-1", { agentId: "unrelated" })).toEqual({ configured: false });
+  });
+  it("preserves an unrelated agent's eligible personal GitHub identity", async () => {
+    const result = await resolveManagedGitHubIdentitySelection(selectionDb("unrelated", false, true), "company-1", { agentId: "unrelated", responsibleUserId: "owner" });
+    expect(result.configured).toBe(true); expect(result.identitySource).toBe("personal"); expect(result.grant?.id).toBe("human-grant"); expect(result.error).toBeUndefined();
+  });
+  it.each([false, true])("blocks intended App principals when native policy is missing (install absent: %s)", async missingInstall => {
+    const result = await resolveManagedGitHubIdentitySelection(selectionDb("reviewer", missingInstall), "company-1", { agentId: "reviewer" });
+    expect(result.configured).toBe(true); expect(result.grant).toBeUndefined(); expect(result.error).toContain("reconciliation");
   });
 });
 

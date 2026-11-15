@@ -70,7 +70,7 @@ export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport =
   "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth" | "voice";
 export type ToolConnectionPurpose = "tool" | "channel" | "ai";
-export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
+export type ToolConnectionAuthKind = "oauth" | "api_key" | "none" | "github_app";
 export type ToolConnectionOwnership =
   "platform_shared" | "platform_provisioned" | "customer" | "dcr";
 export type ToolConnectionCredentialSource =
@@ -244,6 +244,15 @@ export interface ConnectionGrant {
       };
     };
     slackSearch?: { endpointId: string; workspaceId: string; slackUserId: string; clientRevision: string };
+      /** Installation principal; distinct from a GitHub user OAuth identity. No signer/credential refs. */
+      githubApp?: {
+        role: "coordinator" | "implementer" | "reviewer";
+        appId: number;
+        installationId: number;
+        login: string | null;
+        scope: "current_project";
+        tools: "unverified" | "verified";
+      };
     github?: {
       userId: string;
       login: string;

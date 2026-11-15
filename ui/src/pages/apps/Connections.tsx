@@ -511,7 +511,7 @@ export function Connections() {
                           >
                             {actionLabel}
                           </Button>
-                          {connection && (
+                          {connection && connection.authKind !== "github_app" && (
                             <Button
                               variant="ghost"
                               size="icon-sm"

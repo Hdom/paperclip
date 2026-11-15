@@ -1,3 +1,4 @@
+import { assertGitHubAppActionAudience } from "./github-app-tools.js";
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
 import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
@@ -108,6 +109,7 @@ import { readFileSync } from "node:fs";
 import { and, asc, desc, eq, inArray, max, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, connectionGrantMembers, connectionGrants, companyMemberships, principalPermissionGrants, userSecretDefinitions, plugins, toolAccessAuditEvents, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolStdioCommandTemplates, toolCallEvents, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
+import { assertNotAppConnection } from "./github-app-connections.js";
 import type { AppDefinition, ConnectionGrantKind, CreateToolApplication, CreateToolConnection, ConnectToolApp, ConnectToolAppResult, CreateToolStdioCommandTemplate, FinishToolApp, FinishToolAppResult, CreateToolProfileBindingForProfile, CreateToolProfileEntryForProfile, DeploymentExposure, DeploymentMode, ImportMcpJson, McpConnectionCredentialRef, McpJsonImportPreview, ToolApplication, ToolCatalogEntry, ToolCatalogRefreshResult, ToolConnection, ToolConnectionInstall, ToolConnectionHealthCheckResult, ToolConnectionAuthKind, ToolConnectionCredentialPolicy, ToolConnectionCredentialSource, ToolConnectionTransport, ToolAppMetadataPreflightResult, ToolExampleInstallResult, ToolExampleSmokeCheck, ToolExampleSmokeResult, ToolExampleSummary, ToolProfileBinding, ToolProfileEntry, ToolPolicyDecision, ToolStdioCommandTemplate, UpdateToolApplication, UpdateToolConnection, VercelConnectCredentialReference } from "@paperclipai/shared";
 import { getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
 import {
@@ -1825,6 +1827,11 @@ export function toolAccessService(
             .limit(1)
         : [undefined];
     let retainedConnection = requestedResumeConnection ?? recoveredConnection;
+    if (retainedConnection?.authKind === "github_app") {
+      if (requestedResumeConnection) assertNotAppConnection(retainedConnection);
+      // An ordinary user sign-in must not revive or modify a dedicated App.
+      retainedConnection = undefined;
+    }
     const transport = method?.transport ?? "mcp_remote";
     const applicationType = transport === "rest_api" ? "rest_api"
       : transport === "mcp_remote" ? "mcp_http"
@@ -1969,6 +1976,7 @@ export function toolAccessService(
         `${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`,
       );
     }
+    if (method?.auth === "github_app") throw unprocessable("Use GitHub App installation setup to verify the prepared native identities", { code: "github_app_setup_required" });
     const dedicatedAgentId =
       requestedGrantKind === "agent" ? (input.subjectAgentId ?? null) : null;
     if (dedicatedAgentId) {
@@ -2507,6 +2515,7 @@ export function toolAccessService(
       const connectionCredentialSecretRefs =
         personalIdentityUserId || dedicatedAgentId ? [] : credentialSecretRefs;
       if (revivedConnectionPrevious) {
+        assertNotAppConnection(revivedConnectionPrevious);
         forgetMcpHttpSessions(revivedConnectionPrevious.id);
         [connectionRow] = await writeToolConnectionHealthChange(db, revivedConnectionPrevious, tx => tx
           .update(toolConnections)
@@ -3158,6 +3167,8 @@ export function toolAccessService(
     await actor?.managementContext?.reauthorize();
     const connection = await getConnectionRow(connectionId, companyId);
     await assertConnectorConnectionSetupEnabled(connection);
+    if (connection.authKind === "github_app")
+      await assertGitHubAppActionAudience(db, connection, input.access, input.preserveExistingAccess);
     if (connection.status === "archived")
       throw conflict("Archived app connections cannot be finished");
     if (connection.config.mcpPreserveAccess === true && isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
@@ -3279,6 +3290,8 @@ export function toolAccessService(
         )
         .for("update");
       if (!lockedConnection) throw notFound("Tool connection not found");
+      if (connection.authKind === "github_app")
+        await assertGitHubAppActionAudience(tx as unknown as Db, connection, input.access, input.preserveExistingAccess);
       const [existingProfile] = await tx
         .select()
         .from(toolProfiles)
@@ -3549,7 +3562,8 @@ export function toolAccessService(
       const [updatedConnection] = await tx
         .update(toolConnections)
         .set({
-          status: "active", enabled: true,
+          status: connection.authKind === "github_app" ? lockedConnection.status : "active",
+          enabled: connection.authKind === "github_app" ? lockedConnection.enabled : true,
           ...(connection.connectionPurpose === "tool" && connection.transport === "mcp_remote" ? {
             config: sql`${toolConnections.config} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
             transportConfig: sql`${toolConnections.transportConfig} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
@@ -3612,6 +3626,7 @@ export function toolAccessService(
   ): Promise<ToolConnectionHealthCheckResult> {
     await actor?.managementContext?.reauthorize();
     const connection = await getConnectionRow(connectionId, companyId);
+    assertNotAppConnection(connection);
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
     await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.status !== "draft");
@@ -4546,6 +4561,7 @@ export function toolAccessService(
       actor?: ActorInfo,
     ): Promise<ToolConnection> => {
       await actor?.managementContext?.reauthorize();
+      assertNotAppConnection({ authKind: "none" }, input);
       let applicationId = input.applicationId;
       let applicationNamespace = input.applicationName ?? input.name;
       const transport = input.transport;
@@ -4672,6 +4688,7 @@ export function toolAccessService(
       managementContext?: ConnectionManagementContext,
     ): Promise<ToolConnection> => {
       const existing = await getConnectionRow(connectionId);
+      assertNotAppConnection(existing, input);
       if (managementContext?.actor.type === "agent" && existing.connectionPurpose === "channel"
         && (input.credentialRefs !== undefined || input.credentialSecretRefs !== undefined)) {
         throw forbidden("Use chat endpoint setup to change channel credentials; verification keys require human entry", {

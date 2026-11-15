@@ -1,6 +1,6 @@
 {
-  "id": "aaf06ddb-56bd-4455-b2d1-fdb0254445e7",
-  "prevId": "0287d884-1fee-4e8d-9ae0-2be0aac45b71",
+  "id": "bdfd100d-714f-452d-bb1c-0d47abaacfce",
+  "prevId": "3b2698d7-f559-4667-adf7-7fc3f4d7caef",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -18387,6 +18387,28 @@
           "method": "btree",
           "with": {}
         },
+        "company_secrets_controller_key_uq": {
+          "name": "company_secrets_controller_key_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"company_secrets\".\"scope\" = 'controller' and \"company_secrets\".\"deleted_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "company_secrets_company_key_uq": {
           "name": "company_secrets_company_key_uq",
           "columns": [
@@ -18541,7 +18563,7 @@
       "checkConstraints": {
         "company_secrets_scope_shape_check": {
           "name": "company_secrets_scope_shape_check",
-          "value": "(\n        \"company_secrets\".\"scope\" = 'company'\n        and \"company_secrets\".\"owner_user_id\" is null\n        and \"company_secrets\".\"user_secret_definition_id\" is null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'user'\n        and \"company_secrets\".\"owner_user_id\" is not null\n        and \"company_secrets\".\"user_secret_definition_id\" is not null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'instance'\n        and \"company_secrets\".\"owner_user_id\" is null and \"company_secrets\".\"user_secret_definition_id\" is null\n        and (\"company_secrets\".\"owner_agent_id\" is not null) <> (\"company_secrets\".\"owner_project_id\" is not null)\n        and \"company_secrets\".\"owner_plugin_id\" is not null\n      )"
+          "value": "(\n        \"company_secrets\".\"scope\" in ('company', 'controller')\n        and \"company_secrets\".\"owner_user_id\" is null\n        and \"company_secrets\".\"user_secret_definition_id\" is null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'user'\n        and \"company_secrets\".\"owner_user_id\" is not null\n        and \"company_secrets\".\"user_secret_definition_id\" is not null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'instance'\n        and \"company_secrets\".\"owner_user_id\" is null and \"company_secrets\".\"user_secret_definition_id\" is null\n        and (\"company_secrets\".\"owner_agent_id\" is not null) <> (\"company_secrets\".\"owner_project_id\" is not null)\n        and \"company_secrets\".\"owner_plugin_id\" is not null\n      )"
         }
       },
       "isRLSEnabled": false
@@ -33752,6 +33774,85 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.github_app_settings": {
+      "name": "github_app_settings",
+      "schema": "",
+      "columns": {
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "settings": {
+          "name": "settings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "verification": {
+          "name": "verification",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "github_app_settings_company_id_companies_id_fk": {
+          "name": "github_app_settings_company_id_companies_id_fk",
+          "tableFrom": "github_app_settings",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "github_app_settings_company_check": {
+          "name": "github_app_settings_company_check",
+          "value": "\"github_app_settings\".\"settings\"->>'companyId' = \"github_app_settings\".\"company_id\"::text"
+        },
+        "github_app_settings_revision_check": {
+          "name": "github_app_settings_revision_check",
+          "value": "\"github_app_settings\".\"revision\" >= 0"
+        },
+        "github_app_settings_native_refs_check": {
+          "name": "github_app_settings_native_refs_check",
+          "value": "\n    \"github_app_settings\".\"settings\" #> '{apps,coordinator,signingKeySecret}' IS NOT NULL AND\n    \"github_app_settings\".\"settings\" #> '{apps,implementer,signingKeySecret}' IS NOT NULL AND\n    \"github_app_settings\".\"settings\" #> '{apps,reviewer,signingKeySecret}' IS NOT NULL AND\n    \"github_app_settings\".\"settings\" #> '{apps,coordinator,privateKeyPath}' IS NULL AND\n    \"github_app_settings\".\"settings\" #> '{apps,implementer,privateKeyPath}' IS NULL AND\n    \"github_app_settings\".\"settings\" #> '{apps,reviewer,privateKeyPath}' IS NULL"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.goals": {
       "name": "goals",
       "schema": "",
@@ -35021,6 +35122,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "worker_supervision": {
+          "name": "worker_supervision",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "worker_check_in_deadline_at": {
+          "name": "worker_check_in_deadline_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "execution_control_deadline_at": {
           "name": "execution_control_deadline_at",
           "type": "timestamp with time zone",
@@ -35830,6 +35943,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_worker_check_in_deadline_idx": {
+          "name": "heartbeat_runs_worker_check_in_deadline_idx",
+          "columns": [
+            {
+              "expression": "worker_check_in_deadline_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"worker_check_in_deadline_at\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -51058,6 +51187,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "git_authorization_grant_id": {
           "name": "git_authorization_grant_id",
           "type": "uuid",
@@ -51207,6 +51342,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_environment_id_environments_id_fk": {
+          "name": "projects_environment_id_environments_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "environments",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "projects_git_authorization_grant_id_connection_grants_id_fk": {
@@ -58493,7 +58641,7 @@
         },
         "tool_connections_auth_kind_check": {
           "name": "tool_connections_auth_kind_check",
-          "value": "\"tool_connections\".\"auth_kind\" in ('oauth', 'api_key', 'none')"
+          "value": "\"tool_connections\".\"auth_kind\" in ('oauth', 'api_key', 'none', 'github_app')"
         },
         "tool_connections_credential_source_check": {
           "name": "tool_connections_credential_source_check",

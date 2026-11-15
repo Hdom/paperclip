@@ -3,10 +3,14 @@ import { constants } from "node:fs";
 import { open, realpath, lstat, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
-import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, toolConnections, githubAppSettings, type Db } from "@paperclipai/db";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { secretService } from "./secrets.js";
 import { createProjectAppBroker, projectAppsConfigSnapshot, saveProjectAppsConfig, withProjectAppsConfigLock, type ProjectAppsConfig, type ProjectAppRole } from "./github-project-apps.js";
+
+import { updateNativeAppConnectionSettings } from "./github-app-connection-settings.js";
+import { appConfigSnapshot, saveAppConfig } from "./github-app-config.js";
+import { importAppConnections, nativeAppConnection } from "./github-app-connections.js";
 
 const roles = ["coordinator", "implementer", "reviewer"] as const;
 type Verification = Awaited<ReturnType<ReturnType<typeof createProjectAppBroker>["inspect"]>>;
@@ -19,7 +23,7 @@ export function githubProjectAppAdmin(db: Db) {
       secrets.signControllerGitHubAppJwt(config.companyId, ref.secretId, ref.version, role, appId);
   }
   async function snapshot(companyId: string) {
-    const result = await projectAppsConfigSnapshot();
+    const result = await appConfigSnapshot(db, companyId);
     if (!result || result.config.companyId !== companyId) throw forbidden("GitHub App support is not prepared for this company");
     return result;
   }
@@ -29,7 +33,9 @@ export function githubProjectAppAdmin(db: Db) {
     return result;
   }
   const cachePath = () => path.join(path.dirname(process.env.PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG!), "ui-verification.json");
-  async function readVerification(revision: string): Promise<Verification | null> {
+  async function readVerification(companyId: string, revision: string): Promise<Verification | null> {
+    const [native] = await db.select({ verification: githubAppSettings.verification }).from(githubAppSettings).where(eq(githubAppSettings.companyId, companyId));
+    if (native) return native.verification?.revision === revision ? native.verification.verification as Verification : null;
     let handle;
     try {
       const file = cachePath(); if (await realpath(file) !== file) return null;
@@ -41,7 +47,16 @@ export function githubProjectAppAdmin(db: Db) {
       return parsed.revision === revision ? parsed.verification : null;
     } catch { return null; } finally { await handle?.close(); }
   }
-  async function storeVerification(revision: string, verification: Verification) {
+  async function storeVerification(companyId: string, revision: string, verification: Verification) {
+    const current = await appConfigSnapshot(db, companyId);
+    if (current?.storage === "native") {
+      if (current.revision !== revision) throw conflict("GitHub App settings changed during verification");
+      const [updated] = await db.update(githubAppSettings).set({ verification: { revision, verification }, updatedAt: new Date() })
+        .where(and(eq(githubAppSettings.companyId, companyId), eq(githubAppSettings.revision, current.config.revision ?? 0), eq(githubAppSettings.settings, current.config)))
+        .returning({ companyId: githubAppSettings.companyId });
+      if (!updated) throw conflict("GitHub App settings changed during verification");
+      return;
+    }
     const file = cachePath(), temporary = `${file}.pending`;
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(JSON.stringify({ revision, verification })); await handle.sync(); }
@@ -61,31 +76,38 @@ export function githubProjectAppAdmin(db: Db) {
     )).limit(1);
     if (running.length) throw conflict("Wait for affected agent runs to settle before changing identity assignments");
   }
-  async function save(config: ProjectAppsConfig, revision: string) {
-    await saveProjectAppsConfig({ ...config, revision: (config.revision ?? 0) + 1 }, revision);
+  async function save(config: ProjectAppsConfig, revision: string, client: Db = db) {
+    await saveAppConfig(client, config, revision);
   }
   return {
     async settings(companyId: string, canManage: boolean) {
-      const loaded = await projectAppsConfigSnapshot();
+      const loaded = await appConfigSnapshot(db, companyId);
       if (!loaded || loaded.config.companyId !== companyId) return { available: false, canManage, roles: [], blockedAgentIds: [], revision: "", enabled: false, checkedAt: null };
       const { config, revision } = loaded;
-      const verified = canManage ? await readVerification(revision) : null;
+      const verified = await readVerification(companyId, revision);
+      const connections = await db.select({ id: toolConnections.id, uid: toolConnections.uid }).from(toolConnections)
+        .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.authKind, "github_app")));
       const rows = [];
       for (const role of roles) {
         const app = config.apps[role], result = verified?.roles.find(row => row.role === role);
+        let nativeAttention = false;
+        if (loaded.storage === "native") {
+          try { await nativeAppConnection(db, config, role, false); }
+          catch { nativeAttention = true; }
+        }
         const key = app.signingKeySecret ? await secrets.getById(app.signingKeySecret.secretId) : null;
         const validKey = key?.scope === "controller" && key.companyId === companyId && key.providerMetadata?.role === role && key.providerMetadata?.appId === app.appId;
-        rows.push({ role, agentId: app.agentId, appId: app.appId, installationId: app.installationId,
+        rows.push({ connectionId: connections.find(row => row.uid === `github/project-app-${role}`)?.id ?? null, role, agentId: app.agentId, appId: app.appId, installationId: app.installationId,
           installationUrl: `https://github.com/settings/installations/${app.installationId}`,
           appUrl: result?.appUrl ?? null, login: result?.login ?? null,
-          status: config.enabled === false ? "paused" : result?.status ?? "unverified",
-          message: result && "message" in result ? result.message : null,
+          status: config.enabled === false ? "paused" : nativeAttention ? "attention" : result?.status ?? "unverified",
+          message: nativeAttention ? "The native connection needs reconciliation. App issuance is blocked until its dedicated identity is restored." : result && "message" in result ? result.message : null,
           repositories: canManage ? result?.repositories ?? [] : [],
           publicFingerprint: canManage ? result?.publicFingerprint ?? null : null,
           keyStorage: app.signingKeySecret ? "native_encrypted" : "legacy_file",
           secretId: canManage ? app.signingKeySecret?.secretId ?? null : null,
-          pinnedVersion: canManage ? app.signingKeySecret?.version ?? null : null,
-          latestVersion: canManage && validKey ? key.latestVersion : null,
+          pinnedVersion: app.signingKeySecret?.version ?? null,
+          latestVersion: validKey ? key.latestVersion : null,
           keyStatus: validKey ? key.status : app.signingKeySecret ? "unavailable" : "migration_required",
         });
       }
@@ -95,6 +117,17 @@ export function githubProjectAppAdmin(db: Db) {
       }
       return { available: true, canManage, enabled: config.enabled !== false, revision, roles: rows,
         blockedAgentIds: config.blockedAgentIds ?? [], checkedAt: verified?.checkedAt ?? null, migration: { migrated, cleanupPending } };
+    },
+    async importConnections(companyId: string, revision: string, userId: string) {
+      return withProjectAppsConfigLock(async () => {
+        const { config } = await current(companyId, revision);
+        await requireIdle(companyId, roles.map(role => config.apps[role].agentId));
+        const verified = await inspect(config, revision);
+        await current(companyId, revision);
+        const imported = await importAppConnections(db, config, userId, verified.roles);
+        await storeVerification(companyId, revision, verified);
+        return imported;
+      });
     },
     async migrate(companyId: string, revision: string, userId: string) {
       return withProjectAppsConfigLock(async () => {
@@ -165,7 +198,7 @@ export function githubProjectAppAdmin(db: Db) {
             await unlink(source.file);
           } catch { cleanupPending.push(role); }
         }
-        await storeVerification(activeRevision, verified);
+        await storeVerification(companyId, activeRevision, verified);
         return { migrated: true, cleanupPending };
       });
     },
@@ -173,11 +206,11 @@ export function githubProjectAppAdmin(db: Db) {
       return withProjectAppsConfigLock(async () => {
         const { config } = await current(companyId, revision);
         const verified = await inspect(config, revision);
-        await storeVerification(revision, verified);
+        await storeVerification(companyId, revision, verified);
         return verified;
       });
     },
-    async configure(companyId: string, revision: string, input: { enabled?: boolean; bindings?: Record<ProjectAppRole, string>; releaseAgentId?: string }) {
+    async configure(companyId: string, revision: string, input: { enabled?: boolean; bindings?: Record<ProjectAppRole, string>; releaseAgentId?: string }, actorUserId = "board") {
       return withProjectAppsConfigLock(async () => {
         const { config } = await current(companyId, revision); const candidate = structuredClone(config);
         if (input.enabled !== undefined) candidate.enabled = input.enabled;
@@ -201,7 +234,8 @@ export function githubProjectAppAdmin(db: Db) {
           const verified = await inspect(candidate, revision);
           if (verified.roles.some(row => row.status !== "verified")) throw unprocessable("Verify all three App identities before enabling or assigning them");
         }
-        await save(candidate, revision);
+        await updateNativeAppConnectionSettings(db, config, candidate, actorUserId,
+          client => save(candidate, revision, client));
       });
     },
     async rotate(companyId: string, revision: string, role: ProjectAppRole, privateKey: string, expectedLatestVersion: number, userId: string) {
@@ -221,10 +255,9 @@ export function githubProjectAppAdmin(db: Db) {
         const check = await inspect(config, revision, { signKey });
         if (check.roles.find(row => row.role === role)?.status !== "verified") throw unprocessable("The new key did not verify for this exact App and installation");
         const rotated = await secrets.rotateControllerSigningKey(companyId, app.signingKeySecret.secretId, role, app.appId, privateKey, expectedLatestVersion, userId);
-        const candidate = structuredClone(config); candidate.apps[role].signingKeySecret!.version = rotated.latestVersion;
-        // A crash before this atomic reference swap leaves the old pinned native
-        // version authoritative. It never exposes an unverified latest value.
-        await save(candidate, revision);
+        // Store the verified replacement without changing the active pin.
+        // Activation re-verifies the exact App and installation in a separate
+        // confirmed operation; a failure/crash leaves the old version active.
         return { version: rotated.latestVersion, publicFingerprint };
       });
     },

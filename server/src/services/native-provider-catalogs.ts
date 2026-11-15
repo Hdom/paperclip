@@ -1,3 +1,4 @@
+import { GITHUB_APP_TOOLS, githubAppToolRisk, isCurrentGitHubAppTool, isGitHubAppApiConnection, isGitHubAppToolName, gitHubAppRoleTools } from "./github-app-tool-catalog.js";
 import { DAYTONA_TOOLS, daytonaClient, daytonaRisk, executeDaytonaTool, isCurrentDaytonaCatalogEntry, isDaytonaConnection, isDaytonaToolName } from "./daytona.js";
 import type { NativeCatalogEntry, NativeRestRequest } from "./native-rest-client.js";
 import { ONEPASSWORD_TOOLS, isOnePasswordConnection, isOnePasswordToolName, onePasswordRisk, isCurrentOnePasswordEntry } from "./connectors/onepassword/catalog.js";
@@ -5,7 +6,7 @@ import { callOnePassword, executeOnePasswordTool } from "./connectors/onepasswor
 import { UNIKRAFT_DEFAULT_METRO, UNIKRAFT_TOOLS, executeUnikraftTool, isCurrentUnikraftCatalogEntry, isUnikraftConnection,
   isUnikraftToolName, unikraftClient, unikraftRisk } from "./connectors/unikraft/client.js";
 
-type ConnectionShape = { transport: string; config?: Record<string, unknown> };
+type ConnectionShape = { authKind?: string; transport: string; config?: Record<string, unknown> };
 const methodConfig = (connection: ConnectionShape) => {
   const value = connection.config?.methodConfig;
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -18,15 +19,25 @@ export type NativeProviderCatalog = {
   slug: string;
   name: string;
   tools: typeof DAYTONA_TOOLS;
+  toolsForConnection?(connection: ConnectionShape): typeof DAYTONA_TOOLS;
   isConnection(connection: ConnectionShape): boolean;
   isToolName(name: string): boolean;
   risk(name: string): "read" | "write" | "destructive";
   isCurrentEntry(entry: NativeCatalogEntry): boolean;
+  acceptsApplication?(application: { type: string; applicationKey: string | null }): boolean;
   probe(connection: ConnectionShape, headers: Record<string, string>, request: NativeRestRequest): Promise<unknown>;
   execute(input: Parameters<typeof executeDaytonaTool>[0]): Promise<unknown>;
 };
 
 export const NATIVE_PROVIDER_CATALOGS: readonly NativeProviderCatalog[] = [
+  {
+    slug: "github-app", name: "GitHub App", tools: GITHUB_APP_TOOLS,
+    isConnection: isGitHubAppApiConnection, isToolName: isGitHubAppToolName, risk: githubAppToolRisk, isCurrentEntry: isCurrentGitHubAppTool,
+    toolsForConnection: connection => gitHubAppRoleTools(String((connection.config?.githubApp as Record<string, unknown> | undefined)?.role)),
+    acceptsApplication: application => application.applicationKey === "github" && application.type === "mcp_http",
+    probe: async () => ({ staticCatalog: true }),
+    execute: async () => { throw new Error("GitHub App actions require the dedicated run-bound dispatcher"); },
+  },
   {
     slug: "1password", name: "1Password", tools: ONEPASSWORD_TOOLS,
     isConnection: isOnePasswordConnection, isToolName: isOnePasswordToolName, risk: onePasswordRisk, isCurrentEntry: isCurrentOnePasswordEntry,

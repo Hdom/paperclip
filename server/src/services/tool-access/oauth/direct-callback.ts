@@ -1,3 +1,4 @@
+import { assertNotAppConnection } from "../../github-app-connections.js";
 import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { credentialScope } from "./client-settings.js";
@@ -99,6 +100,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       stateRow.connectionId,
       stateRow.companyId,
     );
+    assertNotAppConnection(connection);
     // Reauthorization refreshes credentials and catalog without rebuilding the
     // operator's action profile, policy rules, or access bindings.
     const shouldFinalizeDefaults = connection.status === "draft";

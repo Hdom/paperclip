@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,11 @@ import { initializeRunIdentity } from "../services/run-identity.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import { resolveManagedGitHubIdentitySelection, filterResolvedGitHubConnectionsForRun } from "../services/git-credentials.js";
 import { provisionRunProjectRepository, resolveProjectAppCredential } from "../services/github-project-app-runtime.js";
+import { githubProjectAppAdmin } from "../services/github-project-app-admin.js";
+import { secretService } from "../services/secrets.js";
+import { appConfigSnapshot } from "../services/github-app-config.js";
+import { nativeAppConnection } from "../services/github-app-connections.js";
+import { projectAppsConfigSnapshot } from "../services/github-project-apps.js";
 import { createNativeGitHubAccess } from "../services/native-runtime/native-github-access.js";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -75,6 +81,43 @@ const support = await getEmbeddedPostgresTestSupport();
     const audit = await db.select({ action: activityLog.action, details: activityLog.details }).from(activityLog).where(eq(activityLog.companyId, coordinator.companyId));
     expect(audit.some(row => row.action === "github_project_app.provision_ready")).toBe(true);
     expect(JSON.stringify(audit)).not.toMatch(/synthetic-|PRIVATE KEY/);
+  });
+  it("uses native connection/grant identities for project-scoped Git/gh after import, ignores rollback-file changes and honors Stop", async () => {
+    const companyId = sandbox.config.companyId;
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "c".repeat(64));
+    const candidate = structuredClone(sandbox.config), secrets = secretService(db);
+    for (const role of ["coordinator", "implementer", "reviewer"] as const) {
+      const app = candidate.apps[role], value = await readFile(app.privateKeyPath!, "utf8");
+      const secret = await secrets.createControllerSigningKey(companyId, role, app.appId, value, "synthetic-operator");
+      delete app.privateKeyPath; app.signingKeySecret = { secretId: secret.id, version: 1 };
+    }
+    await writeFile(sandbox.configPath, JSON.stringify(candidate), { mode: 0o600 });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.companyId, companyId));
+    const admin = githubProjectAppAdmin(db);
+    await admin.importConnections(companyId, (await projectAppsConfigSnapshot())!.revision, "synthetic-operator");
+    const native = (await appConfigSnapshot(db, companyId))!;
+    expect(native.storage).toBe("native");
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.companyId, companyId));
+    const coordinator = await run("coordinator");
+    const project = await provisionRunProjectRepository(db, coordinator);
+    const worker = await run("implementer", coordinator.projectId), reviewer = await run("reviewer", coordinator.projectId);
+    const workerIdentity = (await nativeAppConnection(db, native.config, "implementer"))!;
+    const credential = await resolveProjectAppCredential(db, companyId, { agentId: worker.agentId, heartbeatRunId: worker.runId });
+    expect(credential?.credential).toMatchObject({ connectionId: workerIdentity.connection.id, grantId: workerIdentity.grant.id,
+      githubIdentity: { login: "paperclip-implementer[bot]" } });
+    expect(sandbox.tokens.get(credential!.credential!.token)).toEqual({ role: "implementer", repositoryId: project.repositoryId });
+    const review = await resolveGitHubOperationCredentials(db, reviewer);
+    expect(review.login).toBe("paperclip-reviewer[bot]");
+    expect(sandbox.tokens.get(review.env.GH_TOKEN!)?.repositoryId).toBe(project.repositoryId);
+    // The retained bootstrap/rollback source no longer controls active native authority.
+    await writeFile(sandbox.configPath, JSON.stringify({ ...candidate, enabled: false }), { mode: 0o600 });
+    expect((await resolveGitHubOperationCredentials(db, worker)).status).toBe("available");
+    await db.update(heartbeatRuns).set({ resultJson: { nativeCancellation: { scope: "run", dispatchState: "pending" } } }).where(eq(heartbeatRuns.id, worker.runId));
+    const requestsBefore = sandbox.requests.length;
+    expect((await resolveGitHubOperationCredentials(db, worker)).env).toEqual({});
+    expect(sandbox.requests.length).toBe(requestsBefore);
+    const otherProject = await run("reviewer");
+    expect((await resolveGitHubOperationCredentials(db, otherProject)).env).toEqual({});
   });
   it("rejects browser sessions, wrong scope, forged scope parameters, and worker provisioning", async () => {
     const input = await run("coordinator"); const application = app();
