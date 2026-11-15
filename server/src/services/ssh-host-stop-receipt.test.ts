@@ -74,6 +74,24 @@ const support = await getEmbeddedPostgresTestSupport();
       leaseIds: f.leaseIds, requestIds: [] as string[], purpose: "agent_lifecycle_stop" as const };
     return { ...f, descriptor, proof: { ...f.proof, operationId: descriptor.operationId } };
   }
+  it("preserves exact scoped ownership when verified physical stop is the fallback", async () => {
+    const f = await lifecycleSeed();
+    const scope = { schema: "paperclip.ssh-run-scope.v1", companyId: f.companyId,
+      runId: f.runIds[0]!, leaseId: f.leaseIds[0]!, generation: randomUUID(), bootId: randomUUID() };
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, scope.leaseId));
+    await db.update(environmentLeases).set({ metadata: { ...lease.metadata,
+      remoteExecutionScopeRequired: true, remoteExecutionScope: scope } }).where(eq(environmentLeases.id, scope.leaseId));
+    const prepared = await asRoot(() => prepareSshHostStop(db, f.descriptor, f.fenced));
+    const started = Math.floor(Date.now() / 1000);
+    const proof = { ...f.proof, taskStartedAt: new Date(started * 1000).toISOString(), taskEndedAt: new Date().toISOString(), observedAt: new Date().toISOString(),
+      upid: `UPID:pve:00000100:00000200:${started.toString(16).toUpperCase()}:vzstop:124:operator@pam!desktop:` };
+    expect(await asRoot(() => recordSshHostStop(db, prepared, proof, f.fenced))).toMatchObject({ applied: true });
+    const [stopped] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, scope.leaseId));
+    expect(stopped.metadata?.remoteExecutionTermination).toMatchObject({ resourceScope: scope });
+    expect(hasRemoteTerminationReceipt(stopped)).toBe(true);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(2);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
+  });
   it("repairs lifecycle-only stop evidence without requests, agent changes, task replay or wakeups", async () => {
     const f = await lifecycleSeed();
     const beforeAgents = await db.select().from(agents).where(eq(agents.companyId, f.companyId));

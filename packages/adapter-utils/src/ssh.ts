@@ -1,3 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
+import { parseSshRunScope, sshRunScopeControl, sshRunScopeProbe, supervisedSshCommand,
+  verifiedSshRunScopeStop, type SshRunScope } from "./ssh-run-scope.js";
 import { assertControllerSourcePathAllowed, assertControllerGitWorkspaceSafe, controllerExecutionProtected } from "./controller-source-protection.js";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
@@ -27,6 +30,8 @@ import {
 } from "./runtime-progress.js";
 
 export interface SshConnectionConfig {
+  /** Controller-owned per-lease process scope; absent for unscoped operator probes. */
+  runScope?: SshRunScope;
   host: string;
   port: number;
   username: string;
@@ -189,6 +194,7 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     knownHosts: typeof parsed.knownHosts === "string" && parsed.knownHosts.length > 0 ? parsed.knownHosts : null,
     strictHostKeyChecking:
       typeof parsed.strictHostKeyChecking === "boolean" ? parsed.strictHostKeyChecking : true,
+    ...(parsed.runScope !== undefined ? { runScope: parseSshRunScope(parsed.runScope) } : {}),
   };
 }
 
@@ -663,7 +669,7 @@ async function streamLocalFileToSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(input.remoteScript)}`,
+    `sh -c ${shellQuote(supervisedSshCommand(input.spec.runScope, input.remoteScript))}`,
   ];
 
   await new Promise<void>((resolve, reject) => {
@@ -718,7 +724,7 @@ async function streamSshToLocalFile(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(input.remoteScript)}`,
+    `sh -c ${shellQuote(supervisedSshCommand(input.spec.runScope, input.remoteScript))}`,
   ];
 
   await new Promise<void>((resolve, reject) => {
@@ -1287,6 +1293,8 @@ export async function runSshCommand(
     stdin?: string;
     timeoutMs?: number;
     maxBuffer?: number;
+    /** Private lifecycle RPC: no explicit runtime profiles or workload command. */
+    rawScopeControl?: boolean;
   } = {},
 ): Promise<SshCommandResult> {
   let cleanup: () => Promise<void> = () => Promise.resolve();
@@ -1314,7 +1322,7 @@ export async function runSshCommand(
     // directly when no .bash_profile exists, so a host that adds nvm in
     // .bashrc still resolves node without a double-run of the setup.
     const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
-    const remoteScript = [
+    const remoteScript = options.rawScopeControl ? remoteCommand : [
       'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
@@ -1328,22 +1336,57 @@ export async function runSshCommand(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      `sh -c ${shellQuote(remoteScript)}`,
+      `sh -c ${shellQuote(options.rawScopeControl ? remoteScript : supervisedSshCommand(config.runScope, remoteScript))}`,
     );
 
-    return options.stdin != null
-      ? await spawnText("ssh", sshArgs, {
-          stdin: options.stdin,
-          timeout: options.timeoutMs ?? 15_000,
-          maxBuffer: options.maxBuffer ?? 1024 * 128,
-        })
-      : await execFileText("ssh", sshArgs, {
-          timeout: options.timeoutMs ?? 15_000,
-          maxBuffer: options.maxBuffer ?? 1024 * 128,
-        });
+    try {
+      return await (options.stdin != null
+        ? spawnText("ssh", sshArgs, {
+            stdin: options.stdin,
+            timeout: options.timeoutMs ?? 15_000,
+            maxBuffer: options.maxBuffer ?? 1024 * 128,
+          })
+        : execFileText("ssh", sshArgs, {
+            timeout: options.timeoutMs ?? 15_000,
+            maxBuffer: options.maxBuffer ?? 1024 * 128,
+          }));
+    } catch (error) {
+      if (!config.runScope && !options.rawScopeControl) throw error;
+      // execFile's error message embeds argv, including the remote env payload.
+      // Preserve process semantics without logging command/environment values.
+      const failure = error as {code?: unknown; signal?: unknown; killed?: unknown; stdout?: unknown; stderr?: unknown};
+      throw Object.assign(new Error("ssh_run_scope_command_failed"), {
+        code: failure.code, signal: failure.signal, killed: failure.killed,
+        stdout: typeof failure.stdout === "string" ? failure.stdout : "",
+        stderr: typeof failure.stderr === "string" ? failure.stderr : "ssh_run_scope_unverified",
+      });
+    }
   } finally {
     await cleanup();
   }
+}
+
+/** Linux/Python3 ownership prerequisite, checked without explicitly sourcing runtime profiles. */
+export async function probeSshRunScope(config: SshConnectionConfig): Promise<{bootId: string; remoteCwd: string}> {
+  const result = await runSshCommand(config, sshRunScopeProbe(config.remoteWorkspacePath), { rawScopeControl: true });
+  const value = JSON.parse(result.stdout);
+  if (value?.schema !== "paperclip.ssh-run-scope.v1" || typeof value.bootId !== "string" ||
+      !/^[a-f0-9-]{36}$/.test(value.bootId) || typeof value.remoteCwd !== "string" || !value.remoteCwd.startsWith("/")) {
+    throw new Error("ssh_run_scope_unsupported");
+  }
+  return {bootId: value.bootId, remoteCwd: value.remoteCwd};
+}
+
+/** Called once for a newly persisted lease. Never recreate missing old ownership. */
+export async function prepareSshRunScope(config: SshConnectionConfig, scope: SshRunScope): Promise<void> {
+  const result = await runSshCommand(config, sshRunScopeControl("prepare", scope), { rawScopeControl: true });
+  const value = JSON.parse(result.stdout);
+  if (!isDeepStrictEqual(value, {owner: scope, phase: "open"})) throw new Error("ssh_run_scope_unverified");
+}
+
+export async function stopSshRunScope(config: SshConnectionConfig, scope: SshRunScope) {
+  const result = await runSshCommand(config, sshRunScopeControl("stop", scope), { rawScopeControl: true, timeoutMs: 25000 });
+  return verifiedSshRunScopeStop(scope, JSON.parse(result.stdout));
 }
 
 export async function buildSshSpawnTarget(input: {
@@ -1393,7 +1436,7 @@ export async function buildSshSpawnTarget(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteScript)}`,
+    `sh -c ${shellQuote(supervisedSshCommand(input.spec.runScope, remoteScript))}`,
   );
 
   return {
@@ -1422,7 +1465,7 @@ export async function syncDirectoryToSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
+    `sh -c ${shellQuote(supervisedSshCommand(input.spec.runScope, `mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`))}`,
   ];
 
   // tar's archive size isn't known until tar finishes, so estimate it from the
@@ -1550,7 +1593,7 @@ export async function syncDirectoryFromSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteTarScript)}`,
+    `sh -c ${shellQuote(supervisedSshCommand(input.spec.runScope, remoteTarScript))}`,
   ];
 
   // The remote tar size isn't known locally, so probe the remote directory for

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockEnsureSshWorkspaceReady = vi.hoisted(() => vi.fn());
+const mockProbeSshRunScope = vi.hoisted(() => vi.fn());
 const mockProbePluginEnvironmentDriver = vi.hoisted(() => vi.fn());
 const mockProbePluginSandboxProviderDriver = vi.hoisted(() => vi.fn());
 const mockResolvePluginSandboxProviderDriverByKey = vi.hoisted(() => vi.fn());
@@ -19,6 +20,7 @@ vi.mock("../services/environments.js", () => ({ environmentService: () => ({ rec
 
 vi.mock("@paperclipai/adapter-utils/ssh", () => ({
   ensureSshWorkspaceReady: mockEnsureSshWorkspaceReady,
+  probeSshRunScope: mockProbeSshRunScope,
 }));
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
@@ -43,6 +45,7 @@ describe("probeEnvironment", () => {
     mockRecordPlatformProbe.mockReset().mockResolvedValue(true);
     mockRuntimeExecute.mockReset();
     mockEnsureSshWorkspaceReady.mockReset();
+    mockProbeSshRunScope.mockReset().mockResolvedValue({bootId:"fixture",remoteCwd:"/srv/paperclip/workspace"});
     mockProbePluginEnvironmentDriver.mockReset();
     mockProbePluginSandboxProviderDriver.mockReset();
     mockResolvePluginSandboxProviderDriverByKey.mockReset();
@@ -226,16 +229,28 @@ describe("probeEnvironment", () => {
     expect(result).toEqual({
       ok: true,
       driver: "ssh",
-      summary: "Connected to ssh-user@ssh.example.test and verified the remote workspace path.",
+      summary: "Connected to ssh-user@ssh.example.test and verified the workspace and supervised execution prerequisites.",
       details: {
         host: "ssh.example.test",
         port: 2222,
         username: "ssh-user",
         remoteWorkspacePath: "/srv/paperclip/workspace",
         remoteCwd: "/srv/paperclip/workspace",
+        processOwnership: "linux_subreaper_v1",
+        startupBoundary: "SSH login startup must be trusted and must not launch agent work",
       },
     });
+    expect(mockProbeSshRunScope).toHaveBeenCalledOnce();
     expect(mockEnsureSshWorkspaceReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports unsupported SSH ownership prerequisites instead of a misleading ready result", async () => {
+    mockProbeSshRunScope.mockRejectedValueOnce(new Error("ssh_run_scope_unsupported: Linux/Python3 required"));
+    const result = await probeEnvironment({} as any, { id: "env-ssh", driver: "ssh", status: "active", envVars: {},
+      config: { host: "ssh.example.test", port: 22, username: "ssh-user", remoteWorkspacePath: "/workspace" } } as any);
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("SSH probe failed");
+    expect(mockEnsureSshWorkspaceReady).not.toHaveBeenCalled();
   });
 
   it("reports fake sandbox environments as ready without external calls", async () => {

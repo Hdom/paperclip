@@ -1,3 +1,4 @@
+import { remoteTerminationScopeSql } from "./remote-execution-termination.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { centsToUnits, centsToUsd, usdToUnits, unitsToCents } from "@paperclipai/shared";
@@ -66,7 +67,8 @@ const remoteExecutionTerminated = sql`exists (select 1 from ${environmentLeases}
         and remote_lease.metadata->'remoteExecutionTermination'->>'leaseId' = remote_lease.id::text
         and remote_lease.metadata->'remoteExecutionTermination'->>'provider' = remote_lease.provider
         and remote_lease.metadata->'remoteExecutionTermination'->>'providerLeaseId' = remote_lease.provider_lease_id
-        and remote_lease.metadata->'remoteExecutionTermination'->>'state' in ('stopped', 'destroyed')) is not true)`;
+        and remote_lease.metadata->'remoteExecutionTermination'->>'state' in ('stopped', 'destroyed')
+        and ${sql.raw(remoteTerminationScopeSql("remote_lease"))}) is not true)`;
 
 /** A native run's receipt source is closed only with positive stop evidence,
  * after recovery ended in terminal failure without a result:

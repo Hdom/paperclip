@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-snapshot-retention.js";
@@ -1528,6 +1530,9 @@ export function environmentService(db: Db) {
       providerLeaseId?: string | null;
       expiresAt?: Date | null;
       metadata?: Record<string, unknown> | null;
+      /** Host-only constructor: bind immutable ownership to the allocated id
+       * in the same insertion, before any remote resource can be created. */
+      metadataForNewLease?: (leaseId: string) => Record<string, unknown>;
       /**
        * Atomically retire the previous database ownership record when this
        * acquisition reuses the same provider resource for a new run. The
@@ -1561,9 +1566,14 @@ export function environmentService(db: Db) {
           tx => environmentService(tx).acquireLease({ ...leaseInput, assertCompanyBinding: true }));
       }
       const now = new Date();
+      if (input.metadataForNewLease && (input.replacesReusableLeaseId || input.reusesReusableLeaseId)) {
+        throw new Error("Ownership metadata constructor requires a new lease");
+      }
       const replacementLeaseId = input.replacesReusableLeaseId ? randomUUID() : null;
+      const allocatedLeaseId = input.metadataForNewLease ? randomUUID() : replacementLeaseId;
+      const initialMetadata = input.metadataForNewLease ? input.metadataForNewLease(allocatedLeaseId!) : input.metadata;
       const values = {
-        ...(replacementLeaseId ? { id: replacementLeaseId } : {}),
+        ...(allocatedLeaseId ? { id: allocatedLeaseId } : {}),
         companyId: input.companyId,
         environmentId: input.environmentId,
         executionWorkspaceId: input.executionWorkspaceId ?? null,
@@ -1580,7 +1590,7 @@ export function environmentService(db: Db) {
         failureReason: null,
         cleanupStatus: null,
         // The holder stamp is written with the row that makes the lease active.
-        metadata: withEnvironmentLeaseController(withoutReusableLeaseHandoff(withoutCleanupVerification(input.metadata))),
+        metadata: withEnvironmentLeaseController(withoutReusableLeaseHandoff(withoutCleanupVerification(initialMetadata))),
         createdAt: now,
         updatedAt: now,
       };
@@ -1743,6 +1753,10 @@ export function environmentService(db: Db) {
         failureReason?: string;
         cleanupStatus?: EnvironmentLeaseCleanupStatus;
         remoteExecutionTermination?: Record<string, unknown>;
+        /** Compare exact host-owned authority under the lease row lock. */
+        expectedAuthority?: Pick<EnvironmentLease, "companyId" | "environmentId" | "heartbeatRunId" | "provider" | "providerLeaseId"> & { metadata: Record<string, unknown> };
+        /** Only with matching authority; ordinary resume/release clearing is unchanged. */
+        preserveVerifiedTermination?: boolean;
       },
     ) => {
       const now = new Date();
@@ -1766,12 +1780,19 @@ export function environmentService(db: Db) {
           ? and(eq(environmentLeases.status, "pending_cleanup"),
               sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${options.expectedPendingCleanupAttemptId}`)
           : undefined);
-        const [previous] = await tx.select({ companyId: environmentLeases.companyId, issueId: environmentLeases.issueId,
-          heartbeatRunId: environmentLeases.heartbeatRunId, status: environmentLeases.status,
-          cleanupStatus: environmentLeases.cleanupStatus, releasedAt: environmentLeases.releasedAt,
-          creationOperationId: sql<string | null>`${environmentLeases.metadata}->>'creationOperationId'`,
-        }).from(environmentLeases).where(condition).for("update");
+        const [previous] = await tx.select().from(environmentLeases).where(condition).for("update");
         if (!previous) return null;
+        if (options?.expectedAuthority) {
+          const { metadata, ...identity } = options.expectedAuthority;
+          const current = { companyId: previous.companyId, environmentId: previous.environmentId,
+            heartbeatRunId: previous.heartbeatRunId, provider: previous.provider, providerLeaseId: previous.providerLeaseId };
+          const currentMetadata = Object.fromEntries(Object.keys(metadata).map(key => [key, previous.metadata?.[key]]));
+          if (!isDeepStrictEqual(identity, current) || !isDeepStrictEqual(metadata, currentMetadata)) return null;
+          // A late failed cleanup cannot erase another caller's committed proof.
+          // Generation comparison above prevents reusing proof after resume.
+          if (options.preserveVerifiedTermination && hasRemoteTerminationReceipt(previous)) return previous;
+        }
+        const creationOperationId = typeof previous.metadata?.creationOperationId === "string" ? previous.metadata.creationOperationId : null;
         await notifyEnvironmentCleanup(tx, { companyId: previous.companyId, runId: previous.heartbeatRunId ?? undefined, leaseId: id });
         if (previous.heartbeatRunId && (previous.status !== status ||
             (options?.cleanupStatus !== undefined && previous.cleanupStatus !== options.cleanupStatus) ||
@@ -1790,9 +1811,9 @@ export function environmentService(db: Db) {
           await notifyDeferredExecutionWork(tx, { companyId: previous.companyId });
           await promoteDeferredWorkIntents(tx, { companyId: previous.companyId, trigger: "lock_released", issueId: previous.issueId });
         }
-        if (previous.creationOperationId && previous.status === "pending_cleanup" && options?.cleanupStatus === "success" && status !== "pending_cleanup") {
+        if (creationOperationId && previous.status === "pending_cleanup" && options?.cleanupStatus === "success" && status !== "pending_cleanup") {
           await tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: now })
-            .where(and(eq(sandboxCreationOperations.id, previous.creationOperationId), eq(sandboxCreationOperations.companyId, previous.companyId),
+            .where(and(eq(sandboxCreationOperations.id, creationOperationId), eq(sandboxCreationOperations.companyId, previous.companyId),
               eq(sandboxCreationOperations.leaseId, id), eq(sandboxCreationOperations.state, "cleanup_pending")));
         }
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionHandoff);
@@ -1905,9 +1926,24 @@ export function environmentService(db: Db) {
           .from(environmentLeases).where(eq(environmentLeases.id, id)).for("update");
         if (!lease) return null;
         await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined, leaseId: id });
+        let nextMetadata = withoutCleanupVerification(metadata);
+        // Provider ownership is immutable on this lease. Generic metadata edits
+        // cannot redirect the owner or manufacture/replace its host stop proof.
+        if (nextMetadata !== null || Object.hasOwn(lease.metadata ?? {}, "remoteExecutionScope") ||
+            Object.hasOwn(lease.metadata ?? {}, "remoteExecutionScopeRequired")) {
+          nextMetadata = { ...nextMetadata };
+          for (const key of ["remoteExecutionScope", "remoteExecutionScopeRequired"]) {
+            if (Object.hasOwn(lease.metadata ?? {}, key)) nextMetadata[key] = lease.metadata![key];
+            else delete nextMetadata[key];
+          }
+          if (Object.hasOwn(lease.metadata ?? {}, "remoteExecutionScope") || Object.hasOwn(lease.metadata ?? {}, "remoteExecutionScopeRequired")) {
+            if (Object.hasOwn(lease.metadata ?? {}, "remoteExecutionTermination")) nextMetadata.remoteExecutionTermination = lease.metadata!.remoteExecutionTermination;
+            else delete nextMetadata.remoteExecutionTermination;
+          }
+        }
         return tx.update(environmentLeases)
         .set({
-          metadata: preserveReusableLeaseHandoff(lease.metadata, withoutCleanupVerification(metadata)),
+          metadata: preserveReusableLeaseHandoff(lease.metadata, nextMetadata),
           lastUsedAt: new Date(),
           updatedAt: new Date(),
         })

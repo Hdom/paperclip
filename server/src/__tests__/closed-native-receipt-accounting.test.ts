@@ -438,6 +438,22 @@ const support = await getEmbeddedPostgresTestSupport();
     return f;
   }
 
+  it.each(["matching", "stale", "missing"] as const)("requires the exact opaque remote scope before closing accounting (%s)", async kind => {
+    const f = await remoteFixture();
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.run.id));
+    const scope = { schema: "fixture.lifecycle.v1", generation: randomUUID(), bootId: randomUUID() };
+    const receipt = lease.metadata!.remoteExecutionTermination as Record<string, unknown>;
+    await db.update(environmentLeases).set({ metadata: { ...lease.metadata,
+      remoteExecutionScopeRequired: true, remoteExecutionScope: scope,
+      remoteExecutionTermination: { ...receipt, ...(kind === "missing" ? {} : {
+        resourceScope: { ...scope, generation: kind === "stale" ? randomUUID() : scope.generation },
+      }) },
+    } }).where(eq(environmentLeases.id, lease.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: kind === "matching" ? 1 : 0 });
+    expect((await f.readRun()).costAccountingPending).toBe(kind !== "matching");
+    expect(await accountRunCost(db, f.run.id)).toBe(false);
+  });
+
   it.each(["failed", "cancelled"] as const)("settles a %s remote run once every sandbox has a termination receipt", async status => {
     const f = await remoteFixture({ status, leases: [{ receipt: "destroyed" }, { receipt: "stopped" }] });
     expect(await f.block()).toBeNull(); // Invariant 3: the pending debt never gates admission.

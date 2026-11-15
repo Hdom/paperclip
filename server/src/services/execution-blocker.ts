@@ -12,7 +12,7 @@ import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js
 import { EXECUTION_RECONCILIATION_CAUSES, readRunFailureCause, withoutSqlStatementText, type ExecutionBlocker } from "@paperclipai/shared";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
-import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteTerminationScopeSql } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
@@ -241,7 +241,8 @@ export function interruptedPreparationBeforeProviderWorkCondition() {
             and lease.metadata#>>'{remoteExecutionTermination,leaseId}' = lease.id::text
             and lease.metadata#>>'{remoteExecutionTermination,provider}' = lease.provider
             and lease.metadata#>>'{remoteExecutionTermination,providerLeaseId}' = lease.provider_lease_id
-            and lease.metadata#>>'{remoteExecutionTermination,state}' in ('stopped', 'destroyed'))), false)))`;
+            and lease.metadata#>>'{remoteExecutionTermination,state}' in ('stopped', 'destroyed')
+            and ${sql.raw(remoteTerminationScopeSql("lease"))})), false)))`;
 }
 
 /**
