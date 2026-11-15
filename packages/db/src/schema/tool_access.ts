@@ -157,7 +157,7 @@ export const toolConnections = pgTable(
       or
       (${table.connectionPurpose} = 'ai' and ${table.transport} = 'runtime_auth')
     )`),
-    check("tool_connections_auth_kind_check", sql`${table.authKind} in ('oauth', 'api_key', 'none')`),
+    check("tool_connections_auth_kind_check", sql`${table.authKind} in ('oauth', 'api_key', 'none', 'github_app')`),
     check("tool_connections_credential_source_check", sql`${table.credentialSource} in ('paperclip_vault', 'vercel_connect')`),
     check("tool_connections_credential_source_one_of_check", sql`(
       (${table.credentialSource} = 'paperclip_vault' and ${table.externalCredential} is null)
@@ -215,6 +215,15 @@ export const connectionGrants = pgTable(
         };
       };
       slackSearch?: { endpointId: string; workspaceId: string; slackUserId: string; clientRevision: string };
+      /** Installation principal; distinct from a GitHub user OAuth identity. No signer/credential refs. */
+      githubApp?: {
+        role: "coordinator" | "implementer" | "reviewer";
+        appId: number;
+        installationId: number;
+        login: string | null;
+        scope: "current_project";
+        tools: "unverified" | "verified";
+      };
       github?: {
         userId: string;
         login: string;

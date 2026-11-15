@@ -5,6 +5,7 @@ export const githubProjectAppsApi = {
   settings: (companyId: string) => api.get<GitHubProjectAppSettings>(base(companyId)),
   verify: (companyId: string, revision: string) => api.post<GitHubProjectAppSettings>(`${base(companyId)}/verify`, { revision }),
   migrate: (companyId: string, revision: string) => api.post<GitHubProjectAppSettings>(`${base(companyId)}/migrate`, { revision, confirmed: true }),
+  importConnections: (companyId: string, revision: string) => api.post<GitHubProjectAppSettings>(`${base(companyId)}/connections/import`, { revision, confirmed: true }),
   configure: (companyId: string, input: { revision: string; confirmed: true; enabled?: boolean; bindings?: Record<GitHubProjectAppRole, string>; releaseAgentId?: string }) =>
     api.put<GitHubProjectAppSettings>(base(companyId), input),
   rotate: (companyId: string, role: GitHubProjectAppRole, input: { revision: string; confirmed: true; privateKey: string; expectedLatestVersion: number }) =>

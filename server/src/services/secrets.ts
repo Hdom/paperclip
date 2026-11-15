@@ -4760,6 +4760,14 @@ export function secretService(db: Db | DbTransaction) {
       if (!updated) throw conflict(SECRET_VERSION_STALE_CONFLICT);
       return updated;
     },
+    signingKeyAccessEvents: async (companyId: string, secretId: string) => {
+      const secret = await getById(secretId);
+      if (!secret || secret.companyId !== companyId || secret.scope !== "controller" || secret.status === "deleted") throw notFound("Signing key not found");
+      return db.select({ id: secretAccessEvents.id, version: secretAccessEvents.version,
+        outcome: secretAccessEvents.outcome, createdAt: secretAccessEvents.createdAt }).from(secretAccessEvents)
+        .where(and(eq(secretAccessEvents.companyId, companyId), eq(secretAccessEvents.secretId, secretId)))
+        .orderBy(desc(secretAccessEvents.createdAt)).limit(100);
+    },
     signingKeyVersions: async (companyId: string, secretId: string) => {
       const secret = await getById(secretId);
       if (!secret || secret.companyId !== companyId || secret.scope !== "controller" || secret.status === "deleted") throw notFound("Signing key not found");

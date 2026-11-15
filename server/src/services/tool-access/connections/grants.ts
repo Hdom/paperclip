@@ -1,3 +1,4 @@
+import { assertNotAppConnection } from "../../github-app-connections.js";
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import type { ConnectionManagementContext } from "../../connection-management.js";
 import { connectionActorUserId } from "../actor.js";
@@ -130,6 +131,7 @@ replaceConnectionGrantMembers: async (
     ) => {
       await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
+      assertNotAppConnection(connection);
       const [grant] = await db
         .select()
         .from(connectionGrants)
@@ -286,6 +288,7 @@ replaceConnectionGrantMembers: async (
     ) => {
       await managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
+      assertNotAppConnection(connection);
       if (connection.connectionPurpose === "ai") {
         throw badRequest("AI credentials use the connection's human access settings, not agent delegation");
       }
@@ -388,6 +391,7 @@ replaceConnectionGrantMembers: async (
     ) => {
       await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
+      assertNotAppConnection(connection);
       const delegation = await db.transaction(async tx => {
         const [grant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
           .where(and(eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.connectionId, connection.id)))
@@ -435,6 +439,7 @@ replaceConnectionGrantMembers: async (
     ) => {
       await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
+      assertNotAppConnection(connection);
       await assertSecretRefs(
         connection.companyId,
         input.credentialSecretRefs ?? [],
@@ -490,6 +495,7 @@ replaceConnectionGrantMembers: async (
     ) => {
       await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
+      assertNotAppConnection(connection);
       const binding = actorBinding(actor);
       const [currentGrant] = await db
         .select()

@@ -169,7 +169,7 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
     } catch (error) {
       // Never propagate fetch/signing/provider response text: it can contain credentials.
       if (refusedStatus) throw unprocessable(`GitHub App operation ${method} ${endpoint.split("?")[0]} returned HTTP ${refusedStatus}; permissions were not expanded`);
-      throw unprocessable("GitHub App request failed or timed out; reconcile uncertain repository creation before retrying");
+      throw unprocessable("GitHub App request failed or timed out; reconcile any uncertain provider operation before retrying");
     } finally { clearTimeout(timeout); }
   }
   async function jwt(role: ProjectAppRole) {
@@ -200,8 +200,13 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
     return value;
   }
   async function revoke(token: string) {
-    try { await request(token, "/installation/token", "DELETE"); }
-    catch { /* Never disclose tokens in cleanup errors; expiry remains at most one hour. */ }
+    try {
+      const response = await fetchImpl("https://api.github.com/installation/token", { method: "DELETE", redirect: "error",
+        signal: AbortSignal.timeout(options.timeoutMs ?? 10000),
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10" } });
+      await response.body?.cancel().catch(() => {});
+      return response.status === 204 || response.status === 401;
+    } catch { return false; /* Expiry remains at most one hour; never disclose token/errors. */ }
   }
   async function issue(role: ProjectAppRole, repositoryId?: number, allowBootstrap = false) {
     if (repositoryId === PROJECT_APP_BOOTSTRAP.repositoryId)
@@ -313,6 +318,8 @@ export function createProjectAppBroker(config: ProjectAppsConfig, options: {
     return repo;
   }
   return {
+    projectBinding: state,
+    revokeWorkerToken: revoke,
     async inspect() {
       const rows = [];
       for (const role of ["coordinator", "implementer", "reviewer"] as const) {

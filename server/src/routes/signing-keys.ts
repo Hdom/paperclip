@@ -63,6 +63,10 @@ export function signingKeyRoutes(db: Db, service: ReturnType<typeof secretServic
     const { companyId } = access(req);
     res.json(await service.signingKeyVersions(companyId, req.params.secretId as string));
   });
+  router.get(`${base}/:secretId/access-events`, async (req, res) => {
+    const { companyId } = access(req);
+    res.json(await service.signingKeyAccessEvents(companyId, req.params.secretId as string));
+  });
   router.post(base, async (req, res) => {
     const { companyId } = access(req, true); const input = signingKeyCreateSchema.parse(takeBody(req));
     const key = await service.createSigningKey(companyId, input, req.actor.userId ?? "board");

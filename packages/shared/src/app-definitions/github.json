@@ -69,7 +69,7 @@
           "required": true,
           "placeholder": "github_pat_...",
           "secret": true,
-          "helperMd": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
+          "helperMd": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
         }
       ],
       "keyPlacement": {
@@ -80,6 +80,32 @@
       "requiredResourceFilters": [
         "organization",
         "repository"
+      ]
+    },
+    {
+      "key": "app-installation",
+      "label": "GitHub App installation",
+      "purpose": "tool",
+      "provider": "github",
+      "transport": "rest_api",
+      "auth": "github_app",
+      "ownershipModes": [
+        "customer"
+      ],
+      "grantKinds": [
+        "agent"
+      ],
+      "defaults": {
+        "serverUrl": "https://api.github.com"
+      },
+      "whenToUse": "Use a dedicated bot identity with keys and configuration managed by this Paperclip instance.",
+      "guidanceMd": "Connect the prepared GitHub App installations using native Secrets. Paperclip signs locally and calls GitHub directly; Paperclip Cloud enrollment is not required. Review the bounded current-project API actions in Permissions before allowing them.",
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "repository"
+      ],
+      "warnings": [
+        "Per-tool Ask-first controls do not constrain shell Git or gh. Installation permissions and current project scope still apply."
       ]
     },
     {

@@ -15,6 +15,10 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "board-user", settled: true, failed: false }), resolveAccountUserId: async () => "board-user" }));
 
+const nativeAppSettingsMock = vi.hoisted(() => vi.fn());
+const nativeAppImportMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/github-project-apps", () => ({ githubProjectAppsApi: { settings: nativeAppSettingsMock, importConnections: nativeAppImportMock } }));
+
 const intentSetupMock = vi.hoisted(() => vi.fn());
 const intentPhaseMock = vi.hoisted(() => vi.fn().mockResolvedValue({}));
 vi.mock("@/api/connection-intents", () => ({ connectionIntentsApi: { setupOptions: intentSetupMock, setPhase: intentPhaseMock } }));
@@ -437,6 +441,29 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     return root;
   }
+
+  it("connects native GitHub App identities without Cloud enrollment, managed OAuth or generic credential setup", async () => {
+    mockSearch.value = "source=github&method=app-installation";
+    getCloudConnectorEnrollmentMock.mockRejectedValue(new Error("Cloud unavailable for this test"));
+    const roles = ["coordinator", "implementer", "reviewer"] as const;
+    const settings = { available: true, canManage: true, revision: "synthetic-revision", enabled: true, checkedAt: null, blockedAgentIds: [],
+      roles: roles.map((role, index) => ({ role, agentId: `agent-${role}`, appId: 11 + index, installationId: 101 + index,
+        connectionId: null, status: "verified", login: `fixture-${role}[bot]`, repositories: [], keyStorage: "native_encrypted", pinnedVersion: 1, latestVersion: 1 })) };
+    nativeAppSettingsMock.mockResolvedValue(settings);
+    nativeAppImportMock.mockResolvedValue({ ...settings, roles: settings.roles.map(row => ({ ...row, connectionId: `native-${row.role}` })) });
+    await render(); await flushReact();
+    expect(container.textContent).toContain("Paperclip Cloud enrollment is not required");
+    expect(container.textContent).not.toContain("Connect with Paperclip");
+    expect(getCloudConnectorEnrollmentMock).not.toHaveBeenCalled(); expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled(); expect(connectAppMock).not.toHaveBeenCalled();
+    const confirmation = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    await act(async () => { confirmation.click(); });
+    await act(async () => { buttonByText("Verify and connect identities")!.click(); }); await flushReact();
+    expect(nativeAppImportMock).toHaveBeenCalledExactlyOnceWith("company-1", "synthetic-revision");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/native-reviewer/permissions");
+    expect(getCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
 
   it("connects 1Password using only its service-account token and links official creation instructions", async () => {
     const app = CONNECTABLE_APP_DEFINITIONS.find(entry => entry.slug === "1password")!;

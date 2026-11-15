@@ -1,3 +1,4 @@
+import { bindGitHubAppToolArguments, executeGitHubAppTool, gitHubAppToolGrant } from "./github-app-tools.js";
 import { assertAgentToolAssignmentInteractions } from "./connection-management.js";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig,
@@ -1594,10 +1595,12 @@ export function createToolGatewayService(
       ({ catalogEntry, connection, application }) =>
         (!featureSettings || isConnectorFeatureEnabled(getAppDefinitionForApplicationKey(application.applicationKey), featureSettings)) &&
         !isRetiredComposioConnection(connection) &&
-        !(nativeProviderCatalogFor(connection) && !nativeProviderCatalogFor(connection)!.isCurrentEntry(catalogEntry)) &&
+        !(nativeProviderCatalogFor(connection) && (!nativeProviderCatalogFor(connection)!.isCurrentEntry(catalogEntry)
+          || (nativeProviderCatalogFor(connection)!.toolsForConnection && !nativeProviderCatalogFor(connection)!.toolsForConnection!(connection).some(tool => tool.name === catalogEntry.toolName)))) &&
         !(restConnectorFor(connection) && !restConnectorFor(connection)!.isCurrent(catalogEntry)) &&
         !(isRailwayEndpoint(connection.config.url) && (isRailwayToolBlocked(catalogEntry.toolName) || (normalizeRailwayToolName(catalogEntry.toolName).startsWith(RAILWAY_TOOL_PREFIX) && connection.config.railwayApiStatus !== "available"))) &&
         (((isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)) && application.type === "rest_api") ||
+        nativeProviderCatalogFor(connection)?.acceptsApplication?.(application) === true ||
         (connection.transport === "mcp_remote" &&
           application.type === "mcp_http") ||
         (connection.transport === "local_stdio" &&
@@ -3074,6 +3077,10 @@ export function createToolGatewayService(
         connection?.config.sourceTemplateKey === "github" ||
         connection?.transportConfig?.sourceTemplateKey === "github"
       ) {
+        if (connection?.authKind === "github_app") {
+          await gitHubAppToolGrant(db, session, connection);
+          return tool;
+        }
         let selected = await resolveManagedGitHubIdentitySelection(
           db,
           session.companyId,
@@ -4289,6 +4296,8 @@ export function createToolGatewayService(
     grant: typeof connectionGrants.$inferSelect,
     resolveOptions: { forceRefresh?: boolean } = {},
   ): Promise<Record<string, string>> {
+    if (connection.authKind === "github_app") throw new ToolGatewayHttpError(409,
+      "GitHub App connector tools require verified project-bound credential delivery", "github_app_tools_unverified");
     if (connection.credentialSource === "vercel_connect") {
       if (!connection.externalCredential || !vercelConnect) {
         throw new ToolGatewayHttpError(
@@ -4721,6 +4730,7 @@ export function createToolGatewayService(
     connection: typeof toolConnections.$inferSelect,
     allowInteraction = true,
   ): Promise<typeof connectionGrants.$inferSelect> {
+    if (connection.authKind === "github_app") return gitHubAppToolGrant(db, session, connection);
     const [run] =
       session.runId && !session.identityContextId
         ? await db
@@ -5131,6 +5141,7 @@ export function createToolGatewayService(
   ): Promise<unknown> {
     if (tool.providerType !== "mcp_remote_http" && tool.providerType !== "provider_rest") return parameters;
     const { connection, entry } = await resolveConnectedRemoteTool(session, tool);
+    if (connection.authKind === "github_app") return bindGitHubAppToolArguments(db, session, connection, entry.toolName, parameters);
     const projected = projectedConnectionToolArguments(connection, parameters, entry.toolName, entry.inputSchema ?? {});
     if (!githubDefaultOwnerApplies(connection, entry.toolName, entry.inputSchema, projected)) return projected;
     // An unavailable credential keeps the call unchanged and fails with its own
@@ -6321,6 +6332,14 @@ export function createToolGatewayService(
     await assertApplicationFeatureAvailable(tool.applicationKey);
     // Recheck immediately before dispatch, including previously approved calls
     // and connections whose stored grant/catalog predates scope reduction.
+    if (connection.authKind === "github_app") {
+      const budgetMs = Math.min(ms, 30_000), deadlineAt = Date.now() + budgetMs;
+      const data = await executeGitHubAppTool(db, session, connection, entry.toolName, parameters,
+        (url, init) => options.remoteHttpRequest ? options.remoteHttpRequest(url, init)
+          : guardedRemoteHttpFetch(url, init, { ...remoteHttpFetchOptions(), responseTimeoutMs: budgetMs }),
+        AbortSignal.timeout(budgetMs), deadlineAt);
+      return { result: { content: JSON.stringify(data), data: { structuredContent: data, transport: "rest_api" } } };
+    }
     assertGoogleChatToolArgumentsSupported(connection, entry.toolName, parameters);
     assertGmailArchiveToolArgumentsSupported(connection, entry.toolName, parameters);
     if (useDefaultTimeout) ms = DEFAULT_REMOTE_HTTP_RESPONSE_TIMEOUT_MS;

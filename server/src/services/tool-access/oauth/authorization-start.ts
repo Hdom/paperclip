@@ -1,3 +1,4 @@
+import { assertNotAppConnection } from "../../github-app-connections.js";
 import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
 import { vercelConnectHttpError, vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import { credentialScope, managedConnectorProfile } from "./client-settings.js";
@@ -56,6 +57,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
   ): Promise<ToolOAuthStartResult> {
     await input.actor.managementContext?.reauthorize();
     let connection = await getConnectionRow(connectionId, companyId);
+    assertNotAppConnection(connection);
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
     await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.status !== "draft");

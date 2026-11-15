@@ -31,6 +31,8 @@ export async function projectAppSandbox() {
   const enrolled = new Map<ProjectAppRole, Set<number>>([["implementer", new Set()], ["reviewer", new Set()]]);
   const tokens = new Map<string, { role: ProjectAppRole; repositoryId?: number }>();
   const revoked: string[] = [];
+  const apiEffects: { method: string; path: string; role: ProjectAppRole; body: any }[] = [];
+  const apiFaults = { refuse: false, dropWrite: false, cleanupRefused: false, headSha: "a".repeat(40), mintDelayMs: 0 };
   const faults = { extraPermission: false, allRepositories: false, adminRefused: false, createDrop: false, driftScope: false, longExpiry: false, slow: false, redirect: "", foreignAppOwner: false, alreadyEnrolled: false, bootstrapGraphqlErrors: false, bootstrapCleanupRefused: false, bootstrapCleanupDrop: false };
   let repositorySequence = 900;
   const server = createServer(async (req, res) => {
@@ -50,8 +52,24 @@ export async function projectAppSandbox() {
     requests.push({ method: req.method!, url: req.url!, body, role });
     const json = (value: unknown, status = 200) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); };
     if (faults.redirect) { res.writeHead(302, { location: faults.redirect }); res.end(); return; }
-    if (faults.slow) { setTimeout(() => { if (!res.destroyed) json({}); }, 150); return; }
+    if (faults.slow && req.url !== "/installation/token") { setTimeout(() => { if (!res.destroyed) json({}); }, 150); return; }
     if (!role) { json({ message: "forbidden" }, 403); return; }
+    const apiPath = /^\/repos\/([^/]+\/[^/?]+)\/(contents(?:\/.*)?|commits|git\/refs|pulls(?:\/.*)?)(?:\?.*)?$/.exec(req.url ?? "");
+    if (apiPath) {
+      const repo = [...repositories.values()].find(repo => repo.full_name === apiPath[1]);
+      const credential = tokens.get(bearer);
+      if (!repo || credential?.repositoryId !== repo.id || (role !== "implementer" && role !== "reviewer")) { json({}, 403); return; }
+      if (apiFaults.refuse || (role === "reviewer" && req.method !== "GET" && !/\/pulls\/\d+\/reviews$/.test(new URL(req.url!, "http://local").pathname))) { json({ message: "synthetic-provider-error-secret" }, 403); return; }
+      apiEffects.push({ method: req.method!, path: req.url!, role, body });
+      if (apiFaults.dropWrite && req.method !== "GET") { req.socket.destroy(); return; }
+      if (/\/reviews$/.test(req.url!)) json({ id: 55, state: body.event, user: { login: `paperclip-${role}[bot]` } }, 200);
+      else if (/\/pulls\/\d+$/.test(req.url!)) json({ number: 1, head: { sha: apiFaults.headSha } });
+      else if (req.url!.includes("/contents/")) json({ type: "file", content: Buffer.from("synthetic file").toString("base64"), sha: "b".repeat(40) });
+      else if (req.url!.includes("/commits")) json([{ sha: apiFaults.headSha }]);
+      else if (req.url!.endsWith("/git/refs")) json({ ref: body.ref, object: { sha: body.sha } }, 201);
+      else json(req.method === "GET" ? [] : { number: 1, title: body.title, user: { login: `paperclip-${role}[bot]` } }, req.method === "GET" ? 200 : 201);
+      return;
+    }
     if (req.url === "/app" && req.method === "GET") {
       json({ id: config.apps[role].appId, slug: `paperclip-${role}`, owner: { login: faults.foreignAppOwner ? "foreign-owner" : "Hdom", type: "User" }, permissions: PROJECT_APP_PERMISSIONS[role] });
     } else if (installed && req.method === "GET") {
@@ -62,6 +80,7 @@ export async function projectAppSandbox() {
       if (!inventory) expect(body.permissions).toEqual(PROJECT_APP_PERMISSIONS[role]);
       const repositoryId = body.repository_ids?.[0];
       if (!inventory && role !== "coordinator" && (!repositoryId || !enrolled.get(role)?.has(repositoryId))) { json({}, 403); return; }
+      if (repositoryId && apiFaults.mintDelayMs) await new Promise(resolve => setTimeout(resolve, apiFaults.mintDelayMs));
       const token = `synthetic-${role}-${randomUUID()}`;
       tokens.set(token, { role, repositoryId });
       json({ token, expires_at: new Date(Date.now() + (faults.longExpiry ? 7200000 : 3600000)).toISOString(), permissions: body.permissions,
@@ -71,8 +90,8 @@ export async function projectAppSandbox() {
       repositories.set(repo.id, repo);
       if (faults.createDrop) { req.socket.destroy(); return; }
       json(repo, 201);
-    } else if (req.url === "/installation/repositories" && req.method === "GET") {
-      const selected = [...(enrolled.get(role) ?? [])].map(id => ({ id }));
+    } else if (req.url?.split("?")[0] === "/installation/repositories" && req.method === "GET") {
+      const selected = [...(enrolled.get(role) ?? [])].map(id => ({ ...(repositories.get(id) ?? {}), id }));
       json({ total_count: selected.length, repositories: selected });
     } else if (req.url === "/graphql" && req.method === "POST") {
       const repo = [...repositories.values()].find(repo => repo.full_name === "Hdom/paperclip-app-bootstrap-verification-20261113");
@@ -103,6 +122,7 @@ export async function projectAppSandbox() {
       if (faults.bootstrapCleanupDrop) { req.socket.destroy(); return; }
       res.writeHead(204); res.end();
     } else if (req.url === "/installation/token" && req.method === "DELETE") {
+      if (apiFaults.cleanupRefused) { json({}, 503); return; }
       revoked.push(bearer); tokens.delete(bearer); res.writeHead(204); res.end();
     } else json({}, 404);
   });
@@ -111,9 +131,9 @@ export async function projectAppSandbox() {
   const realFetch = globalThis.fetch;
   const fetchImpl: typeof fetch = (url, init) => {
     expect(String(url).startsWith("https://api.github.com/")).toBe(true);
-    return realFetch(origin + new URL(String(url)).pathname, init);
+    const parsed = new URL(String(url)); return realFetch(origin + parsed.pathname + parsed.search, init);
   };
-  return { config, configPath, directory, requests, repositories, enrolled, tokens, revoked, faults, fetchImpl, directFetch: realFetch,
+  return { config, configPath, directory, requests, repositories, enrolled, tokens, revoked, faults, apiEffects, apiFaults, fetchImpl, directFetch: realFetch,
     broker: createProjectAppBroker(config, { fetch: fetchImpl }),
     async cleanup() { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); },
   };

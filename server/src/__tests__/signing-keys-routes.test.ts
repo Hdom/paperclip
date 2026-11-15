@@ -79,4 +79,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(unrelated.body.keys.find((key: { id: string }) => key.id === generic.id).description).toBe(legacy);
   });
 
+  it("shows bounded public signing access events only within the authorized company", async () => {
+    const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const service = secretService(db);
+    const key = await service.createControllerSigningKey(companyId, "reviewer", 13, rsa, "synthetic-admin");
+    await service.signControllerGitHubAppJwt(companyId, key.id, 1, "reviewer", 13);
+    const endpoint = `${base()}/${key.id}/access-events`;
+    const events = await request(app({ isInstanceAdmin: false })).get(endpoint);
+    expect(events.status).toBe(200); expect(events.headers["cache-control"]).toBe("no-store");
+    expect(events.body.length).toBeGreaterThan(0); expect(events.body.length).toBeLessThanOrEqual(100);
+    for (const event of events.body) expect(Object.keys(event).sort()).toEqual(["createdAt", "id", "outcome", "version"]);
+    expect(JSON.stringify(events.body)).not.toMatch(/PRIVATE KEY|jwt|material|providerMetadata|synthetic-admin/);
+    expect((await request(app({ type: "agent", agentId: randomUUID() })).get(endpoint)).status).toBe(403);
+    expect((await request(app({ companyIds: [] })).get(endpoint)).status).toBe(403);
+    expect((await request(app()).get(`${base()}/${randomUUID()}/access-events`)).status).toBe(404);
+  });
+
 });

@@ -675,6 +675,8 @@ export function Secrets() {
   // `?definition=<id>` are the source of truth for the current selection, so
   // every open secret has a shareable URL and Back closes the sheet.
   const selectedSecretId = searchParams.get("secret");
+  const signingKeySelection = searchParams.get("signingKey");
+  useEffect(() => { if (signingKeySelection) setActiveTab("signing-keys"); }, [signingKeySelection]);
   const selectedDefinitionId = searchParams.get("definition");
   const setDetailSelection = useCallback(
     (secretId: string | null, definitionId: string | null = null) => {
@@ -1858,7 +1860,7 @@ export function Secrets() {
           onValueChange={(value) => setActiveTab(value as SecretsTab)}
         />
 
-        <TabsContent value="signing-keys"><SigningKeysTab companyId={selectedCompanyId} /></TabsContent>
+        <TabsContent value="signing-keys"><SigningKeysTab companyId={selectedCompanyId} selection={signingKeySelection} onSelectionChange={id => setSearchParams(previous => { const next = new URLSearchParams(previous); if (id) next.set("signingKey", id); else next.delete("signingKey"); return next; })} /></TabsContent>
 
         <TabsContent value="secrets" className="flex flex-col gap-3">
           <SecretsHowToUse />

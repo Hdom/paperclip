@@ -40,6 +40,7 @@ export function connectionSetupStateForMethod(
   method: ConnectionMethodDef | null | undefined,
 ): ConnectionSetupState | null {
   if (!method) return null;
+  if (method.auth === "github_app") return "register";
   if (method.auth === "oauth") {
     // An AI subscription signs in through the adapter's own device/OAuth flow.
     // No client is ever registered, so `register` would be a false detour.

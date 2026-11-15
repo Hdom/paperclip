@@ -115,6 +115,7 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     actor?: ActorInfo,
     options: { forceRefresh?: boolean } = {},
   ): Promise<Record<string, string>> {
+    if (connection.authKind === "github_app") throw unprocessable("GitHub App connector tools require verified project-bound credential delivery", { code: "github_app_tools_unverified" });
     if (connection.credentialSource === "vercel_connect") {
       const grant = await vercelGrantForConnection(connection, actor);
       return resolveVercelCredentialHeaders(connection, grant, options);

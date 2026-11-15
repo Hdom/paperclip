@@ -321,8 +321,8 @@ describe("AppDefinition catalog", () => {
   it("separates GitHub tools from the review bot without changing the provider identity", () => {
     const github = getConnectableAppDefinition("github")!;
     const bot = getConnectableAppDefinition("github-code-review-bot")!;
-    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key", "copilot-token"]);
-    expect(github.methods.filter((method) => method.purpose === "tool").map((method) => method.key)).toEqual(["managed", "mcp-key"]);
+    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key", "app-installation", "copilot-token"]);
+    expect(github.methods.filter((method) => method.purpose === "tool").map((method) => method.key)).toEqual(["managed", "mcp-key", "app-installation"]);
     expect(github.methods.find((method) => method.key === "copilot-token")).toMatchObject({ purpose: "ai", transport: "runtime_auth" });
     expect(bot.name).toBe("GitHub Code Review Bot");
     expect(bot.methods).toHaveLength(1);
@@ -1594,4 +1594,21 @@ it("limits explicit DCR registration preference to remote MCP OAuth methods with
   const nonMcp = structuredClone(entry);
   nonMcp.methods[0]!.transport = "rest_api";
   expect(appDefinitionSchema.safeParse(nonMcp).success).toBe(false);
+});
+
+
+describe("self-hosted GitHub App installation method", () => {
+  it("remains available without managed Cloud profiles and never requests OAuth or generic key projection", () => {
+    const github = getConnectableAppDefinition("github")!;
+    const method = getAvailableConnectionMethods(github).find(candidate => candidate.key === "app-installation");
+    expect(method).toMatchObject({ auth: "github_app", provider: "github", ownershipModes: ["customer"], grantKinds: ["agent"] });
+    expect(method?.oauthStrategy).toBeUndefined(); expect(method?.connectorProfile).toBeUndefined();
+    expect(method?.credentialFields).toBeUndefined(); expect(method?.keyPlacement).toBeUndefined();
+    expect(method?.guidanceMd).toContain("Paperclip Cloud enrollment is not required");
+  });
+  it("rejects App methods that try to project signing values through ordinary credential fields", () => {
+    const github = getConnectableAppDefinition("github")!;
+    const appMethod = github.methods.find(method => method.key === "app-installation")!;
+    expect(appDefinitionSchema.safeParse({ ...github, methods: [{ ...appMethod, credentialFields: [{ key: "privateKey", label: "Key", type: "password", secret: true }] }] }).success).toBe(false);
+  });
 });

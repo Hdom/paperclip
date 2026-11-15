@@ -1,3 +1,4 @@
+import { assertNotAppConnection } from "../../github-app-connections.js";
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import type { createGitHubGrantContinuity } from "../github-grant-continuity.js";
 import { randomUUID } from "node:crypto";
@@ -56,6 +57,7 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
       stateRow.connectionId,
       stateRow.companyId,
     );
+    assertNotAppConnection(connection);
     const preCloudCallbackLifecycle = {
       status: connection.status,
       enabled: connection.enabled,

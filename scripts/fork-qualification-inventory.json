@@ -94,6 +94,66 @@
     {
       "cwd": "server",
       "files": [
+        "src/__tests__/github-app-connection-import.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/github-app-connections.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/github-app-tools.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/github-app-tool-catalog.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/git-credentials.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/github-operation-credentials.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
         "src/__tests__/controller-signing-secrets.test.ts"
       ],
       "extra": [
@@ -269,6 +329,23 @@
         "packages/adapter-utils/src/controller-source-materialization.test.ts",
         "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts",
         "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"
+      ],
+      "extra": []
+    },
+    {
+      "cwd": ".",
+      "files": [
+        "ui/src/pages/apps/AppDetail.test.tsx",
+        "ui/src/pages/apps/AppsConnect.test.tsx",
+        "ui/src/pages/apps/app-detail/GitHubAppConnectionPermissions.test.tsx",
+        "ui/src/pages/secrets/GitHubAppKeyLifecycle.test.tsx"
+      ],
+      "extra": []
+    },
+    {
+      "cwd": ".",
+      "files": [
+        "packages/shared/src/app-definitions.test.ts"
       ],
       "extra": []
     },
@@ -552,6 +629,17 @@
   "reviewedAdditions": [
     "src/__tests__/signing-keys-routes.test.ts",
     "src/secrets/signing-key-material.test.ts",
-    "ui/src/pages/secrets/SigningKeysTab.test.tsx"
+    "ui/src/pages/secrets/SigningKeysTab.test.tsx",
+    "src/__tests__/github-app-connection-import.test.ts",
+    "src/services/github-app-connections.test.ts",
+    "src/__tests__/git-credentials.test.ts",
+    "src/__tests__/github-operation-credentials.test.ts",
+    "ui/src/pages/apps/AppsConnect.test.tsx",
+    "ui/src/pages/apps/app-detail/GitHubAppConnectionPermissions.test.tsx",
+    "ui/src/pages/secrets/GitHubAppKeyLifecycle.test.tsx",
+    "packages/shared/src/app-definitions.test.ts",
+    "src/__tests__/github-app-tools.test.ts",
+    "src/services/github-app-tool-catalog.test.ts",
+    "ui/src/pages/apps/AppDetail.test.tsx"
   ]
 }

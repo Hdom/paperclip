@@ -1,4 +1,5 @@
 import { loadProjectAppsConfig, projectAppRole } from "./github-project-apps.js";
+import { appConfigSnapshot } from "./github-app-config.js";
 import { resolveProjectAppCredential } from "./github-project-app-runtime.js";
 import {
   companySecrets,
@@ -373,7 +374,8 @@ export async function resolveManagedGitHubIdentitySelection(
   grant?: typeof connectionGrants.$inferSelect;
   error?: string;
 }> {
-  const projectApps = await loadProjectAppsConfig();
+  const projectAppsSnapshot = await appConfigSnapshot(db, companyId);
+  const projectApps = projectAppsSnapshot?.config ?? null;
   if (projectApps && context.agentId && projectAppRole(projectApps, companyId, context.agentId)) {
     // Suppress host fallback and OAuth-backed GitHub MCP dispatch for these roles.
     // Stored connections and unrelated agents retain their existing authority.
@@ -400,6 +402,21 @@ export async function resolveManagedGitHubIdentitySelection(
     eq(toolConnectionInstalls.companyId, companyId),
     inArray(toolConnectionInstalls.connectionId, connectionIds),
   ));
+  const nativeIds = githubConnections.filter(connection => connection.authKind === "github_app").map(connection => connection.id);
+  if (nativeIds.length) {
+    // Orphan native policy must fail closed for its intended audience, including
+    // a missing install, without disabling unrelated agents' existing identities.
+    // Valid native policy owns explicit releases. Historical revoked grants
+    // are only a recovery fence when that authoritative policy is missing.
+    const nativeGrants = projectAppsSnapshot?.storage === "native" ? [] : await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, companyId), inArray(connectionGrants.connectionId, nativeIds),
+    ));
+    if (installs.some(install => nativeIds.includes(install.connectionId) && (
+      (install.targetType === "company" && install.targetId === companyId)
+      || (install.targetType === "agent" && install.targetId === context.agentId)))
+      || (context.agentId && nativeGrants.some(grant => grant.kind === "agent" && grant.subjectAgentId === context.agentId)))
+      return { configured: true, identitySource: "dedicated", error: "Native GitHub App settings need reconciliation; alternate credentials are not substituted" };
+  }
   const eligibleConnectionIds = new Set(githubConnections.filter((connection) => installs.some((install) =>
     install.connectionId === connection.id && (
       (install.targetType === "company" && install.targetId === companyId)

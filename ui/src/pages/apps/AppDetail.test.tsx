@@ -51,6 +51,8 @@ const navigateComponentMock = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 const popupAssignMock = vi.hoisted(() => vi.fn());
 
+vi.mock("./app-detail/GitHubAppConnectionPermissions", () => ({ GitHubAppConnectionPermissions: () => <section>Native GitHub App identity controls</section> }));
+
 vi.mock("@/components/ai-connections/AiConnectionPoolConnector", () => ({
   AiConnectionPoolConnector: () => <div>Connection pool controls</div>,
 }));
@@ -2115,4 +2117,19 @@ describe("AppDetail", () => {
     expect(dialogText).toContain("Who can use this identity");
     expect(dialogText).toContain("Every audience member must be an active company member");
   });
+  it("keeps native App identity and existing action controls together without generic sign-in, audience, or browser-only testing", async () => {
+    getConnectionMock.mockResolvedValue(connection({ authKind: "github_app", transport: "rest_api", connectionPurpose: "tool", credentialPolicy: "per_agent",
+      config: { sourceTemplateKey: "github", connectionMethodKey: "app-installation", url: "https://api.github.com", githubApp: { role: "reviewer", appId: 13, installationId: 103, scope: "current_project" } } }));
+    listConnectionGrantsMock.mockResolvedValue({ connection: { id: "conn-1" }, grants: [dedicatedGitHubGrant({ providerTenant: { githubApp: { role: "reviewer", appId: 13, installationId: 103, login: "reviewer[bot]", scope: "current_project", tools: "unverified" } } })], capabilities: fullCapabilities(), currentUserId: "user-1", members: [] });
+    listCatalogMock.mockResolvedValue({ catalog: [catalogEntry({ annotations: { requiresActiveProjectRun: true } })] });
+    await renderAppDetail();
+    expect(container.textContent).toContain("Native GitHub App identity controls"); expect(container.textContent).toContain("Actions");
+    expect(container.textContent).toContain("Test from an active project task"); expect(findButton("Test")).toBeUndefined();
+    expect(container.textContent).not.toContain("Connect as me"); expect(container.textContent).not.toContain("Who can use this identity");
+    const permission = container.querySelector<HTMLElement>('[role="radio"][aria-label$=": Off"]'); expect(permission).not.toBeNull();
+    await act(async () => { permission!.click(); }); await flushReact();
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", expect.objectContaining({ access: { agentIds: ["agent-1"] } }));
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled(); expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
 });

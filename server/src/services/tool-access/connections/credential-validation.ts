@@ -57,7 +57,7 @@ export function createConnectionCredentialValidation(db: Db) {
     const secretIds = [...new Set(refs.map((ref) => ref.secretId))];
     for (const secretId of secretIds) {
       const [secret] = await db
-        .select({ id: companySecrets.id })
+        .select({ id: companySecrets.id, scope: companySecrets.scope })
         .from(companySecrets)
         .where(
           and(
@@ -65,6 +65,7 @@ export function createConnectionCredentialValidation(db: Db) {
             eq(companySecrets.companyId, companyId),
           ),
         );
+      if (secret?.scope === "controller") throw unprocessable("Signing keys cannot be projected as connection credentials");
       if (!secret)
         throw unprocessable(
           "Tool connection credential secrets must belong to the same company",

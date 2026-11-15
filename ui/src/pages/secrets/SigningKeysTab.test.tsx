@@ -5,11 +5,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
 import type { SigningKeySummary } from "@paperclipai/shared";
 import { SigningKeysTab } from "./SigningKeysTab";
-const api = vi.hoisted(() => ({ list: vi.fn(), versions: vi.fn(), create: vi.fn(), rotate: vi.fn(), update: vi.fn() }));
+const api = vi.hoisted(() => ({ list: vi.fn(), versions: vi.fn(), create: vi.fn(), rotate: vi.fn(), update: vi.fn(), events: vi.fn() }));
+vi.mock("@/lib/router", () => ({ Link: ({ to, children, ...props }: { to: string; children: import("react").ReactNode }) => <a href={to} {...props}>{children}</a> }));
 vi.mock("@/api/signing-keys", () => ({ signingKeysApi: api }));
 vi.mock("@/components/GitHubProjectAppControls", () => ({
-  GitHubProjectAppManager: () => <button>Manage verified GitHub App</button>,
-  useGitHubProjectApps: () => ({ data: { roles: [{ secretId: "github", pinnedVersion: 1, status: "verified", publicFingerprint: "SHA256:public-only" }] } }),
+  githubProjectAppsQueryKey: (companyId: string) => ["github-project-apps", companyId],
+  useGitHubProjectApps: () => ({ data: { canManage: false, roles: [{ secretId: "github", connectionId: "native-github", pinnedVersion: 1, status: "verified", publicFingerprint: "SHA256:public-only" }] } }),
 }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root, container: HTMLDivElement, client: QueryClient;
@@ -37,7 +38,7 @@ describe("Secrets signing-key table", () => {
   it("keeps GitHub keys in their verified service lifecycle with visible active versus stored version", async () => {
     await render([key({ id: "github", name: "GitHub signer", type: "github_app", revision: null, algorithm: null, publicFingerprint: null, githubApp: { role: "reviewer", appId: 13 } })]);
     await click(button("GitHub signer")); expect(document.body.textContent).toContain("Active version: 1"); expect(document.body.textContent).toContain("Latest stored version2");
-    expect(button("Manage verified GitHub App")).toBeTruthy(); expect(document.querySelector('input[type="file"]')).toBeNull(); expect(document.body.textContent).not.toContain("Disable key");
+    expect(document.querySelector('a[href="/apps/native-github/permissions"]')).not.toBeNull(); expect(document.querySelector('input[type="file"]')).toBeNull(); expect(document.body.textContent).not.toContain("Disable key");
   });
   it("requires confirmation and sends the displayed lifecycle revision for a disable", async () => {
     await render([key()]); await click(button("Service signer")); expect(button("Disable key").disabled).toBe(true);

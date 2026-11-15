@@ -38,7 +38,7 @@ export interface ConnectionSearchResultItem {
   methods: Array<{
     key: string;
     label: string;
-    auth: "oauth" | "api_key" | "none";
+    auth: "oauth" | "api_key" | "none" | "github_app";
     /** AgentMail channel setup and tool methods support connection_request cards. */
     purpose?: "tool" | "channel" | "ai";
     /** Company-scoped setup destination for methods with a separate setup flow. */

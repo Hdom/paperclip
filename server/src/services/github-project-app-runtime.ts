@@ -8,6 +8,8 @@ import { issueTreeControlService } from "./issue-tree-control.js";
 import { logActivity } from "./activity-log.js";
 import { createProjectAppBroker, loadProjectAppsConfig, projectAppRole, type ProjectAppsConfig } from "./github-project-apps.js";
 import { secretService } from "./secrets.js";
+import { appConfigSnapshot } from "./github-app-config.js";
+import { nativeAppConnection } from "./github-app-connections.js";
 import type { GitCredential } from "./git-credentials.js";
 
 type RunInput = { companyId: string; agentId: string; runId: string };
@@ -22,9 +24,14 @@ function assertRunNotStopping(run: { status: string; resultJson: Record<string, 
     throw forbidden("GitHub App authority ended when Stop or reassignment was requested");
 }
 
-async function authorizedProject(db: Db, config: ProjectAppsConfig, input: RunInput) {
-  const currentConfig = await loadProjectAppsConfig();
+export async function authorizedProject(db: Db, config: ProjectAppsConfig, input: RunInput) {
+  const currentConfig = (await appConfigSnapshot(db, input.companyId))?.config ?? null;
   if (currentConfig?.enabled === false || JSON.stringify(currentConfig) !== JSON.stringify(config)) throw forbidden("GitHub App configuration changed; retry with current authority");
+  const role = projectAppRole(config, input.companyId, input.agentId);
+  if (!role || role === "blocked") throw forbidden("GitHub App identity is not assigned to this agent");
+  // Once imported, the connection/grant/install is part of live authority.
+  // A paused, changed or removed identity never falls back to a user token.
+  await nativeAppConnection(db, config, role);
   const { run, context } = await captureRunIdentity(db, input);
   assertRunNotStopping(run);
   const issueId = boundRunIssueId(run);
@@ -53,7 +60,7 @@ async function authorizedProject(db: Db, config: ProjectAppsConfig, input: RunIn
 export async function resolveProjectAppCredential(db: Db, companyId: string, context: {
   agentId?: string | null; heartbeatRunId?: string | null;
 }): Promise<{ configured: boolean; identitySource?: "dedicated"; credential?: GitCredential; error?: string } | null> {
-  const config = await loadProjectAppsConfig();
+  const config = (await appConfigSnapshot(db, companyId))?.config ?? null;
   if (!config || !context.agentId) return null;
   const role = projectAppRole(config, companyId, context.agentId);
   if (!role) return null;
@@ -63,6 +70,7 @@ export async function resolveProjectAppCredential(db: Db, companyId: string, con
   const input = { companyId, agentId: context.agentId, runId: context.heartbeatRunId };
   try {
     const { project, issue } = await authorizedProject(db, config, input);
+    const native = await nativeAppConnection(db, config, role);
     const reauthorize = async () => {
       const current = await authorizedProject(db, config, input);
       if (current.project.id !== project.id || current.issue.id !== issue.id) throw forbidden("Project task binding changed");
@@ -73,6 +81,7 @@ export async function resolveProjectAppCredential(db: Db, companyId: string, con
     return { configured: true, identitySource: "dedicated", credential: {
       token: issued.token, source: "managed_connection", secretName: null, identitySource: "dedicated",
       githubIdentity: { userId: issued.userId, login: issued.login },
+      ...(native ? { connectionId: native.connection.id, grantId: native.grant.id } : {}),
     } };
   } catch {
     return { configured: true, identitySource: "dedicated", error: "Project GitHub App access is unavailable; check the project binding, run authority, and exact installation permissions" };
@@ -82,7 +91,7 @@ export async function resolveProjectAppCredential(db: Db, companyId: string, con
 /** No caller-supplied project, repository, role, App, installation, permission, or secret is accepted. */
 export async function provisionRunProjectRepository(db: Db, input: RunInput, assertActive?: () => void) {
   assertActive?.();
-  const config = await loadProjectAppsConfig();
+  const config = (await appConfigSnapshot(db, input.companyId))?.config ?? null;
   if (!config || config.enabled === false || projectAppRole(config, input.companyId, input.agentId) !== "coordinator")
     throw forbidden("Only the configured Coordinator can provision project repositories");
   const { project, issue } = await authorizedProject(db, config, input);

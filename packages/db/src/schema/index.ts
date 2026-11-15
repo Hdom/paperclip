@@ -282,3 +282,5 @@ export { issueThreadInteractionIdempotencyKeys } from "./issue_thread_interactio
 export { projectTaskExecutionPolicies, executionAdmissions, executionAdmissionProjectCharges } from "./execution_admissions.js";
 export { budgetEvaluationWork } from "./budget_evaluation_work.js";
 export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./native_provider_artifacts.js";
+
+export { githubAppSettings } from "./github_app_settings.js";

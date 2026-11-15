@@ -2,6 +2,7 @@ import type { SigningKeyCatalog, SigningKeySummary } from "@paperclipai/shared";
 import { api } from "./client";
 const base = (companyId: string) => `/companies/${companyId}/signing-keys`;
 export const signingKeysApi = {
+  events: (companyId: string, id: string) => api.get<{ id: string; version: number | null; outcome: string; createdAt: string }[]>(`${base(companyId)}/${id}/access-events`),
   versions: (companyId: string, id: string) => api.get<{ id: string; version: number; status: string; createdAt: string }[]>(`${base(companyId)}/${id}/versions`),
   list: (companyId: string) => api.get<SigningKeyCatalog>(base(companyId)),
   create: (companyId: string, input: { name: string; description?: string | null; privateKey: string; confirmed: true }) => api.post<SigningKeySummary>(base(companyId), input),

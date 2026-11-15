@@ -3256,6 +3256,20 @@
       "when": 1794629136871,
       "tag": "0466_friendly_roulette",
       "breakpoints": true
+    },
+    {
+      "idx": 467,
+      "version": "7",
+      "when": 1794700982553,
+      "tag": "0467_github_app_connection_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 468,
+      "version": "7",
+      "when": 1794703103775,
+      "tag": "0468_native_github_app_settings",
+      "breakpoints": true
     }
   ]
 }
