@@ -101,7 +101,7 @@ export async function verifyGitHubAppMcp(options) {
   }
   const negativeControl = await probeMcpCatalog('paperclip-synthetic-invalid-bearer', transport);
     for (const [role, expected] of Object.entries(approved)) {
-      let jwt = '', token = '', revoked = false, scopeVerified = false, tokenIssued = false, expiresAt = null, result;
+      let jwt = '', token = '', revoked = false, scopeVerified = false, tokenObserved = false, mintAttempted = false, expiresAt = null, result;
       try {
         const app = config.apps[role], ref = app.signingKeySecret;
         const signed = await secrets.signControllerGitHubAppJwt(companyId, ref.secretId, ref.version, role, app.appId);
@@ -112,8 +112,9 @@ export async function verifyGitHubAppMcp(options) {
           || !same(registration.permissions, expected.permissions) || installation.id !== app.installationId || installation.app_id !== app.appId
           || installation.account?.login !== 'Hdom' || installation.target_type !== 'User' || installation.suspended_at
           || installation.repository_selection !== 'selected' || !same(installation.permissions, expected.permissions)) throw Error('Unexpected App authority');
+        mintAttempted = true;
         const issued = await request(jwt, `/app/installations/${app.installationId}/access_tokens`, 'POST', { permissions: { metadata: 'read' }, repository_ids: [starterId] });
-        if (typeof issued?.token === 'string' && issued.token) { token = issued.token; tokenIssued = true; }
+        if (typeof issued?.token === 'string' && issued.token) { token = issued.token; tokenObserved = true; }
         if (Number.isFinite(Date.parse(issued?.expires_at))) expiresAt = new Date(issued.expires_at).toISOString();
         if (!validateMetadataToken(issued)) throw Error('Unexpected verification token scope');
         scopeVerified = true;
@@ -123,8 +124,8 @@ export async function verifyGitHubAppMcp(options) {
         if (token) revoked = await revokeVerificationToken(token);
         jwt = ''; token = '';
       }
-      results.push({ role, ...result, authenticationDistinguished: result.catalogAccepted === true && negativeControl.catalogAccepted === false && negativeControl.statuses.some(status => status === 401 || status === 403), scopeVerified, metadataOnly: scopeVerified, starterOnly: scopeVerified, tokenIssued, tokenExpiresAt: expiresAt, credentialDeliveredToAgent: false, tokenRevoked: tokenIssued ? revoked : null, ...((tokenIssued && !revoked) ? { cleanup: 'cleanup_incomplete' } : {}) });
-      if (!scopeVerified || (tokenIssued && !revoked)) break; // Stop before any subsequent mint on scope/cleanup uncertainty.
+      results.push({ role, ...result, authenticationDistinguished: result.catalogAccepted === true && negativeControl.catalogAccepted === false && negativeControl.statuses.some(status => status === 401 || status === 403), scopeVerified, metadataOnly: scopeVerified, starterOnly: scopeVerified, mintAttempted, tokenObserved, issuanceUnknown: mintAttempted && !tokenObserved, tokenExpiresAt: expiresAt, credentialDeliveredToAgent: false, tokenRevoked: tokenObserved ? revoked : null, ...((tokenObserved && !revoked) ? { cleanup: 'cleanup_incomplete' } : {}) });
+      if (!scopeVerified || (tokenObserved && !revoked)) break; // Stop before any subsequent mint on scope/cleanup uncertainty.
     }
     const receipt = { sourceCommit: options.sourceCommit, results, negativeControl, proofLimit: 'Metadata-only installation token; initialize and tools/list only; no tool invocation or full worker-token qualification.', nativeSecretAccessAuditMayBeRecorded: true, paperclipCloudUsed: false, serverOrAgentsStarted: false,
       projectRepositoryCreated: false, installationAccessChanged: false, keyValuesDisclosed: false, jwtOrTokenDisclosed: false };
