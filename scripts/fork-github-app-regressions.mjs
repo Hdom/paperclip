@@ -26,7 +26,7 @@ for (const file of [
   "src/services/explicit-native-continuation.test.ts", "src/services/ssh-host-stop-receipt.test.ts",
   "src/services/worker-supervision.test.ts",
   "src/__tests__/closed-native-receipt-accounting.test.ts",
-  "src/__tests__/controller-skill-export.test.ts", "src/__tests__/skill-package-store.test.ts", "src/__tests__/ssh-automatic-stop.test.ts", "src/__tests__/heartbeat-ssh-stop.test.ts", "src/services/remote-execution-scope.test.ts", "src/__tests__/environment-probe.test.ts", "src/__tests__/environment-runtime-driver-contract.test.ts", "src/services/native-runtime/native-ssh-command-runner.test.ts", "src/services/execution-blocker-read.test.ts", "src/__tests__/environment-retained-orphan-sandbox.test.ts", "src/services/idle-deadline-proof.test.ts",
+  "src/services/native-runtime/native-workspace-owner-restart-recovery.test.ts", "src/services/native-runtime/native-workspace-finalization-supersession.test.ts", "src/__tests__/scoped-task-workspace-authority.test.ts", "src/__tests__/controller-skill-export.test.ts", "src/__tests__/skill-package-store.test.ts", "src/__tests__/ssh-automatic-stop.test.ts", "src/__tests__/heartbeat-ssh-stop.test.ts", "src/services/remote-execution-scope.test.ts", "src/__tests__/environment-probe.test.ts", "src/__tests__/environment-runtime-driver-contract.test.ts", "src/services/native-runtime/native-ssh-command-runner.test.ts", "src/services/execution-blocker-read.test.ts", "src/__tests__/environment-retained-orphan-sandbox.test.ts", "src/services/idle-deadline-proof.test.ts",
   "src/__tests__/github-project-apps.test.ts", "src/__tests__/github-project-app-runtime.test.ts",
   "src/__tests__/github-app-connection-import.test.ts", "src/services/github-app-connections.test.ts",
   "src/__tests__/github-app-tools.test.ts", "src/services/github-app-tool-catalog.test.ts",
@@ -45,7 +45,7 @@ test(resolve(root, "server"), ["src/__tests__/heartbeat-local-environment.test.t
 // too. Keep that known gap explicit; this gate proves the changed protected lane.
 test(resolve(root, "server"), ["src/__tests__/heartbeat-plugin-environment.test.ts"], ["--config", "vitest.config.ts", "-t", "protected"]);
 test(root, ["packages/db/src/worker-supervision-upgrade.test.ts"]);
-test(root, ["packages/adapter-utils/src/controller-source-protection.test.ts", "packages/adapter-utils/src/controller-source-materialization.test.ts",
+test(root, ["packages/adapter-utils/src/controller-workspace-archive.test.ts", "packages/adapter-utils/src/workspace-restore-merge.test.ts", "packages/adapter-utils/src/workspace-restore-unchanged.test.ts", "packages/adapter-utils/src/workspace-restore-teardown.test.ts", "packages/adapter-utils/src/controller-workspace-authority.test.ts", "packages/adapter-utils/src/controller-source-protection.test.ts", "packages/adapter-utils/src/controller-source-materialization.test.ts",
   "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"]);
 test(root, ["ui/src/pages/apps/AppDetail.test.tsx", "ui/src/pages/apps/AppsConnect.test.tsx", "ui/src/pages/apps/app-detail/GitHubAppConnectionPermissions.test.tsx", "ui/src/pages/secrets/GitHubAppKeyLifecycle.test.tsx"]);
 test(root, ["packages/shared/src/app-definitions.test.ts"]);

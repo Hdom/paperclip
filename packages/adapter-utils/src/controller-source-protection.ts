@@ -1,3 +1,4 @@
+import { controllerWorkspacePathAdmission } from "./controller-workspace-authority.js";
 import { ControllerSourceProtectionError } from "./controller-source-error.js";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
@@ -79,7 +80,9 @@ export async function assertControllerSourcePathAllowed(file: string, writing = 
     const roots = await Promise.all(pathList(writing ? "PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS" : "PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS", true).map(canonical));
     if (roots.some(root => secrets.some(secret => inside(root, secret) || inside(secret, root)))) throw refused();
     const source = await canonical(file);
-    if (!roots.some(root => inside(root, source)) || secrets.some(secret => inside(secret, source) || inside(source, secret))) throw refused();
+    const workspaceRoot = await controllerWorkspacePathAdmission(file, source, writing);
+    if (workspaceRoot && secrets.some(secret => inside(secret, workspaceRoot) || inside(workspaceRoot, secret))) throw refused();
+    if ((!workspaceRoot && !roots.some(root => inside(root, source))) || secrets.some(secret => inside(secret, source) || inside(source, secret))) throw refused();
   } catch (error) {
     if (error instanceof ControllerSourceProtectionError) throw error;
     throw new Error("Controller signing-key protection could not validate source metadata", { cause: error });

@@ -759,6 +759,10 @@ export async function mergeDirectoryWithBaseline(input: {
   targetDir: string;
   conflictPolicy?: "reject";
   workspaceSnapshotIsolation?: "worker";
+  publicationFence?: <T>(action: () => Promise<T>) => Promise<T>;
+  /** Checked current-tree capture under the merge lock, before acquiring domain row locks. */
+  publicationPreflight?: () => Promise<DirectorySnapshot>;
+  beforeMutation?: () => Promise<void>;
   beforeApply?: () => Promise<void>;
   afterApply?: () => Promise<void>;
   /** Caller holds the target's writer lock and validated an immutable sparse
@@ -770,14 +774,16 @@ export async function mergeDirectoryWithBaseline(input: {
   const source = input.snapshots?.source ?? await capture(input.sourceDir, options);
   try {
     await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
+      const checkedCurrent = await input.publicationPreflight?.();
+      const apply = async () => {
       await input.beforeApply?.();
-      if (!input.snapshots?.current && directorySnapshotsMatch(input.baseline, source)) {
+      if (!checkedCurrent && !input.snapshots?.current && directorySnapshotsMatch(input.baseline, source)) {
         await input.afterApply?.();
         return;
       }
       // Strict preflight must see excluded children before a directory is
       // replaced. The merge still applies only the filtered source/baseline.
-      const current = input.snapshots?.current ?? await capture(canonicalTargetDir,
+      const current = checkedCurrent ?? input.snapshots?.current ?? await capture(canonicalTargetDir,
         input.conflictPolicy === "reject" ? { exclude: [], diskBacked: true } : options);
       try {
         if (input.conflictPolicy === "reject") {
@@ -787,20 +793,30 @@ export async function mergeDirectoryWithBaseline(input: {
         for (const [relative, baselineEntry] of orderedEntries(input.baseline)) {
           if (baselineEntry.kind === "dir" || source.entries.has(relative)) continue;
           if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
+          await input.beforeMutation?.();
           await fs.rm(path.join(canonicalTargetDir, relative), { recursive: true, force: true });
         }
         // Reverse path order visits descendants before their parent directory.
         for (const [relative, entry] of orderedEntries(input.baseline, true)) {
-          if (entry.kind === "dir" && !source.entries.has(relative)) await fs.rmdir(path.join(canonicalTargetDir, relative)).catch((error: NodeJS.ErrnoException) => {
+          if (entry.kind === "dir" && !source.entries.has(relative)) {
+            await input.beforeMutation?.();
+            await fs.rmdir(path.join(canonicalTargetDir, relative)).catch((error: NodeJS.ErrnoException) => {
             if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "ENOTDIR") throw error;
           });
+          }
         }
         for (const [relative, entry] of orderedEntries(source)) {
           if (!entriesMatch(input.baseline.entries.get(relative), entry) &&
-              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
+              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) {
+            await input.beforeMutation?.();
+            await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
+          }
         }
         await input.afterApply?.();
       } finally { await disposeDirectorySnapshot(current); }
+      };
+      try { if (input.publicationFence) await input.publicationFence(apply); else await apply(); }
+      finally { if (checkedCurrent) await disposeDirectorySnapshot(checkedCurrent); }
     });
   } finally { await disposeDirectorySnapshot(source); }
 }

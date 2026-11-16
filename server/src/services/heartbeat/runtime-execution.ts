@@ -1,3 +1,4 @@
+import { withScopedTaskWorkspaceAuthority } from "../scoped-task-workspace-authority.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { readContextCompactionRequest } from "../context-compaction.js";
 import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
@@ -869,7 +870,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         await dispatchWithTiming(
           (markDispatchStarted) => {
             input.effects.onLegacyAdapterEntered();
-            return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
+            return withScopedTaskWorkspaceAuthority(db, {
+              companyId: agent.companyId, agentId: agent.id, issueId, runId: run.id,
+              workspaceId: persistedExecutionWorkspace?.id ?? null, workspaceCwd: executionWorkspace.cwd, target: executionTarget, signal: executionControl.controller.signal,
+            }, () => withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
               getFreshSessionHandoff,
               agentIdentity,
               observability,
@@ -954,7 +958,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                 });
               },
               authToken: authToken ?? undefined,
-            }));
+            })));
           },
         );
       if (!guardedDispatch.dispatched) return { dispatched: false };

@@ -1,7 +1,7 @@
 import { ControllerSourceProtectionError } from "./controller-source-error.js";
 import { constants } from "node:fs";
 import fs from "node:fs/promises";
-import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assertControllerSourcePathAllowed, assertControllerSourceSnapshotRoot, controllerExecutionProtected } from "./controller-source-protection.js";
 
@@ -52,7 +52,7 @@ export async function createControllerSourceStagingDirectory(): Promise<string> 
 }
 
 /** Materialize only approved resolved sources; providers always receive a flat snapshot without tar -h. */
-export async function createControllerSourceSnapshot(source: string, options?: { excludeNames?: ReadonlySet<string> }): Promise<{ directory: string; cleanup: () => Promise<void> }> {
+export async function createControllerSourceSnapshot(source: string, options?: { excludeNames?: ReadonlySet<string>; rejectLinks?: boolean; preserveFileModes?: boolean }): Promise<{ directory: string; cleanup: () => Promise<void> }> {
   if (!controllerExecutionProtected()) throw refused();
   await assertControllerSourcePathAllowed(source);
   const directory = await createControllerSourceStagingDirectory();
@@ -61,6 +61,7 @@ export async function createControllerSourceSnapshot(source: string, options?: {
   const copy = async (from: string, to: string, depth: number): Promise<void> => {
     if (++entries > CONTROLLER_ASSET_LIMITS.entries || depth > CONTROLLER_ASSET_LIMITS.depth) throw refused();
     await assertControllerSourcePathAllowed(from);
+    if (options?.rejectLinks && (await lstat(from)).isSymbolicLink()) throw refused();
     const resolved = await realpath(from);
     await assertControllerSourcePathAllowed(resolved);
     const info = await lstat(resolved);
@@ -76,7 +77,8 @@ export async function createControllerSourceSnapshot(source: string, options?: {
       if (info.size > CONTROLLER_ASSET_LIMITS.snapshotBytes - bytes) throw refused();
       const contents = await readControllerSourceFile(resolved);
       bytes += contents.length; if (bytes > CONTROLLER_ASSET_LIMITS.snapshotBytes) throw refused();
-      await writeFile(to, contents, { mode: info.mode & 0o111 ? 0o700 : 0o600, flag: "wx" });
+      await writeFile(to, contents, { mode: options?.preserveFileModes ? info.mode & 0o777 : info.mode & 0o111 ? 0o700 : 0o600, flag: "wx" });
+      if (options?.preserveFileModes) await chmod(to, info.mode & 0o777);
     } else throw refused();
   };
   const cleanup = async () => { await rm(directory, { recursive: true, force: true }); };
