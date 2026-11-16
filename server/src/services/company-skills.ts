@@ -1,3 +1,5 @@
+import { createControllerSourceSnapshot } from "@paperclipai/adapter-utils/controller-source-materialization";
+import { ControllerSourceProtectionError } from "@paperclipai/adapter-utils/controller-source-error";
 import { controllerSkillExporter, type ProtectedSkillRunExport } from "./controller-skill-export.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { skillExecutionContent } from "./skill-execution-content.js";
@@ -6124,7 +6126,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         inArray(companySkills.key, [...requested]), await visibility().condition(companyId)));
     }
     const preparedSelection = requested && installed.length === requested.size;
-    if (!preparedSelection) {
+    // Runtime export consumes installed authoritative rows. Inventory/catalog
+    // reconciliation remains an administrative operation, outside preparation.
+    if (!preparedSelection && !options.protectedRunExport) {
       await measureRunPhase("skills.inventory", () => ensureSkillInventoryCurrent(companyId));
     }
     return withSkillPackageReadScope(db, () => withSkillVersionCacheLock(db, companyId, async () => {
@@ -6161,6 +6165,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       if (owner) skills.splice(index === -1 ? skills.length : index, 0,
         { ...owner, key, slug: owner.key === key ? owner.slug : key.split("/").at(-1)! });
     }
+    if (options.protectedRunExport && (!selectedKeys || [...selectedKeys].some(key => !skills.some(skill => skill.key === key))))
+      throw new ControllerSourceProtectionError("Protected skill delivery requires installed selected skills");
     await packages.prefetch(companyId, skills.flatMap(skill => {
       const id = options.versionSelections?.get(skill.key) ?? skill.currentVersionId;
       return id ? [id] : [];
@@ -6169,49 +6175,62 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     const selected: Array<{ skill: CompanySkill; selection: RuntimeSkillVersionSelection; installedResolution: RuntimeSkillSourceResolution | null }> = [];
     for (let skill of skills) {
       if (selectedKeys && !selectedKeys.has(skill.key)) continue;
-      let installedResolution: RuntimeSkillSourceResolution | null = null;
-      const unpinned = !options.versionSelections?.get(skill.key);
-      const installedDirectory = options.snapshotLatest && unpinned && skill.sourceType === "local_path"
-        && skill.metadata?.sourceKind !== "paperclip_bundled"
-        ? await resolveExistingSkillDirectory(normalizeSkillDirectory(skill)) : null;
-      const installedVersion = installedDirectory && skill.currentVersionId
-        ? await readVersionMetadata(companyId, skill.id, skill.currentVersionId) : null;
-      const installedManifest = installedVersion?.packageSnapshotId
-        ? await packages.manifest(companyId, installedVersion.packageSnapshotId) : null;
-      const installedUnchanged = installedDirectory && installedVersion && installedManifest
-        && skillVersionUsesWholePackage(installedVersion, installedManifest)
-        ? await verifyFileManifest(installedDirectory, installedManifest.files)
-        : false;
-      if (skill.sourceType === "local_path" && skill.metadata?.sourceKind !== "paperclip_bundled"
-        && !installedUnchanged && options.snapshotLatest && unpinned && (!skill.currentVersionId || installedDirectory)) {
-        // Capture installed bytes only. Older remote imports can have no
-        // version yet; execution must not fetch their missing files upstream.
-        const installed: RuntimeSkillSourceResolution | null = installedDirectory ? { status: "available", source: installedDirectory }
-          : await resolveRuntimeSkillSource(companyId, skill, { ...options, snapshotLatest: false, materializeMissing: false });
-        const inventory = installed?.status === "available"
-          ? await collectVersionFileInventoryFromDirectory(installed.source)
-          : skill.fileInventory.length === 1 && skill.fileInventory[0]?.path === "SKILL.md" && skill.markdown
-            ? [{ path: "SKILL.md", kind: "skill" as const, content: skill.markdown }] : null;
-        if (inventory) {
-          const previous = installedVersion ?? (skill.currentVersionId ? await readVersionMetadata(companyId, skill.id, skill.currentVersionId) : null);
-          const previousHash = previous?.packageSnapshotId && skillVersionUsesWholePackage(previous,
-            installedManifest ?? await packages.manifest(companyId, previous.packageSnapshotId))
-            ? (await packages.descriptor(companyId, previous.packageSnapshotId)).contentHash
-            : previous ? skillSnapshotHash(await packages.versionFiles(previous)) : null;
-          if (previousHash !== skillSnapshotHash(inventory)) {
-            const version = await createVersion(companyId, skill.id, { label: "Execution snapshot" }, { type: "system" },
-              { skipInventoryRefresh: true, skill, fileInventory: inventory });
-            skill = { ...skill, currentVersionId: version.id };
-          }
-        } else installedResolution = installed;
-      }
-      const versionId = options.versionSelections?.get(skill.key)
-        ?? (options.snapshotLatest || skill.sourceType !== "local_path" || skill.metadata?.sourceKind === "paperclip_bundled" || skill.accessSourceId ? skill.currentVersionId : null);
-      if (skill.sourceType === "managed" && !versionId) throw unprocessable("Managed skill has no committed version.");
-      selected.push({ skill, installedResolution, selection: {
-        companyId, skillId: skill.id, key: skill.key, runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
-        versionId, currentVersionId: skill.currentVersionId,
-      } });
+      let capture: Awaited<ReturnType<typeof createControllerSourceSnapshot>> | undefined;
+      try {
+        let installedResolution: RuntimeSkillSourceResolution | null = null;
+        const unpinned = !options.versionSelections?.get(skill.key);
+        const savedManagedContent = Boolean(options.protectedRunExport && skill.metadata?.sourceKind === "managed_local");
+        if (savedManagedContent && unpinned && !skill.currentVersionId)
+          throw new ControllerSourceProtectionError("Protected native skill delivery requires a saved version");
+        const originalDirectory = options.snapshotLatest && unpinned && !savedManagedContent && skill.sourceType === "local_path"
+          && skill.metadata?.sourceKind !== "paperclip_bundled"
+          ? await resolveExistingSkillDirectory(normalizeSkillDirectory(skill)) : null;
+        if (options.protectedRunExport && originalDirectory) capture = await createControllerSourceSnapshot(originalDirectory,
+          { excludeNames: new Set([".git", "node_modules"]) });
+        const installedDirectory = capture?.directory ?? originalDirectory;
+        const installedVersion = installedDirectory && skill.currentVersionId
+          ? await readVersionMetadata(companyId, skill.id, skill.currentVersionId) : null;
+        const installedManifest = installedVersion?.packageSnapshotId
+          ? await packages.manifest(companyId, installedVersion.packageSnapshotId) : null;
+        const installedUnchanged = installedDirectory && installedVersion && installedManifest
+          && skillVersionUsesWholePackage(installedVersion, installedManifest)
+          ? await verifyFileManifest(installedDirectory, installedManifest.files)
+          : false;
+        if (skill.sourceType === "local_path" && skill.metadata?.sourceKind !== "paperclip_bundled"
+          && !installedUnchanged && options.snapshotLatest && unpinned && (!skill.currentVersionId || installedDirectory)) {
+          // Capture installed bytes only. Older remote imports can have no
+          // version yet; execution must not fetch their missing files upstream.
+          if (options.protectedRunExport && !installedDirectory)
+            throw new ControllerSourceProtectionError("Protected local skill capture requires an available approved source");
+          const installed: RuntimeSkillSourceResolution | null = installedDirectory ? { status: "available", source: installedDirectory }
+            : await resolveRuntimeSkillSource(companyId, skill, { ...options, snapshotLatest: false, materializeMissing: false });
+          const inventory = installed?.status === "available"
+            ? await collectVersionFileInventoryFromDirectory(installed.source)
+            : skill.fileInventory.length === 1 && skill.fileInventory[0]?.path === "SKILL.md" && skill.markdown
+              ? [{ path: "SKILL.md", kind: "skill" as const, content: skill.markdown }] : null;
+          if (inventory) {
+            const previous = installedVersion ?? (skill.currentVersionId ? await readVersionMetadata(companyId, skill.id, skill.currentVersionId) : null);
+            const previousHash = previous?.packageSnapshotId && skillVersionUsesWholePackage(previous,
+              installedManifest ?? await packages.manifest(companyId, previous.packageSnapshotId))
+              ? (await packages.descriptor(companyId, previous.packageSnapshotId)).contentHash
+              : previous ? skillSnapshotHash(await packages.versionFiles(previous)) : null;
+            if (previousHash !== skillSnapshotHash(inventory)) {
+              const version = await createVersion(companyId, skill.id, { label: "Execution snapshot" }, { type: "system" },
+                { skipInventoryRefresh: true, skill, fileInventory: inventory });
+              skill = { ...skill, currentVersionId: version.id };
+            }
+          } else installedResolution = installed;
+        }
+        const versionId = options.versionSelections?.get(skill.key)
+          ?? (options.snapshotLatest || skill.sourceType !== "local_path" || skill.metadata?.sourceKind === "paperclip_bundled" || skill.accessSourceId ? skill.currentVersionId : null);
+        if (skill.sourceType === "managed" && !versionId) throw unprocessable("Managed skill has no committed version.");
+        if (options.protectedRunExport && !versionId)
+          throw new ControllerSourceProtectionError("Protected skill delivery requires a saved version");
+        selected.push({ skill, installedResolution, selection: {
+          companyId, skillId: skill.id, key: skill.key, runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
+          versionId, currentVersionId: skill.currentVersionId,
+        } });
+      } finally { await capture?.cleanup(); }
     }
     const admitted = await options.selectVersions?.(selected.map(item => item.selection));
     const exporter = options.protectedRunExport ? controllerSkillExporter(db, companyId, options.protectedRunExport) : null;

@@ -1,3 +1,4 @@
+import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { execFileSync } from "node:child_process";
 import { readCheckedCacheFile } from "../services/checked-cache-file.js";
@@ -23,6 +24,14 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
+// Node built-in named exports are snapshots of the mutable default object.
+// Route named opens through that object so inode-read/race instrumentation also
+// observes the real adapter-utils descriptor reader, not just server callers.
+vi.mock("node:fs/promises",async importOriginal=>{
+  const actual=await importOriginal<typeof import("node:fs/promises")>();
+  const native=actual as typeof actual & {default:typeof actual};
+  return {...actual,open:(...args:Parameters<typeof actual.open>)=>native.default.open(...args)};
+});
 const accessFaults=vi.hoisted(()=>new Map<string,()=>void>());
 vi.mock("../services/skill-access.js",async importOriginal=>{
   const actual=await importOriginal<typeof import("../services/skill-access.js")>();
@@ -74,7 +83,14 @@ const support=await getEmbeddedPostgresTestSupport();
     return {...f,store,files,snapshot,paths:skillPackagePaths(f.companyId,snapshot)};
   }
   async function countSentinelReads(filename:string,beforeOpen?:(filename:string)=>Promise<void>){
-    const sentinel=await fs.stat(filename),open=fs.open.bind(fs);let reads=0;
+    const sentinel=await fs.stat(filename),open=fs.open.bind(fs),readFile=fs.readFile.bind(fs);let reads=0;
+    vi.spyOn(fs,"readFile").mockImplementation((async(...args:Parameters<typeof fs.readFile>)=>{
+      if(typeof args[0]==="string"){
+        const stat=await fs.stat(args[0]).catch(()=>null);
+        if(stat?.dev===sentinel.dev&&stat.ino===sentinel.ino)reads++;
+      }
+      return readFile(...args);
+    }) as typeof fs.readFile);
     vi.spyOn(fs,"open").mockImplementation(async(...args:Parameters<typeof fs.open>)=>{
       await beforeOpen?.(String(args[0]));const handle=await open(...args),stat=await handle.stat();
       if(stat.dev===sentinel.dev&&stat.ino===sentinel.ino){
@@ -158,6 +174,108 @@ const support=await getEmbeddedPostgresTestSupport();
       if(mode==="protected")await expect(readCheckedCacheFile(target,4,4)).rejects.toThrow(/require Linux descriptor/);
       else expect((await readCheckedCacheFile(target,4,4)).toString()).toBe("safe");
     }finally{Object.defineProperty(process,"platform",descriptor);}
+  });
+  async function prepareLocalCapture(kind:string){
+    const f=kind==="verification fast path"?await packageFixture():await fixture();
+    if(kind!=="verification fast path")vi.spyOn(storageModule,"getStorageService").mockReturnValue(createStorageService(createLocalDiskStorageProvider(path.join(root,"local-objects"))));
+    const source=path.join(kind==="outside"||kind==="verification fast path"?path.join(root,"keys"):home,"local-skill");
+    const sentinel=path.join(root,"keys/local-sentinel");
+    const content=f.versions[0].fileInventory[0].content;
+    await fs.writeFile(sentinel,content,{mode:0o600});
+    if(kind!=="missing"){
+      await fs.mkdir(source,{recursive:true});
+      if(kind==="hardlink")await fs.link(sentinel,path.join(source,"SKILL.md"));
+      else if(kind==="symlink")await fs.symlink(sentinel,path.join(source,"SKILL.md"));
+      else await fs.writeFile(path.join(source,"SKILL.md"),content,{mode:0o600});
+      if(kind==="verification fast path"){
+        await fs.mkdir(path.join(source,"references"));await fs.writeFile(path.join(source,"references/example.md"),"reference 1");
+      }
+    }
+    await db.update(companySkills).set({sourceType:"local_path",sourceLocator:source,currentVersionId:kind==="verification fast path"?f.versions[0].id:null}).where(eq(companySkills.id,f.skillId));
+    const selectVersions=vi.fn(async(entries:Array<{key:string;versionId:string|null}>)=>{
+      await db.update(heartbeatRuns).set({contextSnapshot:{skillVersions:Object.fromEntries(entries.map(e=>[e.key,e.versionId])),skillSelectionSnapshot:true}}).where(eq(heartbeatRuns.id,f.runId));
+      return new Set(entries.map(e=>e.key));
+    });
+    const prepare=()=>withSkillActor(f.actor,()=>companySkillService(db).withRuntimeSkillEntries(f.companyId,{
+      onlyKeys:new Set([f.key]),snapshotLatest:true,protectedRunExport:f.binding,selectVersions,
+    },entries=>entries));
+    return {...f,source,sentinel,selectVersions,prepare};
+  }
+  it.each(["outside","hardlink","symlink","missing","verification fast path"])("refuses fresh local %s before byte reads, version writes or pins",async kind=>{
+    const f=await prepareLocalCapture(kind),before=await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId,f.skillId));
+    const watched=kind==="outside"||kind==="verification fast path"?path.join(f.source,"SKILL.md"):f.sentinel;
+    const reads=await countSentinelReads(watched);
+    const error=await f.prepare().catch(error=>error);
+    expect(error).toMatchObject({code:"controller_source_protection_refused"});expect(reads()).toBe(0);expect(f.selectVersions).not.toHaveBeenCalled();
+    expect(await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId,f.skillId))).toEqual(before);
+    const [run]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,f.runId));expect(run.contextSnapshot?.skillVersions).toEqual({[f.key]:f.versions[0].id});
+    expect(await fs.readdir(assets).catch(()=>[])).toEqual([]);
+  });
+  it("refuses a fresh-local parent swap before sentinel bytes and removes partial staging",async()=>{
+    const f=await prepareLocalCapture("approved"),replacement=path.join(root,"keys/local-replacement");
+    await fs.mkdir(replacement);await fs.link(f.sentinel,path.join(replacement,"SKILL.md"));let swapped=false;
+    const reads=await countSentinelReads(f.sentinel,async filename=>{
+      if(filename===path.join(f.source,"SKILL.md")&&!swapped){swapped=true;await fs.rename(f.source,`${f.source}-old`);await fs.symlink(replacement,f.source);}
+    });
+    await expect(f.prepare()).rejects.toMatchObject({code:"controller_source_protection_refused"});expect(swapped).toBe(true);
+    expect(reads()).toBe(0);expect(f.selectVersions).not.toHaveBeenCalled();expect(await fs.readdir(assets)).toEqual([]);
+  });
+  it("keeps Git and dependency trees out of fresh local snapshots without reading them",async()=>{
+    const f=await prepareLocalCapture("approved");
+    for(const name of [".git","node_modules"]){await fs.mkdir(path.join(f.source,name));await fs.link(f.sentinel,path.join(f.source,name,"private"));}
+    const reads=await countSentinelReads(f.sentinel);const entries=await f.prepare();
+    expect(reads()).toBe(0);expect(await fs.readdir(entries[0].source)).toEqual(["SKILL.md"]);
+    await cleanups[0]();expect(await fs.readdir(assets)).toEqual([]);
+  });
+  it("removes the checked local snapshot when version publication fails",async()=>{
+    const f=await prepareLocalCapture("approved"),failure=new Error("synthetic package publication failure");
+    vi.spyOn(storageModule.getStorageService(),"putFile").mockRejectedValueOnce(failure);
+    await expect(f.prepare()).rejects.toBe(failure);expect(f.selectVersions).not.toHaveBeenCalled();
+    expect(await fs.readdir(assets)).toEqual([]);
+  });
+  it("captures an approved fresh local skill through private staging and removes both temporary trees",async()=>{
+    const f=await prepareLocalCapture("approved");const entries=await f.prepare();expect(entries).toHaveLength(1);
+    expect(await fs.readFile(path.join(entries[0].source,"SKILL.md"),"utf8")).toContain("Pinned 1");expect(f.selectVersions).toHaveBeenCalledOnce();
+    expect(await fs.readdir(assets)).toHaveLength(1);await cleanups[0]();expect(await fs.readdir(assets)).toEqual([]);
+  });
+  it.each(["latest saved","historical pin"])("uses %s native managed-local content without reading its working copy or reconciling inventory",async kind=>{
+    const f=await fixture(),working=path.join(root,"keys/native-working");await fs.mkdir(working);await fs.writeFile(path.join(working,"SKILL.md"),"unpublished protected working content",{mode:0o600});
+    await db.update(companySkills).set({sourceType:"local_path",sourceLocator:working,metadata:{sourceKind:"managed_local"},currentVersionId:f.versions[0].id}).where(eq(companySkills.id,f.skillId));
+    // Saved native edits publish a new immutable version and advance this pointer.
+    await db.update(companySkills).set({currentVersionId:f.versions[1].id}).where(eq(companySkills.id,f.skillId));
+    const expected=kind==="historical pin"?f.versions[0]:f.versions[1],reads=await countSentinelReads(path.join(working,"SKILL.md"));
+    const entries=await withSkillActor(f.actor,()=>companySkillService(db).withRuntimeSkillEntries(f.companyId,{
+      selectionConfig:writePaperclipSkillSyncPreference({},[f.key]),includeLegacy:true,snapshotLatest:true,protectedRunExport:f.binding,
+      ...(kind==="historical pin"?{versionSelections:new Map([[f.key,expected.id]])}:{}),
+      selectVersions:async selected=>{await db.update(heartbeatRuns).set({contextSnapshot:{skillVersions:Object.fromEntries(selected.map(e=>[e.key,e.versionId])),skillSelectionSnapshot:true}}).where(eq(heartbeatRuns.id,f.runId));return new Set(selected.map(e=>e.key));},
+    },entries=>entries));
+    expect(entries).toHaveLength(1);expect(entries[0].versionId).toBe(expected.id);expect(reads()).toBe(0);
+    expect(await fs.readFile(path.join(entries[0].source,"SKILL.md"),"utf8")).toContain(kind==="historical pin"?"Pinned 1":"Pinned 2");
+  });
+  it("refuses missing committed native content without reading the working copy",async()=>{
+    const f=await fixture(),working=path.join(root,"keys/native-uncommitted");await fs.mkdir(working);await fs.writeFile(path.join(working,"SKILL.md"),"not published",{mode:0o600});
+    await db.update(companySkills).set({sourceType:"local_path",sourceLocator:working,metadata:{sourceKind:"managed_local"},currentVersionId:null}).where(eq(companySkills.id,f.skillId));
+    const reads=await countSentinelReads(path.join(working,"SKILL.md"));
+    await expect(withSkillActor(f.actor,()=>companySkillService(db).withRuntimeSkillEntries(f.companyId,{onlyKeys:new Set([f.key]),snapshotLatest:true,protectedRunExport:f.binding},e=>e))).rejects.toMatchObject({code:"controller_source_protection_refused"});
+    expect(reads()).toBe(0);expect(await fs.readdir(assets).catch(()=>[])).toEqual([]);
+  });
+  it("refuses an uninstalled selected skill before runtime inventory reconciliation",async()=>{
+    const f=await fixture(),read=vi.spyOn(fs,"readFile"),walk=vi.spyOn(fs,"readdir"),select=vi.fn();
+    await expect(withSkillActor(f.actor,()=>companySkillService(db).withRuntimeSkillEntries(f.companyId,{onlyKeys:new Set([f.key,"missing/selected"]),snapshotLatest:true,protectedRunExport:f.binding,selectVersions:select},e=>e))).rejects.toMatchObject({code:"controller_source_protection_refused"});
+    expect(read).not.toHaveBeenCalled();expect(walk).not.toHaveBeenCalled();expect(select).not.toHaveBeenCalled();
+    expect(await db.select().from(companySkills).where(eq(companySkills.companyId,f.companyId))).toHaveLength(1);
+  });
+  it("retains an admitted historical key after a skill rename without inventory refresh",async()=>{
+    const f=await fixture();await db.update(companySkills).set({key:`company/${f.companyId}/renamed`,slug:"renamed"}).where(eq(companySkills.id,f.skillId));
+    const entries=await withSkillActor(f.actor,()=>companySkillService(db).withRuntimeSkillEntries(f.companyId,{
+      onlyKeys:new Set([f.key]),versionSelections:new Map([[f.key,f.versions[0].id]]),snapshotLatest:true,protectedRunExport:f.binding,
+    },e=>e));
+    expect(entries).toHaveLength(1);expect(entries[0].key).toBe(f.key);expect(entries[0].versionId).toBe(f.versions[0].id);
+  });
+  it("uses committed external-local content when its original working directory is missing",async()=>{
+    const f=await fixture();await db.update(companySkills).set({sourceType:"local_path",sourceLocator:path.join(home,"missing-original"),currentVersionId:f.versions[0].id}).where(eq(companySkills.id,f.skillId));
+    const entries=await withSkillActor(f.actor,()=>companySkillService(db).withRuntimeSkillEntries(f.companyId,{onlyKeys:new Set([f.key]),snapshotLatest:true,protectedRunExport:f.binding},e=>e));
+    expect(entries).toHaveLength(1);expect(entries[0].versionId).toBe(f.versions[0].id);expect(await fs.readFile(path.join(entries[0].source,"SKILL.md"),"utf8")).toContain("Pinned 1");
   });
   it("delivers an actual pinned native version outside read roots through protected Codex home staging",async()=>{
     const f=await fixture();

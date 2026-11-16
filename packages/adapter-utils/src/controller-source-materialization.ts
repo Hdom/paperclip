@@ -52,7 +52,7 @@ export async function createControllerSourceStagingDirectory(): Promise<string> 
 }
 
 /** Materialize only approved resolved sources; providers always receive a flat snapshot without tar -h. */
-export async function createControllerSourceSnapshot(source: string): Promise<{ directory: string; cleanup: () => Promise<void> }> {
+export async function createControllerSourceSnapshot(source: string, options?: { excludeNames?: ReadonlySet<string> }): Promise<{ directory: string; cleanup: () => Promise<void> }> {
   if (!controllerExecutionProtected()) throw refused();
   await assertControllerSourcePathAllowed(source);
   const directory = await createControllerSourceStagingDirectory();
@@ -70,7 +70,7 @@ export async function createControllerSourceSnapshot(source: string): Promise<{ 
       await mkdir(to, { recursive: true, mode: 0o700 });
       const children = await readdir(resolved);
       if (children.length > CONTROLLER_ASSET_LIMITS.entries - entries) throw refused();
-      for (const name of children) await copy(path.join(resolved, name), path.join(to, name), depth + 1);
+      for (const name of children) if (!options?.excludeNames?.has(name)) await copy(path.join(resolved, name), path.join(to, name), depth + 1);
       active.delete(resolved);
     } else if (info.isFile()) {
       if (info.size > CONTROLLER_ASSET_LIMITS.snapshotBytes - bytes) throw refused();
