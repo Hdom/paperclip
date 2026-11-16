@@ -105,7 +105,7 @@ export function nativeWorkspaceFinalizationOwnerCanUpgrade(profile: Record<strin
  * There is deliberately no wall-clock timeout that can steal a slow export.
  */
 export async function withNativeWorkspaceFinalizationOwnership<T>(
-  input: { db: Db; companyId: string; runId: string; retainedRepairActionId?: string },
+  input: { db: Db; companyId: string; runId: string; retainedRepairActionId?: string; liveLegacyPublication?: boolean },
   action: (ownership: NativeWorkspaceFinalizationOwnership) => Promise<T>,
 ): Promise<{ acquired: false; reason: NativeWorkspaceFinalizationWaitReason } | { acquired: true; value: T }> {
   const identity = await currentNativeControllerIdentity();
@@ -121,7 +121,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
     ...(deployment?.exclusiveVolume && deployment.volumeId ? { volumeId: deployment.volumeId } : {}),
   };
   const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
-    input.retainedRepairActionId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"]) : eq(heartbeatRuns.runtimeMode, "native"));
+    input.retainedRepairActionId || input.liveLegacyPublication ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"]) : eq(heartbeatRuns.runtimeMode, "native"));
   const owned = and(scope, sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY}->>'token' = ${owner.token}`);
   const runKey = nativeWorkspaceFinalizationLockKey(input.companyId, input.runId);
   let claimed = false;

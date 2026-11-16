@@ -84,6 +84,36 @@
     {
       "cwd": "server",
       "files": [
+        "src/services/native-runtime/native-workspace-owner-restart-recovery.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/native-runtime/native-workspace-finalization-supersession.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/scoped-task-workspace-authority.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
         "src/__tests__/controller-skill-export.test.ts"
       ],
       "extra": [
@@ -445,6 +475,11 @@
     {
       "cwd": ".",
       "files": [
+        "packages/adapter-utils/src/controller-workspace-archive.test.ts",
+        "packages/adapter-utils/src/workspace-restore-merge.test.ts",
+        "packages/adapter-utils/src/workspace-restore-unchanged.test.ts",
+        "packages/adapter-utils/src/workspace-restore-teardown.test.ts",
+        "packages/adapter-utils/src/controller-workspace-authority.test.ts",
         "packages/adapter-utils/src/controller-source-protection.test.ts",
         "packages/adapter-utils/src/controller-source-materialization.test.ts",
         "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts",
@@ -792,6 +827,14 @@
     "ui/src/pages/Secrets.render.test.tsx",
     "ui/src/pages/secrets/secret-path.test.ts",
     "src/__tests__/controller-skill-export.test.ts",
-    "src/__tests__/skill-package-store.test.ts"
+    "src/__tests__/skill-package-store.test.ts",
+    "src/__tests__/scoped-task-workspace-authority.test.ts",
+    "packages/adapter-utils/src/controller-workspace-authority.test.ts",
+    "src/services/native-runtime/native-workspace-owner-restart-recovery.test.ts",
+    "src/services/native-runtime/native-workspace-finalization-supersession.test.ts",
+    "packages/adapter-utils/src/controller-workspace-archive.test.ts",
+    "packages/adapter-utils/src/workspace-restore-merge.test.ts",
+    "packages/adapter-utils/src/workspace-restore-unchanged.test.ts",
+    "packages/adapter-utils/src/workspace-restore-teardown.test.ts"
   ]
 }

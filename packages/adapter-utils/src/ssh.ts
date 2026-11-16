@@ -1,3 +1,4 @@
+import { pipeline } from "node:stream/promises";
 import { isDeepStrictEqual } from "node:util";
 import { parseSshRunScope, sshRunScopeControl, sshRunScopeProbe, supervisedSshCommand,
   verifiedSshRunScopeStop, type SshRunScope } from "./ssh-run-scope.js";
@@ -2264,4 +2265,31 @@ export async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Bounded plain-archive download for protected native workspaces. Extraction is a separate validated step. */
+export async function downloadControllerWorkspaceArchive(input: {
+  spec: SshRemoteExecutionSpec; remoteDir: string; archivePath: string; exclude: string[];
+}): Promise<void> {
+  const auth = await createSshAuthArgs(input.spec);
+  const command = `cd ${shellQuote(input.remoteDir)} && tar ${[...tarExcludeArgs(input.exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`;
+  const child = spawn("ssh", [...auth.args, "-p", String(input.spec.port), `${input.spec.username}@${input.spec.host}`,
+    `sh -c ${shellQuote(supervisedSshCommand(input.spec.runScope, command))}`], { stdio: ["ignore", "pipe", "pipe"] });
+  let bytes = 0;
+  const limit = 280 * 1024 * 1024; // 256 MiB contents plus bounded tar headers/padding.
+  const counter = new Transform({ transform(chunk, _encoding, callback) {
+    bytes += chunk.length;
+    callback(bytes > limit ? new Error("Protected workspace archive exceeds download limit") : null, chunk);
+  } });
+  child.stderr.resume();
+  const closed = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+  void closed.catch(() => undefined);
+  try {
+    await pipeline(child.stdout, counter, createWriteStream(input.archivePath, { flags: "wx", mode: 0o600 }));
+    if (await closed !== 0) throw new Error("Protected SSH workspace download failed");
+  } catch (error) {
+    child.kill("SIGKILL");
+    await closed.catch(() => undefined);
+    throw error;
+  } finally { await auth.cleanup(); }
 }

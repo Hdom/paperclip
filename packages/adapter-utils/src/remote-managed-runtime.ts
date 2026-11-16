@@ -1,3 +1,4 @@
+import { prepareControllerSshWorkspace } from "./controller-ssh-workspace.js";
 import { createControllerSourceSnapshot } from "./controller-source-materialization.js";
 import { controllerExecutionProtected } from "./controller-source-protection.js";
 import path from "node:path";
@@ -137,7 +138,10 @@ export async function prepareRemoteManagedRuntime(input: {
     : baseWorkspaceRemoteDir;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
 
-  const preparedWorkspace = syncWorkspace
+  const scopedWorkspace = syncWorkspace && controllerExecutionProtected()
+    ? await prepareControllerSshWorkspace({ spec: input.spec, runId: input.runId, localDir: input.workspaceLocalDir,
+        remoteDir: workspaceRemoteDir, workspaceExclude: input.workspaceExclude, onProgress: input.onProgress }) : null;
+  const preparedWorkspace = syncWorkspace && !scopedWorkspace
     ? await prepareWorkspaceForSshExecution({
         spec: input.spec,
         localDir: input.workspaceLocalDir,
@@ -190,6 +194,7 @@ export async function prepareRemoteManagedRuntime(input: {
       } finally { await snapshot?.cleanup(); }
     }
   } catch (error) {
+    if (scopedWorkspace) await scopedWorkspace.restore(input.onProgress);
     if (preparedWorkspace && baselineSnapshot) {
       await restoreWorkspaceFromSshExecution({
         spec: input.spec,
@@ -258,6 +263,7 @@ export async function prepareRemoteManagedRuntime(input: {
     assetDirs,
     additionalSourceDirs,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
+      if (scopedWorkspace) await scopedWorkspace.restore(onProgress);
       if (preparedWorkspace && baselineSnapshot) {
         await restoreWorkspaceFromSshExecution({
           spec: input.spec,
