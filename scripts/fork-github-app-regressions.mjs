@@ -49,7 +49,7 @@ test(root, ["packages/adapter-utils/src/controller-source-protection.test.ts", "
   "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"]);
 test(root, ["ui/src/pages/apps/AppDetail.test.tsx", "ui/src/pages/apps/AppsConnect.test.tsx", "ui/src/pages/apps/app-detail/GitHubAppConnectionPermissions.test.tsx", "ui/src/pages/secrets/GitHubAppKeyLifecycle.test.tsx"]);
 test(root, ["packages/shared/src/app-definitions.test.ts"]);
-test(root, ["ui/src/pages/AgentToolsTab.test.tsx", "ui/src/pages/secrets/SigningKeysTab.test.tsx", "ui/src/components/GitHubProjectAppControls.test.tsx", "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx", "ui/src/components/AgentContextualSidebar.test.tsx", "ui/src/pages/agent-detail-navigation.test.ts"]);
+test(root, ["ui/src/pages/Secrets.render.test.tsx", "ui/src/pages/secrets/secret-path.test.ts", "ui/src/pages/AgentToolsTab.test.tsx", "ui/src/pages/secrets/SigningKeysTab.test.tsx", "ui/src/components/GitHubProjectAppControls.test.tsx", "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx", "ui/src/components/AgentContextualSidebar.test.tsx", "ui/src/pages/agent-detail-navigation.test.ts"]);
 
 
 test(root, ["packages/adapter-utils/src/ssh-run-scope.test.ts", "packages/adapter-utils/src/ssh-run-scope-kernel.test.ts",

@@ -83,7 +83,7 @@ for (const mobile of [false, true]) {
     await page.route(`**/api/companies/${company.id}/signing-keys`, async route => {
       expect(route.request().method()).toBe("GET");
       await fulfill(route, { canManage: true, keys: data.roles.map(row => ({ id: row.secretId, name: `GitHub App ${row.role} signing key`, description: "Synthetic native signing key",
-        status: "active", type: "github_app", algorithm: null, publicFingerprint: null, latestVersion: row.latestVersion, revision: null, githubApp: { role: row.role, appId: row.appId }, createdAt: "2026-11-14T00:00:00Z", updatedAt: "2026-11-14T00:00:00Z" })) });
+        status: "active", type: "github_app", algorithm: null, publicFingerprint: null, latestVersion: row.latestVersion, revision: null, folderPath: null, canOrganize: true, organizationRevision: 0, githubApp: { role: row.role, appId: row.appId }, createdAt: "2026-11-14T00:00:00Z", updatedAt: "2026-11-14T00:00:00Z" })) });
     });
     await page.route(`**/api/companies/${company.id}/signing-keys/*/versions`, async route => {
       expect(route.request().method()).toBe("GET");
@@ -109,13 +109,15 @@ for (const mobile of [false, true]) {
     // Exercise the actual company-aware deep link. A legacy /settings URL
     // silently redirects to General and drops the selected signing key.
     await page.getByRole("link", { name: "Signing key in Secrets", exact: true }).click();
-    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/company/settings/secrets\\?signingKey=${data.roles[1].secretId}$`));
-    const linkedKey = page.getByRole("dialog", { name: "GitHub App implementer signing key", exact: true });
-    await expect(linkedKey.getByText("Active version: 1", { exact: false })).toBeVisible();
+    await expect.poll(() => new URL(page.url()).searchParams.get("signingKey")).toBe(data.roles[1].secretId);
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/company/settings/secrets`));
+    const linkedKey = page.getByRole("dialog", { name: /GitHub App implementer signing key/ });
+    await expect(linkedKey.getByText("Active connection version", { exact: true })).toBeVisible();
     await expect(linkedKey.getByText("Latest stored version", { exact: true })).toBeVisible();
-    await expect(linkedKey.getByRole("textbox", { name: "Signing key name", exact: true })).toHaveValue("GitHub App implementer signing key");
+    await expect(linkedKey.getByRole("textbox", { name: "Signing key name", exact: true })).toHaveCount(0);
+    await expect(linkedKey.locator('input[type="file"]')).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("github-app-connection-secret-roundtrip.png"), fullPage: !mobile });
-    await linkedKey.getByRole("link", { name: "View GitHub connection", exact: true }).click();
+    await linkedKey.getByRole("link", { name: "View connection", exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/apps/${connectionIds[1]}/permissions$`));
     await expect(page.getByRole("heading", { name: "GitHub identity", exact: true })).toBeVisible();
     expect(changes).toHaveLength(0);
@@ -139,27 +141,35 @@ for (const mobile of [false, true]) {
     await page.goto(`/${company.issuePrefix}/company/settings/secrets`);
     if (mobile) await page.getByLabel("Secrets section", { exact: true }).selectOption("signing-keys");
     else await page.getByRole("tab", { name: "Signing keys", exact: true }).click();
-    await expect(page.getByRole("table")).toBeVisible();
+    await expect(page.getByTestId(mobile ? "signing-keys-card-view" : "signing-keys-table-view")).toBeVisible();
     await page.getByRole("button", { name: "Actions for GitHub App implementer signing key", exact: true }).click();
-    await page.getByRole("menuitem", { name: "Open details", exact: true }).click();
-    const details = page.getByRole("dialog", { name: "GitHub App implementer signing key", exact: true });
-    await expect(details.getByText("Active version: 1", { exact: false })).toBeVisible();
+    await page.getByRole("menuitem", { name: "View details", exact: true }).click();
+    const details = page.getByRole("dialog", { name: /GitHub App implementer signing key/ });
+    await expect(details.getByText("Active connection version", { exact: true })).toBeVisible();
     await expect(details.getByText("Latest stored version", { exact: true })).toBeVisible();
-    await expect(details.getByLabel("Replacement GitHub App signing key", { exact: true })).toHaveAttribute("type", "file");
-    await expect(details.getByRole("button", { name: "Verify replacement", exact: true })).toBeDisabled();
+    await expect(details.locator('input[type="file"]')).toHaveCount(0);
+    await details.getByRole("button", { name: "Rotate key", exact: true }).click();
+    const rotation = page.getByRole("dialog", { name: "Rotate signing key", exact: true });
+    await expect(rotation.getByLabel("Replacement GitHub App signing key", { exact: true })).toHaveAttribute("type", "file");
+    await expect(rotation.getByRole("button", { name: "Verify replacement", exact: true })).toBeDisabled();
+    await rotation.getByRole("button", { name: "Cancel", exact: true }).click();
     // This browser fixture verifies presentation and navigation only. Separate
     // lifecycle/server tests cover staging, activation and private-key handling.
-    await details.getByRole("tab", { name: "Usage", exact: true }).click();
-    await expect(details.getByText("GitHub · implementer · Active version 1", { exact: true })).toBeVisible();
-    await details.getByRole("tab", { name: "Versions", exact: true }).click();
-    await expect(details.getByRole("cell", { name: "Stored · Active in GitHub connection", exact: true })).toBeVisible();
-    await expect(details.getByRole("cell", { name: "Latest stored", exact: true })).toBeVisible();
-    await details.getByRole("tab", { name: "Access events", exact: true }).click();
+    if (mobile) await details.getByLabel("Signing key details section").selectOption("usage");
+    else await details.getByRole("tab", { name: "Usage (1)", exact: true }).click();
+    await expect(details.getByText("GitHub · implementer · Active v1", { exact: true })).toBeVisible();
+    if (mobile) await details.getByLabel("Signing key details section").selectOption("versions");
+    else await details.getByRole("tab", { name: "Versions", exact: true }).click();
+    await expect(details.getByText("v1 · Stored · Active in GitHub connection", { exact: true })).toBeVisible();
+    await expect(details.getByText("v2 · Latest stored", { exact: true })).toBeVisible();
+    if (mobile) await details.getByLabel("Signing key details section").selectOption("access");
+    else await details.getByRole("tab", { name: "Access events", exact: true }).click();
     await expect(details.getByText("allowed · v1", { exact: true })).toBeVisible();
-    await details.getByRole("tab", { name: "Details", exact: true }).click();
+    if (mobile) await details.getByLabel("Signing key details section").selectOption("details");
+    else await details.getByRole("tab", { name: "Details", exact: true }).click();
     expect(await page.content()).not.toContain("-----BEGIN PRIVATE KEY-----");
     await page.screenshot({ path: testInfo.outputPath("github-app-native-secrets.png"), fullPage: !mobile });
-    await details.getByRole("link", { name: "View GitHub connection", exact: true }).click();
+    await details.getByRole("link", { name: "View connection", exact: true }).click();
     await expect(page.getByRole("heading", { name: "GitHub identity", exact: true })).toBeVisible();
   });
 }

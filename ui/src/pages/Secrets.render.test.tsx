@@ -1,3 +1,5 @@
+import { signingKeysApi } from "../api/signing-keys";
+import { githubProjectAppsApi } from "../api/github-project-apps";
 // @vitest-environment jsdom
 
 import { createRoot as createReactRoot, type Root } from "react-dom/client";
@@ -419,6 +421,21 @@ describe("Secrets page layout", () => {
     vi.clearAllMocks();
   });
 
+
+  it.each(["/?signingPath=services%2Fgithub", "/?secretsTab=signing-keys"])("restores signing navigation from %s and permits leaving the section", async path => {
+    const list = vi.spyOn(signingKeysApi, "list").mockResolvedValue({ canManage: false, keys: [] });
+    const apps = vi.spyOn(githubProjectAppsApi, "settings").mockRejectedValue(new Error("Synthetic instance has no prepared Apps"));
+    try {
+      const root = await renderSecrets(container, { path });
+      expect(container.querySelector('[role="tab"][data-state="active"]')?.textContent).toBe("Signing keys");
+      expect(container.querySelector('[aria-label="Signing key controls"]')).not.toBeNull();
+      const ordinary = [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(tab => tab.textContent === "Secrets")!;
+      await act(async () => { ordinary.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" })); }); await flushReact();
+      expect(container.querySelector('[role="tab"][data-state="active"]')?.textContent).toBe("Secrets");
+      expect(container.querySelector('[aria-label="Secrets controls"]')).not.toBeNull();
+      await act(async () => root.unmount());
+    } finally { list.mockRestore(); apps.mockRestore(); }
+  });
   it("uses the shared search/filter/tab affordances and keeps vault sections quiet", async () => {
     const root = await renderSecrets(container);
 

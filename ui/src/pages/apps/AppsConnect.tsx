@@ -1,4 +1,3 @@
-import { GitHubAppSetup } from "@/features/connections/github-app/GitHubAppSetup";
 import { describeError } from "@/api/errors";
 import { useQuery } from "@tanstack/react-query";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -97,8 +96,7 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
     if (!router) return <p role="alert">This connection pool plugin is unavailable. Enable it in Plugins.</p>;
     return <AiConnectionPoolConnector pluginKey={router.pluginKey} />;
   }
-  if (source === "github" && selectedCompanyId && searchParams.get("method") === "app-installation") return <GitHubAppSetup companyId={selectedCompanyId} />;
-  return <>{source === "github" && !reconnectId && <div className="mb-4 flex items-center justify-between gap-3"><p className="text-sm text-muted-foreground">Use a bot identity instead of a GitHub user account.</p><Button variant="outline" onClick={() => navigate("/apps/connect?source=github&method=app-installation")}>GitHub App installation</Button></div>}<ConnectionSetupFlow byoOnly={byoOnly} credentialSource={credentialSource} host="page"
+  return <ConnectionSetupFlow byoOnly={byoOnly} credentialSource={credentialSource} host="page"
     onComplete={returningToSkills ? returnToSkills : undefined}
-    onCancel={returningToSkills ? returnToSkills : undefined} /></>;
+    onCancel={returningToSkills ? returnToSkills : undefined} />;
 }

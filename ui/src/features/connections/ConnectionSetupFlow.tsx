@@ -1,3 +1,4 @@
+import { GitHubConnectionMethodChoice } from "./github-app/GitHubConnectionMethodChoice";
 import { connectionIntentsApi } from "@/api/connection-intents";
 import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { bindAccount } from "@/lib/account-scope";
@@ -681,7 +682,7 @@ function StandardConnectionSetupFlow({
   const connectorAvailability = useConnectorAvailability();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const connectionIntentId = interactionId?.trim()
     || searchParams.get("intent")?.trim()
     || null;
@@ -689,13 +690,19 @@ function StandardConnectionSetupFlow({
   const sourceSlug = searchParams.get("source")?.trim() || null;
   const createNewConnection = forceNewConnection || searchParams.get("new") === "1";
   const routeStage = searchParams.get("stage")?.trim() || null;
-  const requestedMethodKey = searchParams.get("method")?.trim() || null;
+  const [githubInlineMethod, setGitHubInlineMethod] = useState<string | null>(null);
+  const routeMethodKey = (host === "dialog" ? githubInlineMethod : null) || searchParams.get("method")?.trim() || null;
+  useEffect(() => { setGitHubInlineMethod(null); }, [selectedCompanyId, serviceSlug]);
   const resumeConnectionId = searchParams.get("resume")?.trim() || null;
   const oauthCallbackOutcome = searchParams.get("oauth");
   const oauthCallbackCode = searchParams.get("code");
   const githubInstallationUrl = githubRecoveryUrl(searchParams.get("installation_url"));
   const githubManagementUrl = githubRecoveryUrl(searchParams.get("management_url"));
   const reconnectConnectionId = configuredConnection?.id ?? (searchParams.get("reconnect")?.trim() || null);
+  // A recovery URL cannot replace the exact saved GitHub authentication method.
+  const requestedMethodKey = (resumeConnectionId || reconnectConnectionId) && (serviceSlug || sourceSlug || appKey) === "github"
+    ? null : routeMethodKey;
+
   const reconnectGrantKindHint: ConnectionGrantKind | null = searchParams.get("identity") === "user"
     ? "user"
     : searchParams.get("identity") === "organization"
@@ -713,6 +720,9 @@ function StandardConnectionSetupFlow({
   const routeAppKey = resolveAppsConnectRouteKey({ serviceSlug, appKey, sourceSlug });
   const zapierSource = (serviceSlug ?? sourceSlug ?? appKey) === "zapier";
   const requestedAppKey = zapierSource ? undefined : routeAppKey;
+  const githubMethodChoicePending = requestedAppKey === "github" && !requestedMethodKey && !resumeConnectionId
+    && !reconnectConnectionId && searchParams.get("cloud_connector") !== "enrolled" && !aiConnection && credentialSource === "paperclip_vault";
+
   const byo = Boolean(configuredConnection) || (host === "page" && (byoOnly || searchParams.get("byo") === "1"));
   const [restoredEnrollmentAccess] = useState<EnrollmentAccessState | null>(() =>
     host === "page"
@@ -1127,9 +1137,10 @@ function StandardConnectionSetupFlow({
     candidate.transport === "runtime_auth" && candidate.ai
     && candidate.key === (connectionMethodKey || requestedMethodKey),
   ));
-  const selectedAppInstallation = fullRequestedDefinition?.slug === "github"
-    && (connectionMethodKey || requestedMethodKey) === "app-installation";
-  const requestedDefinitionUsesManagedConnector = !selectedAppInstallation && !selectedCustomOAuth && !selectedRuntimeAuth && Boolean(
+  const selectedAppInstallation = !resumeConnectionId && !reconnectConnectionId && fullRequestedDefinition?.slug === "github"
+    && (requestedMethodKey || connectionMethodKey) === "app-installation";
+  const requestedDefinitionUsesManagedConnector = !githubMethodChoicePending && !selectedAppInstallation && !selectedCustomOAuth && !selectedRuntimeAuth
+    && !(fullRequestedDefinition?.slug === "github" && (requestedMethodKey || connectionMethodKey) === "mcp-key") && Boolean(
     fullRequestedDefinition?.methods.some((candidate) =>
       candidate.oauthStrategy === "paperclip_cloud_connector"
       || candidate.oauthStrategy === "paperclip_id_connector"
@@ -1207,6 +1218,7 @@ function StandardConnectionSetupFlow({
       selectedCompany?.name,
       requestedAppKey
         ? appConnectHref(requestedAppKey, "key", credentialSource, {
+            connectionMethodKey: requestedAppKey === "github" ? "managed" : undefined,
             resumeConnectionId,
             reconnectConnectionId,
             interactionId: connectionIntentId,
@@ -1352,15 +1364,15 @@ function StandardConnectionSetupFlow({
   );
 
   const selectedSetupMethod = entry
-    ? availableToolConnectionMethod(entry, connectionMethodKey || null)
+    ? availableToolConnectionMethod(entry, (entry.slug === "github" ? requestedMethodKey : null) || connectionMethodKey || null)
     : null;
   // Apps with an advanced PAT option still need OAuth progress and recovery
   // screens when their selected method is managed sign-in.
-  const entryAutomaticOAuthMethod = selectedAppInstallation ? null : selectedSetupMethod && connectionMethodSupportsAutomaticOAuth(selectedSetupMethod)
-    ? selectedSetupMethod
+  const entryAutomaticOAuthMethod = selectedAppInstallation || githubMethodChoicePending ? null : selectedSetupMethod
+    ? connectionMethodSupportsAutomaticOAuth(selectedSetupMethod) ? selectedSetupMethod : null
     : automaticOAuthMethod(entry);
   const automaticOAuthEntry = credentialSource === "paperclip_vault" && entryAutomaticOAuthMethod ? entry : null;
-  const directOAuthEntry = !selectedAppInstallation && credentialSource === "paperclip_vault" && canUseAutomaticOAuthFastPath(entry) ? entry : null;
+  const directOAuthEntry = !githubMethodChoicePending && !!entryAutomaticOAuthMethod && credentialSource === "paperclip_vault" && canUseAutomaticOAuthFastPath(entry) ? entry : null;
   const directOAuthLookupPending = Boolean(directOAuthSource) && (
     !applicationsQuery.isFetchedAfterMount || !connectionsQuery.isFetchedAfterMount
   );
@@ -1369,7 +1381,7 @@ function StandardConnectionSetupFlow({
     setStep(nextStep);
     if (entry) {
       navigate(appConnectHref(entry.slug, nextStep, credentialSource, {
-        connectionMethodKey: entry.methods.find(method => method.key === connectionMethodKey)?.ai ? connectionMethodKey : undefined,
+        connectionMethodKey: entry.slug === "github" || entry.methods.find(method => method.key === connectionMethodKey)?.ai ? connectionMethodKey : undefined,
         resumeConnectionId,
         reconnectConnectionId,
         interactionId: connectionIntentId,
@@ -1985,8 +1997,21 @@ function StandardConnectionSetupFlow({
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select an organization to connect apps.</div>;
   }
-  if (selectedAppInstallation) return <GitHubAppSetup companyId={selectedCompanyId} requiredAgentId={requiredAgentId ?? requestedAgentId}
-    onComplete={onComplete} onCancel={onCancel ?? backToGallery} />;
+  function chooseGitHubMethod(key: string | null) {
+    cancelOAuthLookup(); closeEnrollmentPopup();
+    setConnectionMethodKey(key ?? "");
+    const nextMethod = fullRequestedDefinition?.methods.find(method => method.key === key);
+    setConfigValues(defaultMethodConfig(nextMethod ?? null)); setCredentials({}); setStep("key");
+    if (nextMethod?.grantKinds && !nextMethod.grantKinds.includes(grantKind)) setGrantKind(defaultGrantKindFor(nextMethod, Boolean(requestedAgentId)));
+    if (host === "dialog") setGitHubInlineMethod(key);
+    else setSearchParams(previous => { const next = new URLSearchParams(previous); if (key) next.set("method", key); else next.delete("method"); next.delete("cloud_connector"); return next; });
+  }
+  if (githubMethodChoicePending) return <GitHubConnectionMethodChoice onChoose={chooseGitHubMethod} onCancel={onCancel ?? backToGallery} />;
+  if (selectedAppInstallation) return <div className="mx-auto max-w-2xl space-y-4">
+    {!resumeConnectionId && !reconnectConnectionId && <Button variant="ghost" onClick={() => chooseGitHubMethod(null)}>← Change connection method</Button>}
+    <GitHubAppSetup companyId={selectedCompanyId} requiredAgentId={requiredAgentId ?? requestedAgentId}
+      onComplete={onComplete} onCancel={onCancel ?? backToGallery} />
+  </div>;
 
   if (
     (resumeConnectionId || reconnectConnectionId)
@@ -2316,6 +2341,13 @@ function StandardConnectionSetupFlow({
     )
   );
 
+  const retainedGitHubApp = resumeConnection ?? reconnectConnection;
+  if ((resumeConnectionId || reconnectConnectionId) && retainedGitHubApp?.authKind === "github_app") return <div className="mx-auto max-w-xl space-y-4">
+    <h2 className="text-lg font-semibold">Manage the saved GitHub App connection</h2>
+    <p className="text-sm text-muted-foreground">This identity uses its existing App installation and signing key. Review its connection settings to manage access or key lifecycle.</p>
+    <Button onClick={() => navigate(`/apps/${retainedGitHubApp.id}/permissions`)}>View connection</Button>
+  </div>;
+
   if (workspaceConsent) return <GoogleWorkspaceServicesDialog
     connection={workspaceConnection}
     initial={workspaceDraft}
@@ -2573,6 +2605,7 @@ function StandardConnectionSetupFlow({
         )
       )}
 
+      {requestedAppKey === "github" && !resumeConnectionId && !reconnectConnectionId && !aiConnection && step === "key" && <div className="mx-auto mb-4 max-w-xl"><Button variant="ghost" onClick={() => chooseGitHubMethod(null)}>← Change connection method</Button></div>}
       {step === "key" && connectionSettings && <div className="mx-auto mb-6 max-w-xl">{connectionSettings}</div>}
 
       {step === "gallery" && (
@@ -2611,9 +2644,8 @@ function StandardConnectionSetupFlow({
           <p className="mt-2 text-sm text-muted-foreground">
             This instance is connected to Paperclip, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
           </p>
-          {entry.slug === "github" && <Button type="button" variant="outline" className="mt-4" onClick={() => setConnectionMethodKey("app-installation")}>Use a GitHub App installation</Button>}
           {customOAuthMethod ? (
-            <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
+            <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => entry.slug === "github" ? chooseGitHubMethod(customOAuthMethod.key) : setConnectionMethodKey(customOAuthMethod.key)}>
               Use your own {entry.name} OAuth app
             </Button>
           ) : null}
@@ -2642,9 +2674,8 @@ function StandardConnectionSetupFlow({
               </div>
             </div>
 
-            {entry.slug === "github" && <Button type="button" variant="outline" className="mt-4" onClick={() => setConnectionMethodKey("app-installation")}>Use a GitHub App installation</Button>}
             {customOAuthMethod ? (
-              <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
+              <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => entry.slug === "github" ? chooseGitHubMethod(customOAuthMethod.key) : setConnectionMethodKey(customOAuthMethod.key)}>
                 Use your own {entry.name} OAuth app
               </Button>
             ) : null}
@@ -2711,6 +2742,10 @@ function StandardConnectionSetupFlow({
           vercelConnectAvailability={galleryQuery.data?.credentialSources?.vercelConnect ?? null}
           methodKey={connectionMethodKey}
           onMethodChange={(nextMethod) => {
+            if (entry.slug === "github" && !reconnectConnectionId && !resumeConnectionId) {
+              if (host === "dialog") setGitHubInlineMethod(nextMethod?.key ?? null);
+              else setSearchParams(previous => { const next = new URLSearchParams(previous); if (nextMethod) next.set("method", nextMethod.key); return next; });
+            }
             setConnectionMethodKey(nextMethod?.key ?? "");
             // Capability/auth changes must not broaden the audience selected
             // on Access (including choices restored after Cloud enrollment).

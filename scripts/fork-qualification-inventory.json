@@ -452,6 +452,8 @@
     {
       "cwd": ".",
       "files": [
+        "ui/src/pages/Secrets.render.test.tsx",
+        "ui/src/pages/secrets/secret-path.test.ts",
         "ui/src/pages/AgentToolsTab.test.tsx",
         "ui/src/pages/secrets/SigningKeysTab.test.tsx",
         "ui/src/components/GitHubProjectAppControls.test.tsx",
@@ -766,6 +768,8 @@
     "packages/adapter-utils/src/ssh-run-scope-transport.test.ts",
     "packages/adapter-utils/src/ssh-command-managed.test.ts",
     "packages/adapter-utils/src/ssh-fixture.test.ts",
-    "src/__tests__/closed-native-receipt-accounting.test.ts"
+    "src/__tests__/closed-native-receipt-accounting.test.ts",
+    "ui/src/pages/Secrets.render.test.tsx",
+    "ui/src/pages/secrets/secret-path.test.ts"
   ]
 }
