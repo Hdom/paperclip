@@ -11,7 +11,8 @@ import type { RuntimeProgressSink } from "./runtime-progress.js";
 export function controllerSshWorkspaceTarget(spec: SshRemoteExecutionSpec, runId: string, remoteDir: string): string {
   return JSON.stringify({ runId, host: spec.host, port: spec.port, username: spec.username,
     knownHosts: spec.knownHosts, strictHostKeyChecking: spec.strictHostKeyChecking,
-    remoteWorkspacePath: spec.remoteWorkspacePath, remoteCwd: spec.remoteCwd, remoteDir, scope: spec.runScope });
+    remoteWorkspacePath: spec.remoteWorkspacePath, remoteCwd: spec.remoteCwd, remoteDir, scope: spec.runScope ? [spec.runScope.schema, spec.runScope.companyId, spec.runScope.runId,
+      spec.runScope.leaseId, spec.runScope.generation, spec.runScope.bootId] : null });
 }
 
 /** Native repository-free attempts use checked flat trees; never grant generic tar access to the original. */

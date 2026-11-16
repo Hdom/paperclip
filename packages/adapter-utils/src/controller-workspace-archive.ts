@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-// Python is already a prerequisite of protected scoped SSH execution. Validate
+// The controller uses isolated Python 3 and its standard tar parser. Validate
 // the whole plain archive before writing; tar's extraction side effects never
 // run against controller paths. No links, sparse files, devices or overrides.
 const EXTRACT = String.raw`
@@ -13,7 +13,7 @@ if not root.is_dir() or root.is_symlink() or list(root.iterdir()): raise ValueEr
 with open(archive,'rb') as wire:
     physical=os.fstat(wire.fileno()).st_size
     if physical>280*1024*1024: raise ValueError('archive size')
-    headers=0
+    headers=0; extensionBytes=0
     while True:
         header=wire.read(512)
         if not header or header==bytes(512): break
@@ -24,7 +24,8 @@ with open(archive,'rb') as wire:
         if any(c not in b'01234567' for c in sizefield): raise ValueError('size encoding')
         size=int(sizefield or b'0',8);kind=header[156:157]
         if kind in (b'x',b'L'):
-            if size>65536: raise ValueError('extension')
+            extensionBytes+=size
+            if size>65536 or extensionBytes>8*1024*1024: raise ValueError('extension')
         elif kind in (b'0',b'\0',b'5'):
             if size>64*1024*1024: raise ValueError('file size')
         else: raise ValueError('type')
@@ -32,7 +33,7 @@ with open(archive,'rb') as wire:
         if offset>physical: raise ValueError('truncated')
         wire.seek(offset)
 with tarfile.open(archive,mode='r:') as source:
-    entries=[]; seen=set(); total=0; count=0
+    entries=[]; seen=set(); materialized={"."}; total=0; count=0
     for member in source:
         count+=1
         if count>10000: raise ValueError('count')
@@ -45,6 +46,12 @@ with tarfile.open(archive,mode='r:') as source:
         parts=name.rstrip('/').split('/')
         if name.startswith('/') or '\\' in name or len(name)>4096 or len(parts)>64 or any(ord(c)<32 for c in name): raise ValueError('path')
         if any(p in ('','.','..','.git','.paperclip-runtime') for p in parts): raise ValueError('path')
+        # Count implicit mkdir parents too, before any extraction or unbounded expansion.
+        for depth in range(1,len(parts)+1):
+            prefix='/'.join(parts[:depth])
+            if prefix not in materialized:
+                if len(materialized)>=10000: raise ValueError('materialized count')
+                materialized.add(prefix)
         name='/'.join(parts)
         if name in seen or member.type not in (tarfile.REGTYPE,tarfile.AREGTYPE,tarfile.DIRTYPE) or member.sparse or member.mode & ~0o777: raise ValueError('type')
         if any(k.startswith('GNU.sparse') for k in member.pax_headers): raise ValueError('sparse')
@@ -69,6 +76,6 @@ with tarfile.open(archive,mode='r:') as source:
 `;
 
 export async function extractControllerWorkspaceArchive(archive: string, directory: string): Promise<void> {
-  try { await promisify(execFile)("python3", ["-c", EXTRACT, archive, directory], { maxBuffer: 65536 }); }
+  try { await promisify(execFile)("python3", ["-I", "-B", "-c", EXTRACT, archive, directory], { maxBuffer: 65536 }); }
   catch (cause) { throw Object.assign(new Error("Protected workspace archive refused", { cause }), { code: "WORKSPACE_RESTORE_UNSAFE_ARCHIVE" }); }
 }

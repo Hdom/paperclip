@@ -20,6 +20,8 @@ Shared worker Unix identities remain a limitation. Separate run paths and GitHub
 
 ## Verification and prior regression
 
+The protected native archive path requires controller Python 3 (invoked in isolated mode); metadata, implicit directories and expanded file bytes are bounded before extraction.
+
 The new fixtures use synthetic secrets and the actual native directory layout, real PostgreSQL ownership records and authenticated SSH. They combine native pinned package-store skill export with workspace upload and cover deterministic execution, deletion/chmod, serialized copy-back, stop proof, cancellation and generation refusal, durable pending recovery, inherited async-context revocation, aliases/hardlinks, connection loss, and a one-connection pool with a small idle timeout. The existing source, Git, merge, archive, lease and physical-stop suites remain release gates.
 
 The local SSH fixture is loopback and is called directly at the transfer/authority seam. Production execution still passes the unchanged approved-target guard, which rejects controller/loopback targets. This fixture does not prove full production heartbeat admission, skill resolution, model execution or connector acceptance. Those distinctions must remain explicit in release verification and the monitored real task.
