@@ -7,6 +7,7 @@ import { hasRemoteTerminationReceipt } from "../services/remote-execution-termin
 import { agentExecutionsHaveStopped } from "../services/agent-execution-stop.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { environmentService } from "../services/environments.js";
+import { environmentRunOrchestrator } from "../services/environment-run-orchestrator.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import type { SshRunScope } from "@paperclipai/adapter-utils/ssh-run-scope";
 
@@ -53,6 +54,35 @@ const support=await getEmbeddedPostgresTestSupport();
     return environmentRuntimeService(db).getDriver("ssh")!.acquireRunLease({companyId:f.companyId,environment:f.environment,
       issueId:null,agentId:f.agentId,heartbeatRunId:f.runId,executionWorkspaceId:null,executionWorkspaceMode:null,executionWorkspaceSettings:null,adapterType:"codex_local"});
   }
+  it("admits a fresh scoped SSH lease through full run acquisition and verifies cleanup",async()=>{
+    const f=await seed();
+    await db.delete(environmentLeases).where(eq(environmentLeases.id,f.lease.id));
+    await db.update(heartbeatRuns).set({status:"running",finishedAt:null,resultJson:null}).where(eq(heartbeatRuns.id,f.runId));
+    transport.probe.mockResolvedValue({bootId:f.scope.bootId,remoteCwd:"/workspace"});
+    transport.workspace.mockResolvedValue({remoteCwd:"/workspace"});
+    const result=await environmentRunOrchestrator(db).acquireForRun({companyId:f.companyId,
+      selectedEnvironmentId:f.environment.id,localEnvironmentId:randomUUID(),adapterType:"codex_local",
+      issueId:null,heartbeatRunId:f.runId,agentId:f.agentId,persistedExecutionWorkspace:null,executionWorkspaceSettings:null});
+    expect(result.executionTransport).toMatchObject({runScope:result.lease.metadata?.remoteExecutionScope});
+    expect(result.lease.metadata?.remoteExecutionScope).toMatchObject({leaseId:result.lease.id,runId:f.runId,companyId:f.companyId});
+    const stopped=await environmentRuntimeService(db).getDriver("ssh")!.releaseRunLease({environment:f.environment,lease:result.lease,status:"released"});
+    expect(hasRemoteTerminationReceipt(stopped!)).toBe(true);
+    expect(stopped).toMatchObject({status:"released",cleanupStatus:"success"});
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId,f.companyId))).toEqual([]);
+  });
+  it.each(["companyId","runId","leaseId"] as const)("rejects a mismatched %s at the orchestrator transport boundary",async(field)=>{
+    const f=await seed();
+    const metadata={...f.lease.metadata,remoteExecutionScope:{...f.scope,[field]:randomUUID()}};
+    await expect(environmentRunOrchestrator(db).resolveTransport({companyId:f.companyId,adapterType:"codex_local",
+      environment:f.environment,lease:f.lease,leaseMetadata:metadata})).rejects.toMatchObject({code:"transport_resolution_failed",message:expect.stringContaining("ssh_run_scope_unverified")});
+    expect(transport.workspace).not.toHaveBeenCalled();
+    expect(transport.stop).not.toHaveBeenCalled();
+    const stored=(await environmentService(db).getLeaseById(f.lease.id))!;
+    expect(stored.metadata?.remoteExecutionScope).toEqual(f.scope);
+    expect(hasRemoteTerminationReceipt(stored)).toBe(false);
+    const stopped=await release(f);
+    expect(hasRemoteTerminationReceipt(stopped!)).toBe(true);
+  });
   it("persists exact ownership before remote startup and carries it into native and legacy targets",async()=>{
     const f=await seed();
     transport.prepare.mockImplementationOnce(async(_config,scope)=>{
