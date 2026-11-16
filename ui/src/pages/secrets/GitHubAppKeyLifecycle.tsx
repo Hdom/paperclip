@@ -39,13 +39,14 @@ export function GitHubAppKeyLifecycle({ companyId, app, settings }: {
   return <section aria-label="GitHub signing key lifecycle" className="flex flex-col gap-3">
     <h3 className="text-sm font-medium">Replace signing key</h3>
     <p className="text-xs text-muted-foreground">Generate the replacement in this App’s GitHub settings. Paperclip verifies and stores it before you activate the new version.</p>
+    <a className="text-sm underline underline-offset-4" href={app.appUrl ?? "https://github.com/settings/apps"} target="_blank" rel="noreferrer">Open GitHub App settings ↗</a>
     <label className="flex flex-col gap-1 text-sm">Replacement private key file
       <Input key={`${app.secretId}-${app.latestVersion}`} type="file" accept=".pem" disabled={busy} aria-label="Replacement GitHub App signing key"
         onChange={event => { const next = event.target.files?.[0]; setFile(next && next.size <= 16384 ? next : undefined); setConfirmation(null); setError(next && next.size > 16384 ? "Key files must be no larger than 16 KiB." : null); }} />
     </label>
     <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={confirmed} disabled={busy}
       onChange={event => setConfirmation(event.target.checked ? identity : null)} />I confirm this key/version change for the {app.role} App.</label>
-    <div className="flex items-center justify-between gap-3"><span className="text-xs text-muted-foreground">Active v{app.pinnedVersion} · latest stored v{app.latestVersion}</span>
+    <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">Active v{app.pinnedVersion} · latest stored v{app.latestVersion}</span>
       <Button disabled={busy || !confirmed || !file || !app.latestVersion} onClick={() => void change(async () => {
         const authorized = identity;
         const privateKey = await file!.text();
@@ -56,7 +57,7 @@ export function GitHubAppKeyLifecycle({ companyId, app, settings }: {
       <Input aria-label="Signing key version to activate" type="number" min={1} max={app.latestVersion ?? undefined} value={version} disabled={busy}
         onChange={event => { setVersion(Number(event.target.value)); setConfirmation(null); }} />
     </label>
-    <div className="flex items-center justify-between gap-3"><p className="text-xs text-muted-foreground">Activation verifies this version again. Revoke old keys separately in GitHub after cutover.</p>
+    <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-muted-foreground">Activation verifies this version again. Revoke old keys separately in GitHub after cutover.</p>
       <Button variant="outline" disabled={busy || !confirmed || !Number.isSafeInteger(version) || version < 1 || version > (app.latestVersion ?? 0) || version === app.pinnedVersion}
         onClick={() => void change(() => githubProjectAppsApi.activate(companyId, app.role, { revision: settings.revision, confirmed: true, version }))}>Verify and activate version</Button></div>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

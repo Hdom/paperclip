@@ -4745,6 +4745,29 @@ export function secretService(db: Db | DbTransaction) {
       const { publicInfo } = managedSigningMaterial(privateKey);
       return rotateUnlocked(secretId, { value: privateKey, expectedLatestVersion }, { userId: actorUserId }, controllerSigningCapability, publicInfo, secret);
     },
+    // Presentation only. Never route managed keys through generic secret updates.
+    organizeSigningKey: async (companyId: string, secretId: string, input: {
+      folderPath: string; expectedLatestVersion: number; expectedUpdatedAt: string; expectedOrganizationRevision: number;
+    }) => {
+      const secret = await getById(secretId);
+      if (!secret || secret.companyId !== companyId || secret.scope !== "controller" || secret.status === "deleted") throw notFound("Signing key not found");
+      const metadata = secret.providerMetadata;
+      const generic = metadata?.purpose === "signing_key" && metadata?.type === "generic" && metadata?.consumer === undefined;
+      const github = metadata?.consumer === "github_project_apps" && ["coordinator", "implementer", "reviewer"].includes(String(metadata?.role))
+        && typeof metadata?.appId === "number" && Number.isSafeInteger(metadata.appId) && metadata.appId > 0;
+      if (secret.provider !== "local_encrypted" || secret.managedMode !== "paperclip_managed" || (!generic && !github))
+        throw forbidden("This signing key does not support display organization");
+      const organizationRevision = Number.isSafeInteger(metadata?.signingOrganizationRevision) ? Number(metadata!.signingOrganizationRevision) : 0;
+      if (organizationRevision !== input.expectedOrganizationRevision || secret.latestVersion !== input.expectedLatestVersion || secret.updatedAt.toISOString() !== input.expectedUpdatedAt)
+        throw conflict("Signing key changed; reload before organizing it");
+      const [updated] = await db.update(companySecrets).set({
+        providerMetadata: { ...metadata, signingFolderPath: input.folderPath, signingOrganizationRevision: organizationRevision + 1 }, updatedAt: new Date(),
+      }).where(and(eq(companySecrets.id, secretId), eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "controller"),
+        eq(companySecrets.provider, secret.provider), eq(companySecrets.managedMode, secret.managedMode), eq(companySecrets.status, secret.status),
+        eq(companySecrets.latestVersion, secret.latestVersion), eq(companySecrets.name, secret.name), eq(companySecrets.providerMetadata, metadata!))).returning();
+      if (!updated) throw conflict("Signing key changed; reload before organizing it");
+      return updated;
+    },
     updateSigningKey: async (companyId: string, secretId: string, patch: {
       name?: string; description?: string | null; status?: "active" | "disabled" | "archived"; expectedLatestVersion: number; expectedRevision: number;
     }) => {

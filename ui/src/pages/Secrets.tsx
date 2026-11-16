@@ -1,5 +1,9 @@
+import { SecretCollectionToolbar, SecretCollectionIdentity, SecretCollectionFolder, SecretCollectionHeader, SecretCollectionRow, SecretCollectionCard,
+  SecretStatusBadge as StatusBadge, SecretMetaChip as MetaChip, SecretUpdatedWithTooltip as UpdatedWithTooltip,
+  formatSecretRelative as formatRelative, SecretDetailsHeader, SecretDetailsActions, SecretDetailsTabBar,
+  SecretDetailsBody, SecretDetailsSheetContent } from "./secrets/SecretCollection";
 import { SigningKeysTab } from "./secrets/SigningKeysTab";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -290,37 +294,7 @@ function providerVaultFormFromConfig(config: CompanySecretProviderConfig): Provi
   };
 }
 
-function formatRelative(value: Date | string | null | undefined): string {
-  if (!value) return "—";
-  const date = typeof value === "string" ? new Date(value) : value;
-  if (Number.isNaN(date.getTime())) return "—";
-  const diff = Date.now() - date.getTime();
-  if (diff < 0) return date.toLocaleString();
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return date.toLocaleDateString();
-}
 
-function statusTextTone(status: SecretStatus) {
-  switch (status) {
-    case "active":
-      return "text-emerald-700 dark:text-emerald-300";
-    case "disabled":
-      return "text-amber-700 dark:text-amber-300";
-    case "archived":
-      return "text-muted-foreground";
-    case "deleted":
-      return "text-destructive";
-    default:
-      return "text-muted-foreground";
-  }
-}
 
 function providerLabel(providers: SecretProviderDescriptor[] | undefined, id: SecretProvider) {
   return providers?.find((p) => p.id === id)?.label ?? id.replaceAll("_", " ");
@@ -362,37 +336,8 @@ function statusLabel(status: SecretStatus) {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function statusDotTone(status: SecretStatus) {
-  switch (status) {
-    case "active":
-      return "bg-emerald-500";
-    case "disabled":
-      return "bg-amber-500";
-    case "archived":
-      return "bg-muted-foreground";
-    case "deleted":
-      return "bg-destructive";
-    default:
-      return "bg-muted-foreground";
-  }
-}
 
-function StatusBadge({ status }: { status: SecretStatus }) {
-  return (
-    <span className={cn("inline-flex items-center gap-1.5 text-xs font-medium", statusTextTone(status))}>
-      <span className={cn("h-1.5 w-1.5 rounded-full", statusDotTone(status))} aria-hidden="true" />
-      {statusLabel(status)}
-    </span>
-  );
-}
 
-function MetaChip({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
-      {children}
-    </span>
-  );
-}
 
 function providerIndicatorLabel(
   secret: CompanySecret,
@@ -437,27 +382,6 @@ function SecretProviderIndicator({
   );
 }
 
-function UpdatedWithTooltip({
-  updatedAt,
-  tooltip,
-}: {
-  updatedAt: Date | string | null | undefined;
-  tooltip: string;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          aria-label={tooltip}
-          className="inline-flex cursor-help border-b border-dotted border-muted-foreground/60 text-xs text-muted-foreground"
-        >
-          {formatRelative(updatedAt)}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-72 whitespace-pre-wrap">{tooltip}</TooltipContent>
-    </Tooltip>
-  );
-}
 
 function healthEntryForProvider(
   health: SecretProviderHealthResponse | null,
@@ -676,7 +600,24 @@ export function Secrets() {
   // every open secret has a shareable URL and Back closes the sheet.
   const selectedSecretId = searchParams.get("secret");
   const signingKeySelection = searchParams.get("signingKey");
-  useEffect(() => { if (signingKeySelection) setActiveTab("signing-keys"); }, [signingKeySelection]);
+  const signingFolderSelection = searchParams.get("signingPath");
+  const signingTabSelection = searchParams.get("secretsTab") === "signing-keys";
+  const signingRouteRequested = Boolean(signingKeySelection || signingFolderSelection || signingTabSelection);
+  const previousSigningRoute = useRef(signingRouteRequested);
+  useEffect(() => {
+    if (signingRouteRequested) setActiveTab("signing-keys");
+    else if (previousSigningRoute.current) setActiveTab(current => current === "signing-keys" ? "secrets" : current);
+    previousSigningRoute.current = signingRouteRequested;
+  }, [signingRouteRequested]);
+  function selectSecretsTab(value: SecretsTab) {
+    setActiveTab(value);
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous);
+      if (value === "signing-keys") next.set("secretsTab", "signing-keys");
+      else { next.delete("secretsTab"); next.delete("signingPath"); next.delete("signingKey"); }
+      return next;
+    });
+  }
   const selectedDefinitionId = searchParams.get("definition");
   const setDetailSelection = useCallback(
     (secretId: string | null, definitionId: string | null = null) => {
@@ -1672,51 +1613,10 @@ export function Secrets() {
   }
 
   function renderFolderTableRow(folder: SecretPathFolder) {
-    return (
-      <Link
-        key={`folder:${folder.path}`}
-        to={folderLinkTo(folder.path)}
-        role="row"
-        className="grid grid-cols-(--gtc-54) items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40"
-      >
-        <div role="cell" className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
-            <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span className="truncate font-medium text-foreground">{folder.name}</span>
-          </div>
-          <div className="mt-0.5 pl-6 text-xs text-muted-foreground">
-            {formatSecretPathCounts(folder.secretCount, folder.folderCount)}
-          </div>
-        </div>
-        <div role="cell" aria-hidden="true" />
-        <div role="cell" aria-hidden="true" />
-        <div role="cell" aria-hidden="true" />
-        <div role="cell" className="flex justify-end">
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-        </div>
-      </Link>
-    );
+    return <SecretCollectionFolder key={`folder:${folder.path}`} folder={folder} to={folderLinkTo(folder.path)} variant="table" counts={formatSecretPathCounts(folder.secretCount, folder.folderCount)} />;
   }
-
   function renderFolderCard(folder: SecretPathFolder) {
-    return (
-      <Link
-        key={`folder:${folder.path}`}
-        to={folderLinkTo(folder.path)}
-        className="flex items-center justify-between gap-2 rounded-md border border-border bg-background p-3 hover:bg-accent/30"
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <div className="min-w-0">
-            <div className="truncate font-medium text-foreground">{folder.name}</div>
-            <div className="text-xs text-muted-foreground">
-              {formatSecretPathCounts(folder.secretCount, folder.folderCount)}
-            </div>
-          </div>
-        </div>
-        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-      </Link>
-    );
+    return <SecretCollectionFolder key={`folder:${folder.path}`} folder={folder} to={folderLinkTo(folder.path)} variant="card" counts={formatSecretPathCounts(folder.secretCount, folder.folderCount)} />;
   }
 
   function renderUpRow(variant: "table" | "card") {
@@ -1824,7 +1724,7 @@ export function Secrets() {
 
       <Tabs
         value={activeTab}
-        onValueChange={(value) => setActiveTab(value as SecretsTab)}
+        onValueChange={(value) => selectSecretsTab(value as SecretsTab)}
         className="flex flex-col gap-4"
       >
         <PageTabBar
@@ -1857,26 +1757,16 @@ export function Secrets() {
           ]}
           align="start"
           value={activeTab}
-          onValueChange={(value) => setActiveTab(value as SecretsTab)}
+          onValueChange={(value) => selectSecretsTab(value as SecretsTab)}
         />
 
-        <TabsContent value="signing-keys"><SigningKeysTab companyId={selectedCompanyId} selection={signingKeySelection} onSelectionChange={id => setSearchParams(previous => { const next = new URLSearchParams(previous); if (id) next.set("signingKey", id); else next.delete("signingKey"); return next; })} /></TabsContent>
+        <TabsContent value="signing-keys"><SigningKeysTab companyId={selectedCompanyId} selection={signingKeySelection} onSelectionChange={id => setSearchParams(previous => { const next = new URLSearchParams(previous); if (id) next.set("signingKey", id); else next.delete("signingKey"); next.set("secretsTab", "signing-keys"); return next; })} /></TabsContent>
 
         <TabsContent value="secrets" className="flex flex-col gap-3">
           <SecretsHowToUse />
-          <div data-canonical-toolbar="secrets" role="toolbar" aria-label="Secrets controls" className="flex flex-wrap items-center gap-2">
-            <div className="relative w-48 sm:w-64 md:w-80">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search by name, key, ref"
-                className="pl-7 text-xs sm:text-sm"
-                aria-label="Search secrets"
-                data-page-search-target="true"
-              />
-            </div>
-            <SecretsFiltersPopover
+          <SecretCollectionToolbar label="Secrets controls" search={search} onSearchChange={setSearch}
+            placeholder="Search by name, key, ref" searchLabel="Search secrets" searching={searching}
+            viewMode={effectiveViewMode} onViewModeChange={setViewMode} filters={<SecretsFiltersPopover
               statusFilter={statusFilter}
               providerFilter={providerFilter}
               providedByFilter={providedByFilter}
@@ -1885,33 +1775,7 @@ export function Secrets() {
               onStatusChange={setStatusFilter}
               onProviderChange={setProviderFilter}
               onProvidedByChange={setProvidedByFilter}
-            />
-            <div
-              role="group"
-              aria-label="View mode"
-              className={cn(
-                "design-view-toggle inline-flex items-center rounded-md border border-border",
-                searching && "opacity-50",
-              )}
-            >
-              {(["folders", "flat"] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  aria-pressed={effectiveViewMode === mode}
-                  disabled={searching}
-                  onClick={() => setViewMode(mode)}
-                  className={cn(
-                    "rounded-sm px-2.5 py-1 text-xs font-medium capitalize transition-colors disabled:cursor-not-allowed",
-                    effectiveViewMode === mode
-                      ? "bg-accent text-accent-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {mode}
-                </button>
-              ))}
-            </div>
+            />}>
             <ImportFromVaultButton
               providerConfigs={providerConfigs}
               onClick={() => openImportFromVault()}
@@ -1934,7 +1798,7 @@ export function Secrets() {
             <Button data-toolbar-primary onClick={openCreateSecret} size="sm">
               <Plus className="h-3.5 w-3.5 mr-1" /> New secret
             </Button>
-          </div>
+          </SecretCollectionToolbar>
           {newFolderOpen && showFolderView ? (
             <div className="flex flex-wrap items-start gap-2" role="group" aria-label="Create folder">
               <div className="min-w-48 flex-1 sm:max-w-80">
@@ -2036,16 +1900,7 @@ export function Secrets() {
                   className="hidden min-w-0 @min-[40rem]:block"
                   data-testid="secrets-table-view"
                 >
-                  <div
-                    role="row"
-                    className="grid grid-cols-(--gtc-54) items-center gap-3 bg-muted/40 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground"
-                  >
-                    <div role="columnheader" className="font-medium">Secret</div>
-                    <div role="columnheader" className="font-medium">Status</div>
-                    <div role="columnheader" className="font-medium">Version / coverage</div>
-                    <div role="columnheader" className="font-medium">Updated</div>
-                    <div role="columnheader" className="sr-only">Actions</div>
-                  </div>
+                  <SecretCollectionHeader />
                   <div role="rowgroup">
                     {showUpRow ? renderUpRow("table") : null}
                     {folderRows.map(renderFolderTableRow)}
@@ -2061,23 +1916,13 @@ export function Secrets() {
                             ].join("\n")
                           : `Updated: ${formatRelative(row.definition.updatedAt)}\nLast resolved: user values resolve per member`;
                       return (
-                        <div
-                          key={row.id}
-                          role="row"
-                          className={cn(
-                            "grid cursor-pointer grid-cols-(--gtc-54) items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40",
-                            row.kind === "company" && selectedSecretId === row.secret.id && "bg-accent/60",
-                            row.kind === "user" && selectedDefinitionId === row.definition.id && "bg-accent/60",
-                          )}
-                          onClick={() => {
-                            if (row.kind === "company") openCompanySecret(row.secret);
-                            else openUserDefinition(row.definition);
-                          }}
-                        >
-                          <div role="cell" className="min-w-0">
-                            <div className="flex min-w-0 items-center gap-1.5">
-                              {renderSecretName(row.kind === "company" ? row.secret.name : row.definition.name)}
-                              {row.kind === "company" ? (
+                        <SecretCollectionRow key={row.id}
+                          selected={row.kind === "company" ? selectedSecretId === row.secret.id : selectedDefinitionId === row.definition.id}
+                          onOpen={() => row.kind === "company" ? openCompanySecret(row.secret) : openUserDefinition(row.definition)}>
+                          <SecretCollectionIdentity
+                            name={renderSecretName(row.kind === "company" ? row.secret.name : row.definition.name)}
+                            identifier={row.kind === "company" ? row.secret.key : row.definition.key}
+                            indicator={row.kind === "company" ? (
                                 <SecretProviderIndicator
                                   secret={row.secret}
                                   providers={providers}
@@ -2096,20 +1941,13 @@ export function Secrets() {
                                   <TooltipContent>Each user provides and owns their own value</TooltipContent>
                                 </Tooltip>
                               )}
-                            </div>
-                            <code className="mt-0.5 block truncate text-(length:--text-micro) text-muted-foreground">
-                              {row.kind === "company" ? row.secret.key : row.definition.key}
-                            </code>
-                            <div className="mt-1">
-                              {row.kind === "company" ? (
+                            metadata={row.kind === "company" ? (
                                 <MetaChip>
                                   <ShieldCheck className="h-3 w-3" /> Organization
                                 </MetaChip>
                               ) : (
                                 <UserSecretChip label="Each user" />
-                              )}
-                            </div>
-                          </div>
+                              )} />
                           <div role="cell">
                             <StatusBadge status={status} />
                           </div>
@@ -2129,7 +1967,7 @@ export function Secrets() {
                           <div role="cell" className="text-right" onClick={(event) => event.stopPropagation()}>
                             {renderRowActions(row)}
                           </div>
-                        </div>
+                        </SecretCollectionRow>
                       );
                     })}
                   </div>
@@ -2141,18 +1979,9 @@ export function Secrets() {
                   {secretRows.map((row) => {
                     const status = row.kind === "company" ? row.secret.status : row.definition.status;
                     return (
-                      <div
-                        key={row.id}
-                        className={cn(
-                          "cursor-pointer rounded-md border border-border bg-background p-3 hover:bg-accent/30",
-                          row.kind === "company" && selectedSecretId === row.secret.id && "bg-accent/60",
-                          row.kind === "user" && selectedDefinitionId === row.definition.id && "bg-accent/60",
-                        )}
-                        onClick={() => {
-                          if (row.kind === "company") openCompanySecret(row.secret);
-                          else openUserDefinition(row.definition);
-                        }}
-                      >
+                      <SecretCollectionCard key={row.id}
+                        selected={row.kind === "company" ? selectedSecretId === row.secret.id : selectedDefinitionId === row.definition.id}
+                        onOpen={() => row.kind === "company" ? openCompanySecret(row.secret) : openUserDefinition(row.definition)}>
                         <div className="flex min-w-0 items-start justify-between gap-2">
                           <div className="min-w-0">
                             <div className="min-w-0 truncate">
@@ -2198,7 +2027,7 @@ export function Secrets() {
                           </span>
                           <span>Updated {formatRelative(row.kind === "company" ? row.secret.updatedAt : row.definition.updatedAt)}</span>
                         </div>
-                      </div>
+                      </SecretCollectionCard>
                     );
                   })}
                 </div>
@@ -2255,44 +2084,21 @@ export function Secrets() {
           if (!open && (selectedSecret || selectedDefinition)) setDetailSelection(null);
         }}
       >
-        <SheetContent className="w-full sm:max-w-xl flex flex-col gap-0">
+        <SecretDetailsSheetContent>
           {selectedSecret ? (
             <>
-              <SheetHeader className="space-y-3">
-                <SheetTitle className="flex min-w-0 items-center gap-2 pr-8 text-base">
-                  <KeyRound className="h-4 w-4 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate">{selectedSecret.name}</span>
-                  <span className="shrink-0">
-                    <StatusBadge status={selectedSecret.status} />
-                  </span>
-                </SheetTitle>
-                <SheetDescription className="sr-only">
-                  {providerLabel(providers, selectedSecret.provider)} secret {selectedSecret.key}
-                </SheetDescription>
-                <div className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-muted/20 px-2 py-1.5">
-                  <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
-                    {selectedSecret.key}
-                  </code>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 shrink-0 px-2 text-xs"
-                    onClick={() => copySecretKey(selectedSecret.key)}
-                  >
-                    <Copy className="mr-1 h-3.5 w-3.5" /> Copy
-                  </Button>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
+              <SecretDetailsHeader name={selectedSecret.name} status={selectedSecret.status}
+                description={`${providerLabel(providers, selectedSecret.provider)} secret ${selectedSecret.key}`}
+                identifier={selectedSecret.key} onCopyIdentifier={() => copySecretKey(selectedSecret.key)}>
+
                   <MetaChip>
                     <ShieldCheck className="h-3 w-3" /> Organization
                   </MetaChip>
                   <MetaChip>{modeLabel(selectedSecret.managedMode)}</MetaChip>
                   <MetaChip>{providerLabel(providers, selectedSecret.provider)}</MetaChip>
                   <MetaChip>v{selectedSecret.latestVersion}</MetaChip>
-                </div>
-              </SheetHeader>
-              <div className="flex items-center gap-2 px-4 pb-2">
+              </SecretDetailsHeader>
+              <SecretDetailsActions>
                 <Button
                   size="sm"
                   onClick={() => openRotateSecret(selectedSecret)}
@@ -2348,10 +2154,9 @@ export function Secrets() {
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-              </div>
+              </SecretDetailsActions>
               <Tabs value={secretDetailTab} onValueChange={setSecretDetailTab} className="flex-1 min-h-0 flex flex-col">
-                <div className="border-b border-border px-4">
-                  <PageTabBar
+                <SecretDetailsTabBar
                     ariaLabel="Secret details section"
                     items={[
                       { value: "details", label: "Details" },
@@ -2362,8 +2167,7 @@ export function Secrets() {
                     value={secretDetailTab}
                     onValueChange={setSecretDetailTab}
                   />
-                </div>
-                <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
+                <SecretDetailsBody>
                   <TabsContent value="details">
                     <div className="space-y-3">
                       <AgentAccessSection
@@ -2388,7 +2192,7 @@ export function Secrets() {
                       companyId={selectedCompanyId}
                     />
                   </TabsContent>
-                </div>
+                </SecretDetailsBody>
               </Tabs>
             </>
           ) : selectedDefinition ? (
@@ -2489,8 +2293,7 @@ export function Secrets() {
                 </DropdownMenu>
               </div>
               <Tabs value={secretDetailTab} onValueChange={setSecretDetailTab} className="flex-1 min-h-0 flex flex-col">
-                <div className="border-b border-border px-4">
-                  <PageTabBar
+                <SecretDetailsTabBar
                     ariaLabel="Secret definition section"
                     items={[
                       { value: "details", label: "Details" },
@@ -2502,7 +2305,6 @@ export function Secrets() {
                     value={secretDetailTab}
                     onValueChange={setSecretDetailTab}
                   />
-                </div>
                 <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
                   <TabsContent value="details">
                     <div className="space-y-3">
@@ -2533,7 +2335,7 @@ export function Secrets() {
               </Tabs>
             </>
           ) : null}
-        </SheetContent>
+        </SecretDetailsSheetContent>
       </Sheet>
 
       <Dialog

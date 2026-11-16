@@ -3,7 +3,7 @@ import request from "supertest";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { companies, companySecrets, createDb } from "@paperclipai/db";
+import { companies, companySecrets, companySecretVersions, createDb } from "@paperclipai/db";
 import { secretService } from "../services/secrets.js";
 import { signingKeyRoutes, signingKeyCreateSchema, signingKeyRotateSchema, signingKeyUpdateSchema } from "../routes/signing-keys.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -27,7 +27,7 @@ const support = await getEmbeddedPostgresTestSupport();
   it("imports and lists metadata only, with no secret material or private-value hashes", async () => {
     const created = await request(app()).post(base()).set("Origin", "https://paperclip.example").send({ name: "Test signing key", privateKey: pem, confirmed: true });
     expect(created.status).toBe(201); expect(created.body).toMatchObject({ type: "generic", algorithm: "ed25519", revision: 1, latestVersion: 1 });
-    expect(Object.keys(created.body).sort()).toEqual(["algorithm", "createdAt", "description", "githubApp", "id", "latestVersion", "name", "publicFingerprint", "revision", "status", "type", "updatedAt"]);
+    expect(Object.keys(created.body).sort()).toEqual(["algorithm", "canOrganize", "createdAt", "description", "folderPath", "githubApp", "id", "latestVersion", "name", "organizationRevision", "publicFingerprint", "revision", "status", "type", "updatedAt"]);
     expect(JSON.stringify(created.body)).not.toMatch(/PRIVATE KEY|valueSha256|fingerprintSha256|material|providerMetadata/);
     const listed = await request(app()).get(base()); expect(listed.headers["cache-control"]).toBe("no-store");
     expect(listed.body.keys).toHaveLength(1);
@@ -93,6 +93,49 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await request(app({ type: "agent", agentId: randomUUID() })).get(endpoint)).status).toBe(403);
     expect((await request(app({ companyIds: [] })).get(endpoint)).status).toBe(403);
     expect((await request(app()).get(`${base()}/${randomUUID()}/access-events`)).status).toBe(404);
+  });
+
+  it("organizes managed keys without changing identity, ciphertext, versions or signing authority", async () => {
+    const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const service = secretService(db), key = await service.createControllerSigningKey(companyId, "reviewer", 13, rsa, "synthetic-admin");
+    const beforeVersions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, key.id));
+    const endpoint = `${base()}/${key.id}/organization`;
+    const guard = { expectedLatestVersion: 1, expectedUpdatedAt: key.updatedAt.toISOString(), expectedOrganizationRevision: 0, confirmed: true };
+    const moved = await request(app()).patch(endpoint).set("Origin", "https://paperclip.example").send({ ...guard, folderPath: "services/github" });
+    expect(moved.status).toBe(200); expect(moved.body).toMatchObject({ folderPath: "services/github", canOrganize: true, name: key.name, latestVersion: 1, type: "github_app" });
+    const [after] = await db.select().from(companySecrets).where(eq(companySecrets.id, key.id));
+    expect(after).toMatchObject({ key: key.key, name: key.name, scope: key.scope, status: key.status, latestVersion: key.latestVersion });
+    expect(after!.providerMetadata).toEqual({ ...key.providerMetadata, signingFolderPath: "services/github", signingOrganizationRevision: 1 });
+    expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, key.id))).toEqual(beforeVersions);
+    expect((await service.signControllerGitHubAppJwt(companyId, key.id, 1, "reviewer", 13)).jwt).toBeTruthy();
+    expect((await request(app()).patch(`${base()}/${key.id}`).send({ expectedLatestVersion: 1, expectedRevision: 1, confirmed: true, status: "disabled" })).status).toBe(403);
+    expect((await request(app()).patch(endpoint).send({ ...guard, folderPath: "stale" })).status).toBe(409);
+  });
+  it("protects folder writes with strict fields, canonical paths, company access and administrator authority", async () => {
+    const key = await secretService(db).createSigningKey(companyId, { name: "Generic", privateKey: pem }, "synthetic-admin");
+    const endpoint = `${base()}/${key.id}/organization`, guard = { expectedLatestVersion: 1, expectedUpdatedAt: key.updatedAt.toISOString(), expectedOrganizationRevision: 0, confirmed: true };
+    for (const extra of [{ status: "disabled" }, { name: "rename" }, { providerMetadata: {} }, { scope: "company" }, { privateKey: pem }, { confirmed: false }]) {
+      expect((await request(app()).patch(endpoint).send({ ...guard, folderPath: "services", ...extra })).status).toBe(400);
+    }
+    for (const folderPath of ["/absolute", "trailing/", "a//b", "a/../b", "a/./b", "a/ bad", "a\\b", "a\ncontrol"]) {
+      expect((await request(app()).patch(endpoint).send({ ...guard, folderPath })).status).toBe(400);
+    }
+    for (const actor of [{ type: "agent", agentId: randomUUID() }, { isInstanceAdmin: false }, { companyIds: [] }])
+      expect((await request(app(actor)).patch(endpoint).send({ ...guard, folderPath: "services" })).status).toBe(403);
+    expect((await request(app()).patch(endpoint).set("Origin", "https://untrusted.example").send({ ...guard, folderPath: "services" })).status).toBe(403);
+    expect((await request(app()).patch(`${base()}/${randomUUID()}/organization`).send({ ...guard, folderPath: "services" })).status).toBe(404);
+    const otherCompanyId = randomUUID(); await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: otherCompanyId.slice(0, 8) });
+    const other = await secretService(db).createSigningKey(otherCompanyId, { name: "Other key", privateKey: pem }, "synthetic-admin");
+    expect((await request(app()).patch(`${base()}/${other.id}/organization`).send({ ...guard, folderPath: "services" })).status).toBe(404);
+    const moved = await request(app()).patch(endpoint).send({ ...guard, folderPath: "services" }); expect(moved.status).toBe(200);
+    const root = await request(app()).patch(endpoint).send({ ...guard, expectedUpdatedAt: moved.body.updatedAt, expectedOrganizationRevision: moved.body.organizationRevision, folderPath: "" }); expect(root.status).toBe(200); expect(root.body.folderPath).toBe("");
+  });
+  it("rejects an organization review made before a key rotation", async () => {
+    const service = secretService(db), key = await service.createSigningKey(companyId, { name: "Generic", privateKey: pem }, "synthetic-admin");
+    await service.rotateSigningKey(companyId, key.id, pem, 1, "synthetic-admin", 1);
+    const result = await request(app()).patch(`${base()}/${key.id}/organization`).send({ folderPath: "services", expectedLatestVersion: 1, expectedUpdatedAt: key.updatedAt.toISOString(), expectedOrganizationRevision: 0, confirmed: true });
+    expect(result.status).toBe(409);
+    expect((await service.listSigningKeys(companyId))[0]!.providerMetadata).not.toHaveProperty("signingFolderPath");
   });
 
 });

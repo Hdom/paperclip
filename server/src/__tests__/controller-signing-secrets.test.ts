@@ -179,4 +179,23 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await secrets.getById(secret.id))?.latestVersion).toBe(1);
   });
 
+  it.each(["generic", "github"] as const)("preserves a %s key's folder during a concurrent rotation", async type => {
+    const key = type === "generic" ? await secrets.createSigningKey(companyId, { name: "Folder race", privateKey: pem }, "synthetic-admin") : await create();
+    const prepare = localEncryptedProvider.createVersion!.bind(localEncryptedProvider);
+    vi.spyOn(localEncryptedProvider, "createVersion").mockImplementationOnce(async input => {
+      const prepared = await prepare(input);
+      await secrets.organizeSigningKey(companyId, key.id, { folderPath: "services/github", expectedLatestVersion: 1,
+        expectedUpdatedAt: key.updatedAt.toISOString(), expectedOrganizationRevision: 0 });
+      return prepared;
+    });
+    const rotation = type === "generic" ? secrets.rotateSigningKey(companyId, key.id, pem, 1, "synthetic-admin")
+      : secrets.rotateControllerSigningKey(companyId, key.id, "reviewer", 13, pem, 1, "synthetic-admin");
+    await expect(rotation).rejects.toThrow("stale");
+    const current = await secrets.getById(key.id);
+    expect(current).toMatchObject({ latestVersion: 1, key: key.key, name: key.name, scope: "controller", status: "active" });
+    expect(current?.providerMetadata).toEqual({ ...key.providerMetadata, signingFolderPath: "services/github", signingOrganizationRevision: 1 });
+    expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, key.id))).toHaveLength(1);
+    if (type === "github") expect((await secrets.signControllerGitHubAppJwt(companyId, key.id, 1, "reviewer", 13)).jwt).toBeTruthy();
+  });
+
 });

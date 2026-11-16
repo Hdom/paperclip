@@ -1,5 +1,5 @@
 import { Router, type Request } from "express";
-import { signingKeyCreateSchema, signingKeyRotateSchema, signingKeyUpdateSchema } from "@paperclipai/shared";
+import { signingKeyCreateSchema, signingKeyRotateSchema, signingKeyUpdateSchema, signingKeyOrganizationSchema } from "@paperclipai/shared";
 export { signingKeyCreateSchema, signingKeyRotateSchema, signingKeyUpdateSchema } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
 import type { SigningKeySummary } from "@paperclipai/shared";
@@ -26,6 +26,9 @@ export function signingKeySummary(row: Awaited<ReturnType<ReturnType<typeof secr
   return { id: row.id, name: row.name, description, status: row.status,
     type: githubApp ? "github_app" : generic ? "generic" : "managed", githubApp,
     algorithm: info?.algorithm ?? null, publicFingerprint: info?.publicFingerprint ?? null,
+    folderPath: typeof metadata?.signingFolderPath === "string" ? metadata.signingFolderPath : null,
+    canOrganize: Boolean(githubApp || generic),
+    organizationRevision: Number.isSafeInteger(metadata?.signingOrganizationRevision) ? Number(metadata!.signingOrganizationRevision) : 0,
     latestVersion: row.latestVersion, revision: generic && Number.isSafeInteger(metadata?.lifecycleRevision) ? Number(metadata!.lifecycleRevision) : null,
     createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() };
 }
@@ -77,6 +80,13 @@ export function signingKeyRoutes(db: Db, service: ReturnType<typeof secretServic
     const key = await service.rotateSigningKey(companyId, req.params.secretId as string, input.privateKey,
       input.expectedLatestVersion, req.actor.userId ?? "board", input.expectedRevision);
     await audit(req, "signing_key.rotated", key.id); res.json(signingKeySummary(key));
+  });
+  router.patch(`${base}/:secretId/organization`, async (req, res) => {
+    const { companyId } = access(req, true);
+    const { confirmed: _confirmed, ...input } = signingKeyOrganizationSchema.parse(req.body);
+    const key = await service.organizeSigningKey(companyId, req.params.secretId as string, input);
+    await audit(req, "signing_key.organized", key.id);
+    res.json(signingKeySummary(key));
   });
   router.patch(`${base}/:secretId`, async (req, res) => {
     const { companyId } = access(req, true); const { confirmed: _confirmed, ...input } = signingKeyUpdateSchema.parse(req.body);

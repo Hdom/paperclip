@@ -118,7 +118,9 @@ vi.mock("@/lib/browserNavigation", () => ({
 vi.mock("@/lib/router", () => ({
   useNavigate: () => mockNavigate,
   useParams: () => mockParams,
-  useSearchParams: () => [new URLSearchParams(mockSearch.value), vi.fn()],
+  useSearchParams: () => [new URLSearchParams(mockSearch.value), (update: URLSearchParams | ((previous: URLSearchParams) => URLSearchParams)) => {
+    mockSearch.value = (typeof update === "function" ? update(new URLSearchParams(mockSearch.value)) : update).toString();
+  }],
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -442,6 +444,79 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     return root;
   }
 
+
+  it("asks for GitHub identity before any Cloud enrollment lookup", async () => {
+    mockSearch.value = "source=github";
+    await render();
+    expect(container.textContent).toContain("Choose the identity this connection will use");
+    expect(radioContaining("GitHub account")).toBeTruthy();
+    expect(radioContaining("GitHub App installation")).toBeTruthy();
+    expect(container.textContent).not.toContain("Connect with Paperclip");
+    expect(container.textContent).not.toContain("Use a bot identity instead");
+    expect(getCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the selected page method and interaction in one local App flow", async () => {
+    mockSearch.value = "source=github&intent=retained-intent";
+    nativeAppSettingsMock.mockResolvedValue({ available: false, roles: [] });
+    await render();
+    await act(async () => radioContaining("GitHub App installation")!.click());
+    await act(async () => buttonByText("Continue")!.click()); await flushReact();
+    expect(container.textContent).toContain("No GitHub App identities are prepared");
+    expect(new URLSearchParams(mockSearch.value).get("intent")).toBe("retained-intent");
+    expect(new URLSearchParams(mockSearch.value).get("method")).toBe("app-installation");
+    expect(getCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+    await act(async () => buttonByText("← Change connection method")!.click()); await flushReact();
+    expect(container.textContent).toContain("Choose the identity this connection will use");
+    expect(new URLSearchParams(mockSearch.value).get("intent")).toBe("retained-intent");
+  });
+  it("keeps an inline App choice local and completes only for the required agent", async () => {
+    mockSearch.value = "intent=inline-retained";
+    const onComplete = vi.fn(), onCancel = vi.fn();
+    nativeAppSettingsMock.mockResolvedValue({ available: true, canManage: true, revision: "ready", roles:
+      ["coordinator", "implementer", "reviewer"].map(role => ({ role, appId: 13, agentId: `agent-${role}`, connectionId: `native-${role}`, keyStorage: "native_encrypted", pinnedVersion: 1, latestVersion: 1 })) });
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="github" requiredAgentId="agent-reviewer" onComplete={onComplete} onCancel={onCancel} />);
+    await act(async () => radioContaining("GitHub App installation")!.click());
+    await act(async () => buttonByText("Continue")!.click()); await flushReact();
+    expect(mockSearch.value).toBe("intent=inline-retained");
+    const row = [...container.querySelectorAll("li")].find(item => item.textContent?.includes("GitHub · reviewer"))!;
+    await act(async () => row.querySelector("button")!.click());
+    expect(onComplete).toHaveBeenCalledExactlyOnceWith({ connectionId: "native-reviewer" });
+    expect(nativeAppImportMock).not.toHaveBeenCalled(); expect(getCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["resume", "reconnect"])("does not replace a missing retained %s with App setup", async recovery => {
+    mockSearch.value = `source=github&method=app-installation&${recovery}=missing-retained`;
+    listApplicationsMock.mockResolvedValue({ applications: [] }); listConnectionsMock.mockResolvedValue({ connections: [] });
+    await render(); await flushReact();
+    expect(container.textContent).toContain(recovery === "resume" ? "This setup can’t be resumed" : "This connection can’t be reconnected");
+    expect(container.textContent).not.toContain("Use the prepared App identities");
+    expect(nativeAppImportMock).not.toHaveBeenCalled(); expect(nativeAppSettingsMock).not.toHaveBeenCalled();
+  });
+  it.each(["resume", "reconnect"])("retains a saved PAT method despite an App override in a %s URL", async recovery => {
+    const id = "33333333-3333-4333-8333-333333333333";
+    mockSearch.value = `source=github&method=app-installation&${recovery}=${id}`;
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-github", status: "active", metadata: { sourceTemplateKey: "github" } }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{ id, applicationId: "app-github", name: "Saved PAT identity", authKind: "api_key", credentialPolicy: "shared", status: "draft",
+      config: { sourceTemplateKey: "github", connectionMethodKey: "mcp-key" }, transportConfig: {} }] });
+    await render(); await flushReact();
+    expect(container.querySelector('input[type="password"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Use the prepared App identities");
+    expect(nativeAppImportMock).not.toHaveBeenCalled(); expect(connectAppMock).not.toHaveBeenCalled();
+  });
+  it("opens existing App connections without importing them again", async () => {
+    mockSearch.value = "source=github&method=app-installation";
+    nativeAppSettingsMock.mockResolvedValue({ available: true, canManage: true, revision: "ready", roles:
+      ["coordinator", "implementer", "reviewer"].map(role => ({ role, appId: 13, agentId: `agent-${role}`, connectionId: `native-${role}`, keyStorage: "native_encrypted", pinnedVersion: 1, latestVersion: 1 })) });
+    await render(); await flushReact();
+    expect(container.textContent).toContain("already connected");
+    expect(buttonByText("Verify and connect identities")).toBeUndefined();
+    expect(nativeAppImportMock).not.toHaveBeenCalled();
+    expect(getCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
   it("connects native GitHub App identities without Cloud enrollment, managed OAuth or generic credential setup", async () => {
     mockSearch.value = "source=github&method=app-installation";
     getCloudConnectorEnrollmentMock.mockRejectedValue(new Error("Cloud unavailable for this test"));
@@ -1219,6 +1294,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("states the GitHub identity default and keeps its controls one click away", async () => {
     mockParams.appKey = "github";
+    mockSearch.value = "method=managed";
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
     await render();
 
@@ -1285,6 +1361,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("defaults to every agent and states an empty explicit selection", async () => {
     mockParams.appKey = "github";
+    mockSearch.value = "method=managed";
     await render();
     await openAccessAdvanced();
 
@@ -1304,6 +1381,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("reflects a changed access selection in the stated default", async () => {
     mockParams.appKey = "github";
+    mockSearch.value = "method=managed";
     await render();
     await openAccessAdvanced();
 
@@ -1325,6 +1403,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("returns to the pending skill import when GitHub setup is cancelled", async () => {
     mockParams.appKey = "github";
+    mockSearch.value = "method=managed";
     rememberSkillSourceReturn("company-1", "new");
     await render();
     await act(async () => buttonByText("Cancel")?.click());
@@ -1334,6 +1413,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("uses Cancel to exit while the bottom Back button stays in the wizard", async () => {
     mockParams.appKey = "github";
+    mockSearch.value = "method=managed";
     await render();
 
     await act(async () => {
@@ -1802,7 +1882,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it.each(["2020-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"])(
     "revalidates a cached pending enrollment before continuing (expiry %s)",
     async (expiresAt) => {
-      mockSearch.value = "source=github&stage=setup";
+      mockSearch.value = "source=github&method=managed&stage=setup";
       listGalleryMock.mockResolvedValue({
         apps: [customerOwnedApp(GITHUB)],
       });
@@ -1824,7 +1904,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       await flushReact();
 
       expect(startCloudConnectorEnrollmentMock).toHaveBeenCalledWith(
-        "company-1", "Paperclip", "/apps/connect?source=github&stage=setup",
+        "company-1", "Paperclip", "/apps/connect?source=github&stage=setup&method=managed",
       );
       expect(popupAssignMock).toHaveBeenCalledWith(
         "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
@@ -1836,7 +1916,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   );
 
   it("labels GitHub's setup transition as the provider handoff it now is", async () => {
-    mockSearch.value = "source=github";
+    mockSearch.value = "source=github&method=managed";
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
 
     await render();
@@ -1867,6 +1947,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("keeps GitHub's personal identity defaults while its managed method awaits enrollment", async () => {
     mockParams.appKey = "github";
+    mockSearch.value = "method=managed";
     listGalleryMock.mockResolvedValue({
       apps: [customerOwnedApp(GITHUB)],
     });
@@ -1890,7 +1971,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("restores the setup step after the one-time enrollment callback", async () => {
-    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    mockSearch.value = "source=github&method=managed&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({ apps: [GITHUB_MANAGED] });
 
     await render();
@@ -1901,7 +1982,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("explains unavailable GitHub sign-in without silently switching to a PAT", async () => {
-    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    mockSearch.value = "source=github&method=managed&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
       apps: [customerOwnedApp(GITHUB)],
     });
@@ -1923,7 +2004,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("keeps GitHub sign-in intent when enrollment recovery reveals an unavailable profile", async () => {
-    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    mockSearch.value = "source=github&method=managed&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
       apps: [customerOwnedApp(GITHUB)],
     });
@@ -1949,6 +2030,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("preserves a dedicated agent identity across the full-page enrollment callback", async () => {
     mockParams.appKey = "github";
+    mockSearch.value = "method=managed";
     listGalleryMock.mockResolvedValue({
       apps: [customerOwnedApp(GITHUB)],
       capabilities: {
@@ -1993,7 +2075,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mountedRoot = null;
     container.innerHTML = "";
     mockParams.appKey = undefined;
-    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    mockSearch.value = "source=github&method=managed&stage=setup&cloud_connector=enrolled";
     mockCompany.value = { selectedCompanyId: undefined, selectedCompany: null };
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
     getCloudConnectorEnrollmentMock.mockResolvedValue(activeConnectorEnrollment());
@@ -2284,6 +2366,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("opens the selected app directly on its setup route", async () => {
     mockParams.appKey = "github";
+    mockSearch.value = "method=managed";
     await render();
 
     // PAP-659: a deep-linked app lands on its one connect screen. Identity and
@@ -2918,6 +3001,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     const onComplete = vi.fn();
     getConnectionMock.mockResolvedValue({ id: "conn-github", status: "active" });
+    mockSearch.value = "method=managed";
     const dialogRoot = await render(undefined, false, <ConnectionSetupFlow host={host} serviceSlug="github" forceNewConnection onComplete={onComplete} />);
     await passAccessStep();
     await act(async () => buttonByText("Continue to GitHub")!.click());
@@ -3455,7 +3539,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("shows installation recovery for GitHub even when an advanced PAT method is available", async () => {
     const connectionId = "22222222-2222-4222-8222-222222222222";
-    mockSearch.value = `source=github&resume=${connectionId}&oauth=failed&code=github_installation_required&installation_url=https%3A%2F%2Fgithub.com%2Fapps%2Fpaperclip-for-github%2Finstallations%2Fnew`;
+    mockSearch.value = `source=github&method=managed&resume=${connectionId}&oauth=failed&code=github_installation_required&installation_url=https%3A%2F%2Fgithub.com%2Fapps%2Fpaperclip-for-github%2Finstallations%2Fnew`;
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
     listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-github", status: "draft", metadata: { sourceTemplateKey: "github" } }] });
     listConnectionsMock.mockResolvedValue({ connections: [{
@@ -4306,8 +4390,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("steps back from the single connect screen straight to Connectors", async () => {
-    mockSearch.value = "";
+    mockSearch.value = "method=managed";
     mockParams.appKey = "github";
+    mockSearch.value = "method=managed";
     await render();
     await passAccessStep();
     expect(container.textContent).toContain("Connect GitHub");
@@ -4348,7 +4433,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it("continues an exact credential-based draft instead of creating a replacement", async () => {
     const connectionId = "33333333-3333-4333-8333-333333333333";
-    mockSearch.value = `source=github&resume=${connectionId}`;
+    mockSearch.value = `source=github&method=managed&resume=${connectionId}`;
     listGalleryMock.mockResolvedValueOnce({ apps: [GITHUB] });
     listApplicationsMock.mockResolvedValueOnce({
       applications: [{ id: "app-github", status: "active", metadata: { sourceTemplateKey: "github" } }],

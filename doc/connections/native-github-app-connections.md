@@ -113,3 +113,34 @@ reviewed metadata mode tests exactly one private-bootstrap search per worker
 identity with metadata-only tokens. Neither mode qualifies contents or PR
 operations, and neither changes production API action permissions. Real provider probes require an explicit
 reviewed scope and must revoke their short-lived tokens.
+
+## GitHub identity choice and shared Secrets collection
+
+GitHub Add account first asks which actor will be used: a GitHub user account
+through managed sign-in, or a GitHub App installation. Personal access tokens
+remain under Advanced. Only managed sign-in requires Paperclip enrollment.
+The App path stays local and retains the requesting agent and completion context.
+Reconnects and enrollment returns retain the selected method. The three prepared
+App identities show existing connections instead of offering a repeat import.
+
+Signing keys reuse the regular Secrets toolbar, responsive row/card, status,
+relative-time, folder row and details components. Search is global and temporarily
+uses flat view. Empty folders are navigation paths until a key is added or moved,
+as in regular Secrets. Key-specific filters are Status and Type. Versions is an
+extra details tab because stored and active service versions differ. Import,
+rotation and generic lifecycle changes require explicit action and fresh review;
+the default sidebar contains public metadata only.
+
+Display folders use dedicated signingFolderPath/signingOrganizationRevision
+provider metadata. They never rename a stored key or alter its scope, consumer,
+App/role binding, ciphertext, versions, signing pins or grants. The dedicated
+organization endpoint accepts only a folder path and fresh concurrency guards.
+It requires Board/company access, instance administration and the existing
+same-origin check. Generic secret APIs remain unable to mutate signing keys.
+Managed keys retain their verified connected-service lifecycle. No data migration,
+key re-import, App installation change or agent execution is required for this UX.
+
+Older native-settings-aware releases ignore the additional presentation metadata;
+their signing authority and active pins remain compatible. Qualify rollback against
+the same native database and master key; older pre-native releases remain unsafe
+as described above. Do not restore a pre-receipt database for a UI rollback.
