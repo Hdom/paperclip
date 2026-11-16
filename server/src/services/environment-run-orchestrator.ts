@@ -261,6 +261,7 @@ export function environmentRunOrchestrator(
     companyId: string;
     adapterType: string;
     environment: Environment;
+    lease: EnvironmentLease;
     leaseMetadata: Record<string, unknown> | null;
   }): Promise<Record<string, unknown> | null> {
     try {
@@ -269,6 +270,8 @@ export function environmentRunOrchestrator(
         companyId: input.companyId,
         adapterType: input.adapterType,
         environment: input.environment,
+        leaseId: input.lease.id,
+        lease: input.lease,
         leaseMetadata: input.leaseMetadata,
       });
     } catch (err) {
@@ -443,6 +446,7 @@ export function environmentRunOrchestrator(
       companyId: input.companyId,
       adapterType: input.adapterType,
       environment,
+      lease: leaseRecord.lease,
       leaseMetadata: leaseRecord.lease.metadata,
     });
 
