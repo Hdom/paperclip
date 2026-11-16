@@ -669,7 +669,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let runtimeSkillDigest = Array.isArray(config.paperclipRuntimeSkills)
     ? createHash("sha256").update(JSON.stringify({ connectorSkillDigest,
       skills: codexSkillEntries.filter(entry => desiredSet.has(entry.key))
-        .map(entry => [entry.key, entry.source]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+        .map(entry => [entry.key, entry.versionId ? `version:${entry.versionId}` : entry.source]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     })).digest("hex")
     : connectorSkillDigest;
   const runtimeCredentialHome = runtimeSkillDigest

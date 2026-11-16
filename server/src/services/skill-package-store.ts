@@ -1,9 +1,10 @@
+import { isCacheFileMiss, readCheckedCacheFile, UnsafeCacheFile } from "./checked-cache-file.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { recoverSkillPackage, skillPackageRecoveryReader } from "./skill-package-recovery.js";
 import { touchSkillPackage, trimSkillPackageCache } from "./skill-package-cache.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { constants, createReadStream, createWriteStream, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
@@ -254,13 +255,9 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
       let bytes: Buffer | null = null;
       if (row.storage) {
         try {
-          const file = await fs.open(paths.manifest, constants.O_RDONLY | constants.O_NOFOLLOW);
-          try {
-            const stat = await file.stat();
-            if (stat.isFile() && stat.size <= MAX_SKILL_MANIFEST_BYTES) bytes = await file.readFile();
-          } finally { await file.close(); }
+          bytes = await readCheckedCacheFile(paths.manifest, MAX_SKILL_MANIFEST_BYTES);
         } catch (error) {
-          if (!["ENOENT", "ELOOP", "EISDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+          if (!isCacheFileMiss(error)) throw error;
         }
       }
       if (row.storage) {
@@ -585,22 +582,11 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     signal?.throwIfAborted();
     const filename = path.join(root, entry.path);
     await ensureSkillCacheDirectory(path.dirname(filename));
-    const handle = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      const stat = await handle.stat();
-      if (!stat.isFile() || stat.size !== entry.size) throw new Error("Invalid cached skill file");
-      const bytes = Buffer.alloc(entry.size);
-      let offset = 0;
-      while (offset < bytes.length) {
-        signal?.throwIfAborted();
-        const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
-        if (!bytesRead) throw new Error("Invalid cached skill file");
-        offset += bytesRead;
-      }
-      if (packageSha256(bytes) !== entry.sha256) throw new Error("Invalid cached skill file");
-      return bytes;
-    } finally { await handle.close(); }
+    const bytes = await readCheckedCacheFile(filename, entry.size, entry.size, signal);
+    if (packageSha256(bytes) !== entry.sha256) throw new UnsafeCacheFile("Invalid cached skill checksum");
+    return bytes;
   }
+
   async function versionFiles(version: StoredSkillVersion, allowRecovery = true, cancellation?: AbortSignal): Promise<CompanySkillVersionFileInventoryEntry[]> {
     const signal = cancellation ? AbortSignal.any([cancellation, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000);
     signal.throwIfAborted();
@@ -630,14 +616,14 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     // Verify bytes as they are read, without holding the warm preparation lock.
     // A descriptor survives eviction; a missing/racing file falls back to storage.
     const root = skillPackagePaths(version.companyId, id).directory;
-    const result = await withPackageIo(() => read(root).catch(() => null), signal, inventoryIo);
+    const result = await withPackageIo(() => read(root).catch(error => { if (isCacheFileMiss(error)) return null; throw error; }), signal, inventoryIo);
     if (result) {
       touchSkillPackage(root);
       return result;
     }
     signal.throwIfAborted();
     const acquire = async () => {
-      const cached = await withPackageIo(() => read(root).catch(() => null), signal, inventoryIo);
+      const cached = await withPackageIo(() => read(root).catch(error => { if (isCacheFileMiss(error)) return null; throw error; }), signal, inventoryIo);
       return cached ?? withIsolatedPackage(version.companyId, id, read, allowRecovery, signal, true);
     };
     return cancellation ? acquire() : flight(db, `version-read:${version.companyId}:${version.id}:${allowRecovery}`, acquire);
@@ -672,12 +658,12 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     };
     // Immutable cache files can be read without the preparation lock. An open
     // descriptor survives eviction; missing/racing files fall back to storage.
-    const cached = await withPackageIo(() => read(skillPackagePaths(version.companyId, id).directory).catch(() => null), signal, inventoryIo);
+    const cached = await withPackageIo(() => read(skillPackagePaths(version.companyId, id).directory).catch(error => { if (isCacheFileMiss(error)) return null; throw error; }), signal, inventoryIo);
     if (cached) return cached;
     signal.throwIfAborted();
     return flight(db, `file-read:${version.companyId}:${version.id}:${relativePath}:${allowRecovery}`,
       async () => {
-        const cached = await withPackageIo(() => read(skillPackagePaths(version.companyId, id).directory).catch(() => null), signal, inventoryIo);
+        const cached = await withPackageIo(() => read(skillPackagePaths(version.companyId, id).directory).catch(error => { if (isCacheFileMiss(error)) return null; throw error; }), signal, inventoryIo);
         return cached ?? withIsolatedPackage(version.companyId, id, read, allowRecovery, signal, true);
       });
   }

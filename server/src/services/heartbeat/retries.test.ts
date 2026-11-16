@@ -69,6 +69,18 @@ function deferral() {
 }
 
 describe("heartbeat retry module callbacks", () => {
+  it("withholds permanent source-policy retries without queue or database effects", async () => {
+    const database = guardedDatabase(), deps = callbacks();
+    const run = { ...unitRun(), status: "failed", errorCode: "configuration_incomplete",
+      resultJson: { configurationIncomplete: { reason: "controller_source_protection_refused" } } } as Run;
+    expect(await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(run, { adapterType: "codex_local" } as Agent))
+      .toMatchObject({ outcome: "not_scheduled", reason: "Repair protected source delivery before retrying.", issueId: "issue" });
+    expect(database.access).not.toHaveBeenCalled();
+    expect(deps.getAgentInvokability).not.toHaveBeenCalled();
+    expect(deps.appendRunEvent).not.toHaveBeenCalled();
+    for (const callback of Object.values(deps.runDispatch)) expect(callback).not.toHaveBeenCalled();
+  });
+
   it("preserves legacy helper and error-class identity", () => {
     expect(legacy.computeBoundedTransientHeartbeatRetrySchedule).toBe(extracted.computeBoundedTransientHeartbeatRetrySchedule);
     expect(legacy.computeWorkspaceBusyRetryDelayMs).toBe(extracted.computeWorkspaceBusyRetryDelayMs);

@@ -1,5 +1,6 @@
+import { checkedCacheStat, checkCacheHandle, isCacheFileMiss, openCheckedCacheFile, sameCacheIdentity } from "./checked-cache-file.js";
 import { createHash } from "node:crypto";
-import { constants, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 
 export type FileManifestEntry = { path: string; size: number; sha256: string; executable: boolean; mode?: number };
@@ -44,21 +45,24 @@ export async function verifyFileManifest(directory: string, files: readonly File
         seen.add(name);
         return withFileIo(async () => {
           const target = path.join(directory, name);
-          const stat = await fs.lstat(target, { bigint: true });
+          const stat = await checkedCacheStat(target, file.size, file.size);
           if (!stat.isFile() || stat.size !== BigInt(file.size) || Boolean(stat.mode & 0o111n) !== file.executable
             || (file.mode !== undefined && Number(stat.mode & 0o555n) !== file.mode)) return false;
           const signature = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.mode}`;
           const previous = verifiedFiles.get(target);
           if (previous?.signature === signature && previous.digest === file.sha256) return true;
-          const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+          const { handle, stat: before, expectedPath } = await openCheckedCacheFile(target, file.size, file.size);
           try {
-            const before = await handle.stat({ bigint: true });
-            if (before.ino !== stat.ino || before.ctimeNs !== stat.ctimeNs) return false;
+            if (!sameCacheIdentity(before, stat)) return false;
             const hash = createHash("sha256");
-            for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk);
+            let bytes = 0;
+            for await (const chunk of handle.createReadStream({ autoClose: false })) {
+              bytes += chunk.length; if (bytes > file.size) return false; hash.update(chunk);
+            }
+            if (bytes !== file.size) return false;
             if (hash.digest("hex") !== file.sha256) return false;
-            const after = await handle.stat({ bigint: true });
-            if (after.ctimeNs !== before.ctimeNs || after.mtimeNs !== before.mtimeNs) return false;
+            const after = await checkCacheHandle(handle, target, file.size, file.size, expectedPath);
+            if (!sameCacheIdentity(before, after)) return false;
             if (verifiedFiles.size >= MAX_VERIFIED_FILES) verifiedFiles.delete(verifiedFiles.keys().next().value!);
             verifiedFiles.set(target, { signature, digest: file.sha256 });
             return true;
@@ -70,5 +74,5 @@ export async function verifyFileManifest(directory: string, files: readonly File
     return true;
   }
   try { return await walk("") && seen.size === expected.size; }
-  catch (error) { if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) return false; throw error; }
+  catch (error) { if (isCacheFileMiss(error)) return false; throw error; }
 }

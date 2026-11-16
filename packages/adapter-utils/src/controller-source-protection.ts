@@ -1,3 +1,4 @@
+import { ControllerSourceProtectionError } from "./controller-source-error.js";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -8,7 +9,7 @@ import { resolveDefaultSecretsKeyFilePath, resolveDefaultEmbeddedPostgresDir, re
 export function controllerExecutionProtected(env: NodeJS.ProcessEnv = process.env) {
   return Boolean(env.PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS || env.PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG);
 }
-const refused = () => new Error("Controller signing-key protection refused an unapproved source path or unsafe Git metadata");
+const refused = () => new ControllerSourceProtectionError("Controller signing-key protection refused an unapproved source path or unsafe Git metadata");
 function inside(root: string, candidate: string) {
   const relative = path.relative(root, candidate);
   return relative === "" || (relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative));
@@ -17,7 +18,7 @@ async function canonical(file: string): Promise<string> {
   if (!path.isAbsolute(file)) throw refused();
   try { return await realpath(file); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw refused();
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     const parent = path.dirname(file);
     if (parent === file) throw refused();
     return path.join(await canonical(parent), path.basename(file));
@@ -56,7 +57,10 @@ export async function assertControllerSourcePathAllowed(file: string, writing = 
     const configFile = process.env.PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG;
     if (configFile) {
       protectedPaths.push(path.dirname(configFile));
-      const config = JSON.parse(await boundedText(configFile, 65536));
+      const text = await boundedText(configFile, 65536);
+      let config;
+      try { config = JSON.parse(text); } catch { throw refused(); }
+      if (!config || typeof config !== "object" || Array.isArray(config)) throw refused();
       if (typeof config.stateDirectory !== "string" || !config.apps || typeof config.apps !== "object") throw refused();
       protectedPaths.push(config.stateDirectory);
       for (const role of ["coordinator", "implementer", "reviewer"]) {
@@ -76,7 +80,10 @@ export async function assertControllerSourcePathAllowed(file: string, writing = 
     if (roots.some(root => secrets.some(secret => inside(root, secret) || inside(secret, root)))) throw refused();
     const source = await canonical(file);
     if (!roots.some(root => inside(root, source)) || secrets.some(secret => inside(secret, source) || inside(source, secret))) throw refused();
-  } catch { throw refused(); }
+  } catch (error) {
+    if (error instanceof ControllerSourceProtectionError) throw error;
+    throw new Error("Controller signing-key protection could not validate source metadata", { cause: error });
+  }
 }
 
 /** Agent restore mappings must never be able to replace a controller-owned snapshot. */
@@ -159,5 +166,8 @@ export async function assertControllerGitWorkspaceSafe(cwd: string): Promise<voi
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
-  } catch { throw refused(); }
+  } catch (error) {
+    if (error instanceof ControllerSourceProtectionError) throw error;
+    throw new Error("Controller signing-key protection could not validate source metadata", { cause: error });
+  }
 }

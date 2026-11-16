@@ -1,10 +1,11 @@
+import { ControllerSourceProtectionError } from "./controller-source-error.js";
 import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assertControllerSourcePathAllowed, assertControllerSourceSnapshotRoot, controllerExecutionProtected } from "./controller-source-protection.js";
 
-const refused = () => new Error("Controller signing-key protection refused unsafe asset materialization");
+const refused = () => new ControllerSourceProtectionError("Controller signing-key protection refused unsafe asset materialization");
 export const CONTROLLER_ASSET_LIMITS = { fileBytes: 64 * 1024 * 1024, snapshotBytes: 256 * 1024 * 1024, entries: 10_000, depth: 64 } as const;
 
 /** Validate the opened file too, so a replaced alias cannot bypass a pre-read check. */
@@ -51,7 +52,7 @@ export async function createControllerSourceStagingDirectory(): Promise<string> 
 }
 
 /** Materialize only approved resolved sources; providers always receive a flat snapshot without tar -h. */
-export async function createControllerSourceSnapshot(source: string): Promise<{ directory: string; cleanup: () => Promise<void> }> {
+export async function createControllerSourceSnapshot(source: string, options?: { excludeNames?: ReadonlySet<string> }): Promise<{ directory: string; cleanup: () => Promise<void> }> {
   if (!controllerExecutionProtected()) throw refused();
   await assertControllerSourcePathAllowed(source);
   const directory = await createControllerSourceStagingDirectory();
@@ -69,7 +70,7 @@ export async function createControllerSourceSnapshot(source: string): Promise<{ 
       await mkdir(to, { recursive: true, mode: 0o700 });
       const children = await readdir(resolved);
       if (children.length > CONTROLLER_ASSET_LIMITS.entries - entries) throw refused();
-      for (const name of children) await copy(path.join(resolved, name), path.join(to, name), depth + 1);
+      for (const name of children) if (!options?.excludeNames?.has(name)) await copy(path.join(resolved, name), path.join(to, name), depth + 1);
       active.delete(resolved);
     } else if (info.isFile()) {
       if (info.size > CONTROLLER_ASSET_LIMITS.snapshotBytes - bytes) throw refused();

@@ -1,3 +1,4 @@
+import { controllerExecutionProtected } from "../controller-execution-protection.js";
 import { agentHarnessType } from "@paperclipai/shared";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { agentObservabilityService, unavailableAgentObservability, type ResolvedAgentObservability } from "../agent-observability.js";
@@ -88,6 +89,8 @@ export interface HeartbeatExecutionConfigurationInput {
   // The executor must observe these before a later preparation step can throw.
   onFailureSecretsResolved: (readSecrets: () => string[]) => void;
   onManagedAiRuntimeAcquired: (runtime: ManagedAiRuntime) => void;
+  signal?: AbortSignal;
+  onSkillExportPrepared: (cleanup: () => Promise<void>) => void;
   onIdentityRedactorPrepared: (redactor: ReturnType<typeof createAgentIdentityRedactor>) => void;
 }
 
@@ -303,6 +306,8 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       if (!hasStoredVersions && pinnedSkillTest) versionSelections.set(pinnedSkillTest.key, pinnedSkillTest.versionId);
       return await withSkillActor(skillActor, () => companySkills.withRuntimeSkillEntries(agent.companyId, {
         versionSelections, snapshotLatest: true,
+        ...(controllerExecutionProtected() ? { protectedRunExport: { runId: run.id, agentId: agent.id,
+          signal: input.signal, onCleanup: input.onSkillExportPrepared } } : {}),
         ...(hasStoredVersions
           ? { onlyKeys: new Set(Object.keys(storedVersions)) }
           : { selectionConfig: effectiveResolvedConfig, includeLegacy: agent.adapterType !== "paperclip_runner" }),

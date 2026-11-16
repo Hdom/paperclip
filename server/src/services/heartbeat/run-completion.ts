@@ -1,3 +1,4 @@
+import { ControllerSourceProtectionError, CONTROLLER_SOURCE_PROTECTION_FAILURE_CODE } from "@paperclipai/adapter-utils/controller-source-error";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
@@ -317,10 +318,12 @@ function mergeAdapterRecoveryMetadata(input: {
   };
 }
 
-function isConfigurationIncompleteFailure(
-  error: unknown,
-): error is ConfigurationIncompleteFailure {
-  return error instanceof ConfigurationIncompleteFailure;
+function readConfigurationIncompleteFailure(error: unknown): ConfigurationIncompleteFailure | null {
+  if (error instanceof ConfigurationIncompleteFailure) return error;
+  if (error instanceof ControllerSourceProtectionError) return new ConfigurationIncompleteFailure(error.message, {
+    configurationIncomplete: { reason: CONTROLLER_SOURCE_PROTECTION_FAILURE_CODE },
+  });
+  return null;
 }
 
 export function isConfigurationIncompleteFailedRun(
@@ -1221,11 +1224,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const workspaceValidationFailure = isWorkspaceValidationFailure(err)
       ? err
       : null;
-    const configurationIncompleteFailure = isConfigurationIncompleteFailure(
-      err,
-    )
-      ? err
-      : null;
+    const configurationIncompleteFailure = readConfigurationIncompleteFailure(err);
     const recordedResponsibleUserDenialCode =
       normalizeResponsibleUserDenialCode(
         (await getRun(run.id).catch(() => null))?.errorCode,
@@ -1550,8 +1549,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     )
       ? outerErr
       : null;
-    const configurationIncompleteSetupFailure =
-      isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+    const configurationIncompleteSetupFailure = readConfigurationIncompleteFailure(outerErr);
     const unresolvedBaseRefSetupFailure = isUnresolvedWorkspaceBaseRefError(
       outerErr,
     )

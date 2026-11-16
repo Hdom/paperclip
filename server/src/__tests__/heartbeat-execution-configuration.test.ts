@@ -219,7 +219,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       environment: { selectedEnvironmentId: localEnvironment.id, selectedEnvironmentForConfig: localEnvironment,
         resolvedInstanceSettings: await instanceSettingsService(db).get(), persistedNativeExecutionInput: persisted },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
-      onFailureSecretsResolved: vi.fn(), onManagedAiRuntimeAcquired: vi.fn(), onIdentityRedactorPrepared: vi.fn(),
+      onFailureSecretsResolved: vi.fn(), onSkillExportPrepared: () => {}, onManagedAiRuntimeAcquired: vi.fn(), onIdentityRedactorPrepared: vi.fn(),
     });
     if (failure) await expect(opening).rejects.toThrow(failure);
     else {
@@ -316,7 +316,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         resolvedInstanceSettings: await instanceSettingsService(db).get(),
         persistedNativeExecutionInput: persisted ? { schema: "paperclip.native-execution-input.v5" } as unknown as HeartbeatExecutionConfigurationInput["environment"]["persistedNativeExecutionInput"] : null },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
-      onFailureSecretsResolved: secretsResolved, onManagedAiRuntimeAcquired: vi.fn(), onIdentityRedactorPrepared: redactorPrepared,
+      onFailureSecretsResolved: secretsResolved, onSkillExportPrepared: () => {}, onManagedAiRuntimeAcquired: vi.fn(), onIdentityRedactorPrepared: redactorPrepared,
     });
     if (refused) {
       await expect(opening).rejects.toMatchObject({ name: "ConfigurationIncompleteFailure", code: "configuration_incomplete",
@@ -349,7 +349,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       environment: { selectedEnvironmentId: environment.id, selectedEnvironmentForConfig: environment,
         resolvedInstanceSettings, persistedNativeExecutionInput: null },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent, finalizeAiConnectionBusyDeferral: vi.fn() },
-      onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
+      onFailureSecretsResolved: () => {}, onSkillExportPrepared: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
     }) };
   }
 
@@ -550,7 +550,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
           explicitTaskDirectory: selected.explicitTaskDirectory, requestedExecutionWorkspaceMode: selectionInput.policy.requestedExecutionWorkspaceMode },
         environment: selected, services: { secretsSvc: secretService(db), companySkills: companySkillService(db),
           appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
-        onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {} });
+        onFailureSecretsResolved: () => {}, onSkillExportPrepared: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {} });
       if (!result.prepared) throw new Error("Configuration was not prepared");
       const metadata = await buildEffectiveRunSessionConfigMetadata({ adapterType: "paperclip_runner",
         effectiveAdapterConfig: result.runtimeConfig, agentRuntimeConfig: {}, issueOverrides: null, workspaceConfig: {},

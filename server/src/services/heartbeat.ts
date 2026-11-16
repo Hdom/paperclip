@@ -2118,6 +2118,7 @@ export function heartbeatService(
         }
       | undefined;
     let managedAiRuntime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    const skillExportCleanups: Array<() => Promise<void>> = [];
     let providerTraceCapture: Awaited<
       ReturnType<typeof traceStore.prepare>
     > | null = null;
@@ -2812,6 +2813,8 @@ export function heartbeatService(
         environment: { selectedEnvironmentId, selectedEnvironmentForConfig, resolvedInstanceSettings, persistedNativeExecutionInput },
         services: { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral },
         onFailureSecretsResolved: (readSecrets) => { readFailureReportSecrets = () => [...readSecrets(), ...identityRedactor.values]; },
+        signal: executionControl.controller.signal,
+        onSkillExportPrepared: (cleanup) => { skillExportCleanups.push(cleanup); },
         onManagedAiRuntimeAcquired: (runtime) => { managedAiRuntime = runtime; },
         onIdentityRedactorPrepared: (redactor) => { identityRedactor = redactor; },
       }));
@@ -3934,6 +3937,7 @@ export function heartbeatService(
       let caseHandoffCleanupSettled = false;
       let failedProcessCancellationSeen = failedProcessRunCancellations.has(run.id);
       await instructionWorkingCopy?.nativeInstructionReservation?.release().catch(error => logger.warn({ runId: run.id, err: error }, "Managed warm session preparation cleanup failed"));
+      for (const cleanup of skillExportCleanups) await cleanup().catch(() => logger.warn({ runId: run.id }, "Protected skill export cleanup failed"));
       if (managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
       let latestRun = await getRun(run.id).catch(() => null);
       try {
