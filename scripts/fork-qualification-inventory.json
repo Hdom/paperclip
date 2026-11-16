@@ -94,6 +94,16 @@
     {
       "cwd": "server",
       "files": [
+        "src/__tests__/skill-package-store.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
         "src/__tests__/ssh-automatic-stop.test.ts"
       ],
       "extra": [
@@ -781,6 +791,7 @@
     "src/__tests__/closed-native-receipt-accounting.test.ts",
     "ui/src/pages/Secrets.render.test.tsx",
     "ui/src/pages/secrets/secret-path.test.ts",
-    "src/__tests__/controller-skill-export.test.ts"
+    "src/__tests__/controller-skill-export.test.ts",
+    "src/__tests__/skill-package-store.test.ts"
   ]
 }
