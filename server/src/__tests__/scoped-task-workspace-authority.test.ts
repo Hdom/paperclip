@@ -83,7 +83,8 @@ it.each(["normal", "cancelled", "stale_generation"])("protected native real SSH 
     fixture=await startSshEnvLabFixture({statePath:path.join(root,"ssh-state.json")});
     const config=await buildSshEnvLabFixtureConfig(fixture), probe=await probeSshRunScope(config);
     const scope={...f.scope,bootId:probe.bootId}; await prepareSshRunScope(config,scope);
-    spec={...config,remoteCwd:probe.remoteCwd,runScope:scope};
+    // The production environment parser trims public known-host text before building the target.
+    spec={...config,knownHosts:config.knownHosts?.trim() || null,remoteCwd:probe.remoteCwd,runScope:scope};
     const target={...f.input.target,spec,remoteCwd:spec.remoteCwd};
     await db.update(environmentLeases).set({providerLeaseId:`ssh://${spec.username}@${spec.host}:${spec.port}${spec.remoteCwd}`,metadata:{host:spec.host,port:spec.port,username:spec.username,remoteWorkspacePath:spec.remoteWorkspacePath,remoteCwd:spec.remoteCwd,remoteExecutionScope:scope,remoteExecutionScopeRequired:true}}).where(eq(environmentLeases.id,scope.leaseId));
     await db.update(environments).set({config:{host:spec.host,port:spec.port,username:spec.username,remoteWorkspacePath:spec.remoteWorkspacePath,knownHosts:spec.knownHosts,strictHostKeyChecking:spec.strictHostKeyChecking}}).where(eq(environments.id,target.environmentId));
