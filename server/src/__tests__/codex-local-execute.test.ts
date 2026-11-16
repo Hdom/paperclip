@@ -1599,13 +1599,13 @@ process.exit(1);
     process.env.PAPERCLIP_HOME = path.join(root, "paperclip");
     process.env.PAPERCLIP_INSTANCE_ID = "connectors";
     process.env.CODEX_HOME = sourceHome;
-    const invoke = async (agentId: string, digest: string | null, source = skillSource, connectorSkillInstructions = "") => {
+    const invoke = async (agentId: string, digest: string | null, source = skillSource, connectorSkillInstructions = "", versionId: string | null = null) => {
       const config = {
         engine: "cli", command, cwd: workspace,
         env: { CODEX_HOME: sourceHome, PAPERCLIP_TEST_CAPTURE_PATH: capture },
         paperclipConnectorSkillDigest: digest,
         paperclipSkillSync: { desiredSkills: digest ? ["paperclipai/paperclip/agentmail"] : [] },
-        paperclipRuntimeSkills: digest ? [{ key: "paperclipai/paperclip/agentmail", runtimeName: "agentmail", source }] : [],
+        paperclipRuntimeSkills: digest ? [{ key: "paperclipai/paperclip/agentmail", runtimeName: "agentmail", source, versionId }] : [],
       };
       const result = await execute({ runId: `run-${agentId}-${digest?.slice(0, 1) ?? "none"}`,
         agent: { id: agentId, companyId: "company-1", name: "Email agent", adapterType: "codex_local", adapterConfig: config },
@@ -1622,6 +1622,18 @@ process.exit(1);
       expect(await fs.realpath(path.join(first.codexHome!, "auth.json"))).toBe(await fs.realpath(path.join(sourceHome, "auth.json")));
       expect(await fs.readFile(path.join(first.codexHome!, "skills/agentmail/SKILL.md"), "utf8")).toContain("inbox one");
       await expect(fs.stat(path.join(sourceHome, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
+      const firstExport = path.join(root, "temporary-export-one"); await fs.mkdir(firstExport);
+      await fs.copyFile(path.join(skillSource, "SKILL.md"), path.join(firstExport, "SKILL.md"));
+      const pinned = await invoke("pinned-agent", "a".repeat(64), firstExport, "", "11111111-1111-4111-8111-111111111111");
+      // Run cleanup removes the previous export before the next run starts.
+      await fs.rm(firstExport, { recursive: true });
+      const relocated = path.join(root, "temporary-protected-export"); await fs.mkdir(relocated);
+      await fs.copyFile(path.join(skillSource, "SKILL.md"), path.join(relocated, "SKILL.md"));
+      const samePin = await invoke("pinned-agent", "a".repeat(64), relocated, "", "11111111-1111-4111-8111-111111111111");
+      expect(samePin.codexHome).toBe(pinned.codexHome);
+      expect(await fs.realpath(path.join(samePin.codexHome!, "skills/agentmail"))).toBe(await fs.realpath(relocated));
+      const changedPin = await invoke("pinned-agent", "a".repeat(64), relocated, "", "22222222-2222-4222-8222-222222222222");
+      expect(changedPin.codexHome).not.toBe(pinned.codexHome);
       const other = await invoke("agent-2", "a".repeat(64));
       expect(other.codexHome).not.toBe(first.codexHome);
       const nextSource = path.join(root, "skill-v2");

@@ -26,7 +26,7 @@ for (const file of [
   "src/services/explicit-native-continuation.test.ts", "src/services/ssh-host-stop-receipt.test.ts",
   "src/services/worker-supervision.test.ts",
   "src/__tests__/closed-native-receipt-accounting.test.ts",
-  "src/__tests__/ssh-automatic-stop.test.ts", "src/__tests__/heartbeat-ssh-stop.test.ts", "src/services/remote-execution-scope.test.ts", "src/__tests__/environment-probe.test.ts", "src/__tests__/environment-runtime-driver-contract.test.ts", "src/services/native-runtime/native-ssh-command-runner.test.ts", "src/services/execution-blocker-read.test.ts", "src/__tests__/environment-retained-orphan-sandbox.test.ts", "src/services/idle-deadline-proof.test.ts",
+  "src/__tests__/controller-skill-export.test.ts", "src/__tests__/ssh-automatic-stop.test.ts", "src/__tests__/heartbeat-ssh-stop.test.ts", "src/services/remote-execution-scope.test.ts", "src/__tests__/environment-probe.test.ts", "src/__tests__/environment-runtime-driver-contract.test.ts", "src/services/native-runtime/native-ssh-command-runner.test.ts", "src/services/execution-blocker-read.test.ts", "src/__tests__/environment-retained-orphan-sandbox.test.ts", "src/services/idle-deadline-proof.test.ts",
   "src/__tests__/github-project-apps.test.ts", "src/__tests__/github-project-app-runtime.test.ts",
   "src/__tests__/github-app-connection-import.test.ts", "src/services/github-app-connections.test.ts",
   "src/__tests__/github-app-tools.test.ts", "src/services/github-app-tool-catalog.test.ts",

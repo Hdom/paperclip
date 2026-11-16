@@ -1,10 +1,11 @@
+import { ControllerSourceProtectionError } from "./controller-source-error.js";
 import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assertControllerSourcePathAllowed, assertControllerSourceSnapshotRoot, controllerExecutionProtected } from "./controller-source-protection.js";
 
-const refused = () => new Error("Controller signing-key protection refused unsafe asset materialization");
+const refused = () => new ControllerSourceProtectionError("Controller signing-key protection refused unsafe asset materialization");
 export const CONTROLLER_ASSET_LIMITS = { fileBytes: 64 * 1024 * 1024, snapshotBytes: 256 * 1024 * 1024, entries: 10_000, depth: 64 } as const;
 
 /** Validate the opened file too, so a replaced alias cannot bypass a pre-read check. */

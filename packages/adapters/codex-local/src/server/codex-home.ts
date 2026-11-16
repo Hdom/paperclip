@@ -1,3 +1,4 @@
+import { ControllerSourceProtectionError } from "@paperclipai/adapter-utils/controller-source-error";
 import { CONTROLLER_ASSET_LIMITS, createControllerSourceStagingDirectory, readControllerSourceFile } from "@paperclipai/adapter-utils/controller-source-materialization";
 import { assertControllerSourcePathAllowed, controllerExecutionProtected } from "@paperclipai/adapter-utils/controller-source-protection";
 import fs from "node:fs/promises";
@@ -452,7 +453,7 @@ interface ProtectedCodexStageBudget { bytes: number; entries: number }
 function consumeProtectedCodexStageBudget(budget: ProtectedCodexStageBudget | undefined, bytes: number, depth: number) {
   if (!budget) return;
   if (++budget.entries > CONTROLLER_ASSET_LIMITS.entries || depth > CONTROLLER_ASSET_LIMITS.depth || bytes > CONTROLLER_ASSET_LIMITS.snapshotBytes - budget.bytes)
-    throw new Error("Controller signing-key protection refused oversized Codex asset materialization");
+    throw new ControllerSourceProtectionError("Controller signing-key protection refused oversized Codex asset materialization");
   budget.bytes += bytes;
 }
 
@@ -468,7 +469,7 @@ async function stageContainedSubtree(
   await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
   await assertControllerSourcePathAllowed(sourceDir);
   const entries = await fs.readdir(sourceDir, { withFileTypes: true });
-  if (budget && entries.length > CONTROLLER_ASSET_LIMITS.entries - budget.entries) throw new Error("Controller signing-key protection refused oversized Codex asset materialization");
+  if (budget && entries.length > CONTROLLER_ASSET_LIMITS.entries - budget.entries) throw new ControllerSourceProtectionError("Controller signing-key protection refused oversized Codex asset materialization");
   for (const entry of entries) {
     const entrySource = path.join(sourceDir, entry.name);
     const entryTarget = path.join(targetDir, entry.name);
@@ -498,7 +499,7 @@ async function stageContainedSubtree(
     } else if (entryStat.isFile()) {
       consumeProtectedCodexStageBudget(budget, entryStat.size, depth + 1);
       const bytes = await readControllerSourceFile(resolved);
-      if (budget && bytes.length !== entryStat.size) throw new Error("Controller signing-key protection refused changed Codex source bytes");
+      if (budget && bytes.length !== entryStat.size) throw new ControllerSourceProtectionError("Controller signing-key protection refused changed Codex source bytes");
       const mode = entryStat.mode & 0o111 ? 0o700 : 0o600;
       await fs.writeFile(entryTarget, bytes, { mode });
       await fs.chmod(entryTarget, mode);
@@ -539,7 +540,7 @@ async function stageDirectorySecure(
   const realSourceDir = await fs.realpath(sourceDir);
   await assertControllerSourcePathAllowed(sourceDir);
   const entries = await fs.readdir(sourceDir, { withFileTypes: true });
-  if (budget && entries.length > CONTROLLER_ASSET_LIMITS.entries - budget.entries) throw new Error("Controller signing-key protection refused oversized Codex asset materialization");
+  if (budget && entries.length > CONTROLLER_ASSET_LIMITS.entries - budget.entries) throw new ControllerSourceProtectionError("Controller signing-key protection refused oversized Codex asset materialization");
   for (const entry of entries) {
     const entrySource = path.join(sourceDir, entry.name);
     const entryTarget = path.join(targetDir, entry.name);
@@ -567,7 +568,7 @@ async function stageDirectorySecure(
     } else if (entryStat.isFile()) {
       consumeProtectedCodexStageBudget(budget, entryStat.size, 1);
       const bytes = await readControllerSourceFile(resolved);
-      if (budget && bytes.length !== entryStat.size) throw new Error("Controller signing-key protection refused changed Codex source bytes");
+      if (budget && bytes.length !== entryStat.size) throw new ControllerSourceProtectionError("Controller signing-key protection refused changed Codex source bytes");
       const mode = entryStat.mode & 0o111 ? 0o700 : 0o600;
       await fs.writeFile(entryTarget, bytes, { mode });
       await fs.chmod(entryTarget, mode);
@@ -611,7 +612,7 @@ async function stageCodexHomeEntry(
   // regular file so copy-back and in-sandbox auth read real bytes.
   consumeProtectedCodexStageBudget(budget, stat.size, 0);
   const bytes = await readControllerSourceFile(source);
-  if (budget && bytes.length !== stat.size) throw new Error("Controller signing-key protection refused changed Codex source bytes");
+  if (budget && bytes.length !== stat.size) throw new ControllerSourceProtectionError("Controller signing-key protection refused changed Codex source bytes");
   // Stage every regular file `0600`, not just `auth.json`. The staged dir is a
   // 0700 mkdtemp and each file is read back only by the owner (Codex in-sandbox +
   // copy-back), so nothing needs group/other read. This is least privilege and,
@@ -663,7 +664,7 @@ export async function stageCodexHomeForSync(
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (typeof process.getuid === "function" && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) throw new Error("Managed observability profile must be an owned private regular file");
       consumeProtectedCodexStageBudget(budget, stat.size, 0);
       const bytes = await readControllerSourceFile(source);
-      if (budget && bytes.length !== stat.size) throw new Error("Controller signing-key protection refused changed Codex source bytes");
+      if (budget && bytes.length !== stat.size) throw new ControllerSourceProtectionError("Controller signing-key protection refused changed Codex source bytes");
       await fs.writeFile(path.join(stagedHome, filename), bytes, { mode: 0o600, flag: "wx" });
     }
     for (const entry of CODEX_SYNC_ALLOWLIST) {

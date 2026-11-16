@@ -1,3 +1,4 @@
+import { controllerSkillExporter, type ProtectedSkillRunExport } from "./controller-skill-export.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { skillExecutionContent } from "./skill-execution-content.js";
 import { notifySkillVersionRetention } from "./skill-version-retention-notifications.js";
@@ -402,6 +403,7 @@ export type RuntimeSkillVersionSelection = {
 };
 
 type RuntimeSkillEntryOptions = {
+  protectedRunExport?: ProtectedSkillRunExport;
   selectVersions?: (entries: RuntimeSkillVersionSelection[]) => Promise<Set<string>>;
   materializeMissing?: boolean;
   versionSelections?: Map<string, string | null>;
@@ -6212,13 +6214,18 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       } });
     }
     const admitted = await options.selectVersions?.(selected.map(item => item.selection));
+    const exporter = options.protectedRunExport ? controllerSkillExporter(db, companyId, options.protectedRunExport) : null;
     const out: PaperclipSkillEntry[] = [];
     for (const { skill, selection, installedResolution } of selected) {
       if (admitted && !admitted.has(selection.key)) continue;
-      const sourceResolution = installedResolution ?? await resolveRuntimeSkillSource(companyId, skill, {
-        ...options, ...(options.snapshotLatest ? { materializeMissing: false } : {}),
-        versionSelections: new Map([[selection.key, selection.versionId]]),
-      });
+      // Only the native selection above can export a pinned version. Raw paths
+      // and unversioned local skills retain the existing source-root policy.
+      const sourceResolution = exporter && selection.versionId
+        ? { status: "available" as const, source: await exporter.exportVersion(selection) }
+        : installedResolution ?? await resolveRuntimeSkillSource(companyId, skill, {
+          ...options, ...(options.snapshotLatest ? { materializeMissing: false } : {}),
+          versionSelections: new Map([[selection.key, selection.versionId]]),
+        });
       if (!sourceResolution) continue;
       out.push({ key: selection.key, runtimeName: selection.runtimeName, versionId: selection.versionId,
         currentVersionId: selection.currentVersionId, source: sourceResolution.source,

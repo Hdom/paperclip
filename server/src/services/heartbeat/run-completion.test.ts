@@ -1,3 +1,4 @@
+import { ControllerSourceProtectionError } from "@paperclipai/adapter-utils/controller-source-error";
 import { promises as fs } from "node:fs";
 import { createDurableRunLogStore } from "../run-log-store.js";
 import { createServer } from "node:http";
@@ -1682,6 +1683,16 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       error: "Workspace storage provider is not running; retry the same workspace",
       resultJson: { workspaceProviderFailure: { kind: "worker_unavailable", reason: null, retryable: true } } });
     expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+  });
+
+  it.each(["setup", "adapter"])("routes a typed controller source refusal during %s to a permanent owner blocker", async phase => {
+    const f = await fixture();
+    const error = new ControllerSourceProtectionError();
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(error));
+    else await f.completion.failRun(f.failure(error));
+    expect(await read(f.run.id)).toMatchObject({status:"failed",errorCode:"configuration_incomplete",
+      resultJson:{configurationIncomplete:{reason:"controller_source_protection_refused"}}});
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
 
   it("keeps a found project authentication conflict a configuration gap that blocks for the board", async () => {

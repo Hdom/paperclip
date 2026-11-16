@@ -5,11 +5,32 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertControllerSourcePathAllowed, assertControllerGitWorkspaceSafe } from "./controller-source-protection.js";
+const realpathFailure = vi.hoisted(() => ({ path: "", error: undefined as Error | undefined }));
+vi.mock("node:fs/promises", async importOriginal => {
+ const actual = await importOriginal<typeof import("node:fs/promises")>();
+ return { ...actual, realpath: async (...args: Parameters<typeof actual.realpath>) => {
+  if (String(args[0]) === realpathFailure.path && realpathFailure.error) throw realpathFailure.error;
+  return actual.realpath(...args);
+ } };
+});
 const exec = promisify(execFile);
 let root: string, source: string, secret: string;
 beforeEach(async () => { root = await mkdtemp(path.join(tmpdir(), "controller-source-policy-")); source = path.join(root, "sources"); secret = path.join(root, "protected"); await mkdir(source); await mkdir(secret); vi.stubEnv("PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS", "1"); vi.stubEnv("PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG", ""); vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS", JSON.stringify([source])); vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS", JSON.stringify([source])); vi.stubEnv("PAPERCLIP_CONTROLLER_PROTECTED_PATHS", JSON.stringify([secret])); });
-afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { realpathFailure.path = ""; realpathFailure.error = undefined; vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
 describe("controller source policy", () => {
+ it("keeps unexpected filesystem failures distinct from policy refusals", async () => {
+  const error = Object.assign(new Error("synthetic storage failure"), { code: "EIO" });
+  realpathFailure.path = source; realpathFailure.error = error;
+  const result = await assertControllerSourcePathAllowed(source).catch(error => error);
+  expect(result).toBeInstanceOf(Error);
+  expect(result.cause).toBe(error);
+  expect(result.code).toBeUndefined();
+ });
+ it.each(["null","[]","\"text\"","{"])("classifies invalid protection configuration %s as permanent",async contents=>{
+  const configFile=path.join(secret,"apps.json");await writeFile(configFile,contents);vi.stubEnv("PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG",configFile);
+  await expect(assertControllerSourcePathAllowed(source)).rejects.toMatchObject({code:"controller_source_protection_refused"});
+ });
+
  it("accepts native signing references without exposing fixed legacy key storage", async () => {
   const configFile = path.join(secret, "apps.json");
   await writeFile(configFile, JSON.stringify({ stateDirectory: path.join(secret, "ledger"), apps: Object.fromEntries(["coordinator", "implementer", "reviewer"].map((role, i) => [role, { signingKeySecret: { secretId: `00000000-0000-4000-8000-00000000000${i}`, version: 1 } }])) }));
