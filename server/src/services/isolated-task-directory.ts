@@ -1,6 +1,5 @@
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { parseObject } from "../adapters/utils.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
@@ -90,7 +89,9 @@ export async function materializeIsolatedTaskDirectory(input: {
 
 export async function isBoundIsolatedTaskDirectory(input: {
   companyId: string; issueId: string; workspaceId: string | null;
-  workspace: Pick<ExecutionWorkspace, "id" | "companyId" | "sourceIssueId" | "status" | "mode" | "strategyType" | "providerType" | "cwd" | "repoUrl" | "branchName"> | null;
+  // Database enum columns are text; literal checks below establish the contract.
+  workspace: { id: string; companyId: string; sourceIssueId: string | null; status: string; mode: string;
+    strategyType: string; providerType: string; cwd: string | null; repoUrl: string | null; branchName: string | null } | null;
 }): Promise<boolean> {
   const workspace = input.workspace;
   if (!workspace || workspace.id !== input.workspaceId || workspace.companyId !== input.companyId ||

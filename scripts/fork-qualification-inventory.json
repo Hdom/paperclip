@@ -4,6 +4,16 @@
     {
       "cwd": "server",
       "files": [
+        "src/__tests__/issue-execution-policy.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
         "src/services/isolated-task-directory.test.ts"
       ],
       "extra": [
@@ -578,7 +588,8 @@
     {
       "cwd": ".",
       "files": [
-        "packages/db/src/worker-supervision-upgrade.test.ts"
+        "packages/db/src/worker-supervision-upgrade.test.ts",
+        "packages/db/src/task-workflow-handoff-migration.test.ts"
       ],
       "extra": []
     },
@@ -960,7 +971,9 @@
     "packages/adapter-utils/src/ssh-stopped-workspace-snapshot.test.ts",
     "src/services/isolated-task-directory.test.ts",
     "src/services/heartbeat/environment-selection.test.ts",
-    "src/services/heartbeat/workspace-preparation.test.ts"
+    "src/services/heartbeat/workspace-preparation.test.ts",
+    "src/__tests__/issue-execution-policy.test.ts",
+    "packages/db/src/task-workflow-handoff-migration.test.ts"
   ],
   "isolatedQualification": {
     "script": "scripts/tests/qualify-isolated-ssh.py",

@@ -1,3 +1,4 @@
+import { workflowHandoffBlocksRun } from "../task-workflow-handoff-state.js";
 import { McpPolicyConflictError, MCP_POLICY_CONFLICT_CODE } from "@paperclipai/adapter-utils/mcp-policy-error";
 import { ControllerSourceProtectionError, CONTROLLER_SOURCE_PROTECTION_FAILURE_CODE } from "@paperclipai/adapter-utils/controller-source-error";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
@@ -1042,7 +1043,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           parseObject(livenessRun.contextSnapshot)
             .resumeSessionGoalHeartbeat === true,
       });
-      if (!conversationSettled) {
+      if (!conversationSettled && !await workflowHandoffBlocksRun(db, livenessRun.companyId, livenessRun.id)) {
         await handleIssueReviewPathDisposition(livenessRun);
         if (livenessRun.runtimeMode !== "native") {
           await recovery.reconcileLegacyContinuation(livenessRun.id);

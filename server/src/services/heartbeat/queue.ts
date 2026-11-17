@@ -1,3 +1,5 @@
+import { pendingTaskWorkflowHandoff, committedTaskWorkflowWakeMatches } from "../task-workflow-handoff-state.js";
+import { issueWorkflowHandoffs } from "@paperclipai/db";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { isReconciledBlockerStall } from "../../modules/wake-queue/index.js";
@@ -1844,6 +1846,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   async function resumeDeferredExecutionReceipts(scope: DeferredReceiptRecoveryOptions = {}) {
     if ((await getSchedulingSuppression()).suppressed) return;
     await resumeExecutionWaitComments(scope);
+    // These are committed workflow receipts, not generic assignment signals.
+    // Reuse canonical admission with the exact durable receipt ID; its locked
+    // handoff fingerprint gate below runs before any continuation override.
+    const handoffWakes = await db.select().from(agentWakeupRequests).where(and(
+      scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+      scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+      eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+      sql`${agentWakeupRequests.payload}->>'workflowHandoffId' is not null`)).orderBy(asc(agentWakeupRequests.id)).limit(50);
+    for (const wake of handoffWakes) {
+      const context = parseObject(wake.payload?.[DEFERRED_WAKE_CONTEXT_KEY]);
+      await enqueueWakeup(wake.agentId, { source: wake.source as WakeupOptions["source"],
+        triggerDetail: wake.triggerDetail as WakeupOptions["triggerDetail"], reason: wake.reason ?? undefined,
+        payload: wake.payload ?? undefined, contextSnapshot: context,
+        requestedByActorType: wake.requestedByActorType as WakeupOptions["requestedByActorType"],
+        requestedByActorId: wake.requestedByActorId ?? undefined }, wake.id).catch(error => {
+          scope.onError?.(error); logger.warn({ err: error, requestId: wake.id }, "workflow successor is still held");
+        });
+    }
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
       .from(agentWakeupRequests).innerJoin(companies, eq(companies.id, agentWakeupRequests.companyId))
@@ -3134,6 +3154,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             return { kind: "skipped" as const };
 
           let resumedHandoff: ReturnType<typeof readHandoffWake> = null;
+          let resumedWorkflowHandoff = false;
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
               eq(agentWakeupRequests.id, executionWaitRequestId), eq(agentWakeupRequests.companyId, agent.companyId),
@@ -3155,7 +3176,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             // An adopted, discarded, or edited receipt is no longer authority.
             resumedHandoff = source === "assignment" && pending?.source === source &&
               readHandoffWake(pending.payload)?.reason === reason ? readHandoffWake(pending.payload) : null;
-            if (!pending || (!resumedHandoff && !opts.taskRetryRequestId && !(wakeCommentId && queuedCommentIdsFromWakePayload(pending.payload).includes(wakeCommentId)) &&
+            if (pending?.payload?.workflowHandoffId && source === pending.source && reason === pending.reason &&
+              triggerDetail === pending.triggerDetail && opts.requestedByActorType === pending.requestedByActorType &&
+              opts.requestedByActorId === pending.requestedByActorId) {
+              const [workflowTask] = await tx.select().from(issues).where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueId)));
+              resumedWorkflowHandoff = !!workflowTask && await committedTaskWorkflowWakeMatches(tx as unknown as Db, workflowTask, pending);
+            }
+            if (!pending || (!resumedHandoff && !resumedWorkflowHandoff && !opts.taskRetryRequestId && !(wakeCommentId && queuedCommentIdsFromWakePayload(pending.payload).includes(wakeCommentId)) &&
                 !(opts.queuedCommentInterruptId && await readQueuedInteractionResponse(tx as unknown as Db,
                   agent.companyId, issueId, pending.payload)))) {
               return { kind: "deferred" as const };
@@ -3740,6 +3767,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: verifiedConversationReset ? wakeCommentId : null },
           );
+          const pendingWorkflow = await pendingTaskWorkflowHandoff(tx as unknown as Db, issue.companyId, issue.id);
+          if (pendingWorkflow) return deferBlockedExecution({ recoveryActionId: null, runId: pendingWorkflow.sourceRunId,
+            cause: "workflow_handoff_pending",
+            nextAction: "The saved work and workflow handoff must settle before another agent can start." });
+          if (payload?.workflowHandoffId) {
+            const [receipt] = executionWaitRequestId ? await tx.select().from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.id, executionWaitRequestId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"))).for("update") : [];
+            // `issue` above is an intentionally partial admission projection.
+            // Compare the complete frozen domain, not missing projected fields.
+            const [verifiedWorkflowTask] = await tx.select().from(issues).where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)));
+            if (!resumedWorkflowHandoff || !receipt || !verifiedWorkflowTask || !await committedTaskWorkflowWakeMatches(tx as unknown as Db, verifiedWorkflowTask, receipt))
+              throw conflict("The workflow successor receipt is stale or unbound.");
+          }
           // Prove eligibility without retiring the hold. Later gates can still
           // decline this wake; hold retirement and successor creation stay atomic.
           // A bound chat request has already rechecked its current principal
@@ -4696,7 +4737,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           };
           // A deferred durable chat wake already owns this ID and source.
           // Promote that receipt in the same transaction as its successor.
-          const wakeupRequest = resumedHandoff || (durableRequest && executionWaitRequestId === durableRequest.id)
+          const wakeupRequest = resumedHandoff || resumedWorkflowHandoff || (durableRequest && executionWaitRequestId === durableRequest.id)
             ? await tx.update(agentWakeupRequests).set({
                 payload, reason, status: "queued", error: null, finishedAt: null, updatedAt: new Date(),
               }).where(and(eq(agentWakeupRequests.id, executionWaitRequestId!),

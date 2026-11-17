@@ -3,7 +3,7 @@ import { extractControllerWorkspaceArchive } from "./controller-workspace-archiv
 import fs from "node:fs/promises";
 import { createControllerSourceSnapshot, createControllerSourceStagingDirectory } from "./controller-source-materialization.js";
 import { assertControllerWorkspacePublication, markControllerWorkspaceReturnReady, hasControllerWorkspaceAuthority, withControllerWorkspaceOperation, recordControllerWorkspaceRestoreFailure } from "./controller-workspace-authority.js";
-import { captureDirectorySnapshot, disposeDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+import { captureDirectorySnapshot, directorySnapshotSha256, disposeDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 import { prepareWorkspaceForSshExecution, downloadControllerWorkspaceArchive, type SshRemoteExecutionSpec } from "./ssh.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
 
@@ -67,7 +67,7 @@ export async function prepareControllerSshWorkspace(input: {
         throw error;
       } finally { await fs.rm(staging, { recursive: true, force: true }); }
   };
-  return { restore: (onProgress?: RuntimeProgressSink) => {
+  return { baselineSha256: directorySnapshotSha256(genuineBaseline), exclude: genuineBaseline.exclude, restore: (onProgress?: RuntimeProgressSink) => {
     // A second caller joins the same restore; it cannot race or duplicate publication.
     restoring ??= restore(onProgress);
     return restoring;

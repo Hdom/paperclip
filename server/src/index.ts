@@ -35,6 +35,7 @@ import { registerToolReviewExpiryWork } from "./services/tool-review-expiry-work
 import { registerGatewayCredentialExpiryWork } from "./services/gateway-credential-expiry-work.js";
 import { registerSecretProposalExpiryWork } from "./services/secret-proposal-expiry-work.js";
 import { registerCustomImageCleanupWork } from "./services/custom-image-cleanup-work.js";
+import { registerTaskWorkflowHandoffWork } from "./services/task-workflow-handoff-work.js";
 import { registerWorkspaceRecoveryWork } from "./services/workspace-recovery-work.js";
 import { registerEnvironmentCleanupWork } from "./services/environment-cleanup-work.js";
 import { loginCleanupSchedule } from "./services/login-cleanup-state.js";
@@ -1371,6 +1372,10 @@ async function startServerWithDatabaseTeardown(
     }), () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby())
     : null;
   if (skillVersionRetentionWorker) trackHeartbeatSchedulerWork(skillVersionRetentionWorker.ready);
+  const taskWorkflowHandoffWork = registerTaskWorkflowHandoffWork(db, deliveryWork,
+    () => !heartbeatSchedulerStopped && !isWarmStandby());
+  trackHeartbeatSchedulerWork(taskWorkflowHandoffWork.ready);
+  server.on("close", taskWorkflowHandoffWork.stop);
   const workspaceRecoveryWork = registerWorkspaceRecoveryWork(db, deliveryWork, workspaceRecoveryRuntime,
     accountingHeartbeat.resumeRemoteStopComments, () => !heartbeatSchedulerStopped);
   // Each native cleanup quarantine is logged with its cause when created. The
@@ -2089,6 +2094,7 @@ async function startServerWithDatabaseTeardown(
     unsubscribeRetainedNativeSessionCleanup?.();
     // B can accept Stop/answers while A still owns an execution. Preserve the
     // owner command workers and their transport until the handoff below ends.
+    taskWorkflowHandoffWork.stop();
     const deliveryWorkStop = await preDrain.run("delivery_work_stop", () => deliveryWork.stop(deploymentHints ? new Set([
       DELIVERY_QUEUES.nativeCancellation, DELIVERY_QUEUES.nativeRuntimeResponses, DELIVERY_QUEUES.question,
       DELIVERY_QUEUES.deploymentNotifications, DELIVERY_QUEUES.liveInvalidations,

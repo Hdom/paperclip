@@ -21,6 +21,7 @@ function execute({ cwd, files, extra }) {
 }
 
 for (const file of [
+  "src/__tests__/issue-execution-policy.test.ts",
   "src/services/isolated-task-directory.test.ts",
   "src/services/heartbeat/environment-selection.test.ts",
   "src/services/heartbeat/workspace-preparation.test.ts",
@@ -55,7 +56,7 @@ test(resolve(root, "server"), ["src/__tests__/heartbeat-local-environment.test.t
 // Three unrelated completion-wait cases in this file fail on qualified master
 // too. Keep that known gap explicit; this gate proves the changed protected lane.
 test(resolve(root, "server"), ["src/__tests__/heartbeat-plugin-environment.test.ts"], ["--config", "vitest.config.ts", "-t", "protected"]);
-test(root, ["packages/db/src/worker-supervision-upgrade.test.ts"]);
+test(root, ["packages/db/src/worker-supervision-upgrade.test.ts", "packages/db/src/task-workflow-handoff-migration.test.ts"]);
 test(root, ["packages/adapter-utils/src/controller-workspace-archive.test.ts", "packages/adapter-utils/src/workspace-restore-merge.test.ts", "packages/adapter-utils/src/workspace-restore-unchanged.test.ts", "packages/adapter-utils/src/workspace-restore-teardown.test.ts", "packages/adapter-utils/src/controller-workspace-authority.test.ts", "packages/adapter-utils/src/controller-source-protection.test.ts", "packages/adapter-utils/src/controller-source-materialization.test.ts",
   "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/codex-home.test.ts"]);
 test(root, ["ui/src/pages/apps/AppDetail.test.tsx", "ui/src/pages/apps/AppsConnect.test.tsx", "ui/src/pages/apps/app-detail/GitHubAppConnectionPermissions.test.tsx", "ui/src/pages/secrets/GitHubAppKeyLifecycle.test.tsx"]);

@@ -1,3 +1,4 @@
+import { notifyWorkflowHandoff } from "./task-workflow-handoff-state.js";
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
 import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
@@ -4193,6 +4194,7 @@ export function heartbeatService(
         }
       }
       if (latestRun) await reconcileMuseNativeTerminalRun(db, latestRun);
+      await db.transaction(tx => notifyWorkflowHandoff(tx as unknown as Db)).catch(error => logger.warn({ error, runId: run.id }, "Workflow handoff settlement remains durable"));
       // Scratch preparation is optional. Its removal cannot be the only proof
       // that a local legacy adapter's closed-stdio descendants stopped.
       if (caseHandoffCleanupSettled && latestRun?.runtimeMode === "legacy" && legacyLocalAdapterEntered) {

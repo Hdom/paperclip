@@ -1519,6 +1519,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   // counters without further changes here.
   onProgress?: RuntimeProgressSink;
   onRuntimeProgress?: RuntimeStatusSink;
+  onWorkspaceCopyback?: import("./remote-managed-runtime.js").WorkspaceCopybackSink;
   // Optional host span runner for the workspace tarball build. Only the confined
   // sandbox lane uses it: it forwards the runner to prepareCommandManagedRuntime
   // so the host pack time rides one `pack` span under the `stage.sync` step. The
@@ -1557,6 +1558,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       assets: input.assets,
       additionalSources: input.additionalSources,
       onProgress: input.onProgress,
+      onWorkspaceCopyback: input.onWorkspaceCopyback,
     });
     return {
       target,

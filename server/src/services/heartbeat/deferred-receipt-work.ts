@@ -81,6 +81,7 @@ export function registerDeferredReceiptWork(
             kind === "task_chat" ? and(eq(agentWakeupRequests.reason, "task_retry"),
               sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}' is not null`) : or(
               eq(agentWakeupRequests.reason, "task_retry"),
+              sql`${agentWakeupRequests.payload}->>'workflowHandoffId' is not null`,
               sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
               sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
               sql`jsonb_typeof(${agentWakeupRequests.payload}#>'{_paperclipWakeContext,wakeCommentIds}') = 'array'

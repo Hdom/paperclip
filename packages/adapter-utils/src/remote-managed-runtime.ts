@@ -1,3 +1,6 @@
+import { lstat, realpath } from "node:fs/promises";
+import { hasControllerWorkspaceAuthority, withControllerWorkspaceOperation } from "./controller-workspace-authority.js";
+import { controllerSshWorkspaceTarget } from "./controller-ssh-workspace.js";
 import { prepareControllerSshWorkspace } from "./controller-ssh-workspace.js";
 import { createControllerSourceSnapshot } from "./controller-source-materialization.js";
 import { controllerExecutionProtected } from "./controller-source-protection.js";
@@ -16,7 +19,7 @@ import {
   type SandboxAdditionalSource,
   type SandboxManagedRuntimeAssetRestoreContext,
 } from "./sandbox-managed-runtime.js";
-import { captureDirectorySnapshot, type DirectorySnapshot } from "./workspace-restore-merge.js";
+import { captureDirectorySnapshot, captureDirectorySnapshotOffThread, directorySnapshotSha256, disposeDirectorySnapshot, type DirectorySnapshot } from "./workspace-restore-merge.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
 
 // The fixed heavy-directory excludes every referenced project drops,
@@ -35,6 +38,26 @@ const REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES = [
   ".cache",
   ".git",
 ].flatMap((entry) => [entry, `${entry}/*`, `*/${entry}`, `*/${entry}/*`]);
+
+/** Issued only by this process after genuine baseline/upload and successful SSH restore. */
+export interface WorkspaceCopybackReceipt {
+  readonly schema: "paperclip.workspace-copyback.v1";
+  readonly runId: string;
+  readonly localDir: string;
+  readonly remoteDir: string;
+  readonly rootIdentity: Readonly<{ dev: number; ino: number; uid: number; mode: number }>;
+  readonly scope: Readonly<NonNullable<SshRemoteExecutionSpec["runScope"]>>;
+  readonly baselineSha256: string;
+  readonly treeSha256: string;
+  readonly entryCount: number;
+  readonly exclude: readonly string[];
+}
+const issuedCopybacks = new WeakSet<object>();
+/** Configuration, agent output and serialized objects cannot manufacture this attestation. */
+export function isIssuedWorkspaceCopyback(value: unknown): value is WorkspaceCopybackReceipt {
+  return Boolean(value && typeof value === "object" && issuedCopybacks.has(value));
+}
+export type WorkspaceCopybackSink = (verify: () => Promise<WorkspaceCopybackReceipt>) => Promise<void>;
 
 export interface RemoteManagedRuntimeAsset {
   key: string;
@@ -123,6 +146,7 @@ export async function prepareRemoteManagedRuntime(input: {
   additionalSources?: SandboxAdditionalSource[];
   // Upload progress sink. Threaded for the byte-counting transport rewrite; the
   // child task wires it into the workspace/asset transfers.
+  onWorkspaceCopyback?: WorkspaceCopybackSink;
   onProgress?: RuntimeProgressSink;
 }): Promise<PreparedRemoteManagedRuntime> {
   const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
@@ -137,6 +161,7 @@ export async function prepareRemoteManagedRuntime(input: {
       )
     : baseWorkspaceRemoteDir;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const originalRoot = input.onWorkspaceCopyback && syncWorkspace ? await lstat(input.workspaceLocalDir) : null;
 
   const scopedWorkspace = syncWorkspace && controllerExecutionProtected()
     ? await prepareControllerSshWorkspace({ spec: input.spec, runId: input.runId, localDir: input.workspaceLocalDir,
@@ -281,6 +306,36 @@ export async function prepareRemoteManagedRuntime(input: {
           assetDir: path.posix.join(runtimeRootDir, asset.key),
           readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
         });
+      }
+      if (input.onWorkspaceCopyback && originalRoot && input.spec.runScope && (scopedWorkspace || baselineSnapshot)) {
+        // The closure exists only after the actual transport restore above succeeded.
+        // Hashing is lazy: runs with no workflow intent incur no extra tree walk.
+        let verified: Promise<WorkspaceCopybackReceipt> | undefined;
+        await input.onWorkspaceCopyback(() => verified ??= (async () => {
+          const verify = async () => {
+            const now = await lstat(input.workspaceLocalDir);
+            if (await realpath(input.workspaceLocalDir) !== input.workspaceLocalDir || !now.isDirectory() || now.isSymbolicLink()
+                || now.dev !== originalRoot.dev || now.ino !== originalRoot.ino) throw Error("workspace_copyback_identity_changed");
+            const exclude = scopedWorkspace?.exclude ?? baselineSnapshot!.exclude;
+            const checked = await createControllerSourceSnapshot(input.workspaceLocalDir,
+              { excludeNames: new Set(exclude.filter(name => !name.includes("/"))), rejectLinks: true, preserveFileModes: true });
+            try {
+            const snapshot = await captureDirectorySnapshotOffThread(checked.directory, { exclude, diskBacked: true });
+            try {
+              if (snapshot.entries.size > 100_000) throw Error("workspace_copyback_inventory_exceeded");
+              const receipt: WorkspaceCopybackReceipt = Object.freeze({ schema: "paperclip.workspace-copyback.v1", runId: input.runId,
+                localDir: input.workspaceLocalDir, remoteDir: workspaceRemoteDir,
+                rootIdentity: Object.freeze({ dev: now.dev, ino: now.ino, uid: now.uid, mode: now.mode }),
+                scope: Object.freeze({ ...input.spec.runScope! }), baselineSha256: scopedWorkspace?.baselineSha256 ?? directorySnapshotSha256(baselineSnapshot!),
+                treeSha256: directorySnapshotSha256(snapshot), entryCount: snapshot.entries.size, exclude: Object.freeze([...exclude]) });
+              issuedCopybacks.add(receipt); return receipt;
+            } finally { await disposeDirectorySnapshot(snapshot); }
+            } finally { await checked.cleanup(); }
+          };
+          const target = controllerSshWorkspaceTarget(input.spec, input.runId, workspaceRemoteDir);
+          return hasControllerWorkspaceAuthority(input.workspaceLocalDir, target)
+            ? withControllerWorkspaceOperation(input.workspaceLocalDir, target, "return_read", verify) : verify();
+        })());
       }
     },
   };
