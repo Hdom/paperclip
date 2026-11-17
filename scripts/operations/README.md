@@ -10,6 +10,14 @@ Settings > Secrets > Signing keys. Use those UI controls. These utilities
 cover host release handling, recovery qualification and source inspection. They
 never replace the UI with a second App configuration system.
 
+Protected repository-free SSH tasks with no explicit workspace, source, setup,
+or existing binding now receive a private per-run task directory on initial
+assignment. The server persists its normal task/workspace/lease ownership and
+uses the existing exact scoped transfer checks. This is visible through the
+existing task workspace controls; no second configuration surface is added.
+Explicit workspace or setup choices remain unchanged and must satisfy normal
+source protection. A private directory does not imply OS/process isolation.
+
 ## Source inventory
 
 `observed-deployment-inventory.json` records the 2026-11-14 controller, worker and

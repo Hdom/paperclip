@@ -2721,7 +2721,7 @@ export function heartbeatService(
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
       });
-      const requestedExecutionWorkspaceMode = freshWorkspace?.mode === "fresh_isolated_workspace"
+      let requestedExecutionWorkspaceMode = freshWorkspace?.mode === "fresh_isolated_workspace"
         ? "isolated_workspace" : trustPreset.kind === "low_trust_review" &&
         resolvedExecutionWorkspaceMode === "shared_workspace"
           ? "isolated_workspace"
@@ -2793,6 +2793,8 @@ export function heartbeatService(
         materializeNativeChatWorktree,
         explicitTaskDirectory,
         useIsolatedTaskDirectory,
+        initialIsolatedTaskDirectory,
+        requestedExecutionWorkspaceMode: selectedExecutionWorkspaceMode,
       } = await timePreparation("environment_selection", () => selectHeartbeatEnvironment(db, {
         run, agent,
         task: { issueRef, issueContext, issueId, context, executionProjectId, workspaceProjectContext, boundSourceWorkspace,
@@ -2804,6 +2806,7 @@ export function heartbeatService(
         config: { config, sourceWorkspaceConfig, issueAssigneeOverrides },
         services: { executionWorkspacesSvc, environmentsSvc, instanceSettings, findSharedWorkspaceHolder, findExecutionWorkspaceHolder },
       }));
+      requestedExecutionWorkspaceMode = selectedExecutionWorkspaceMode;
       let nativeChatExpectedCwd = selectedNativeChatExpectedCwd;
       const executionConfiguration = await timePreparation("execution_configuration", () => prepareHeartbeatExecutionConfiguration(db, {
         run, agent,
@@ -2885,6 +2888,7 @@ export function heartbeatService(
           effectiveExecutionWorkspaceMode,
           requestedExecutionWorkspaceMode,
           useIsolatedTaskDirectory,
+          initialIsolatedTaskDirectory,
           nativeChatWorkspaceScope,
           projectExecutionWorkspacePolicy,
           issueExecutionWorkspaceSettings,

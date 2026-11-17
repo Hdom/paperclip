@@ -1,5 +1,5 @@
 import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
-import { assertControllerSafeEnvironment } from "../controller-execution-protection.js";
+import { assertControllerSafeEnvironment, controllerExecutionProtected } from "../controller-execution-protection.js";
 import { heartbeatExternalProvider, nativeExecutionUsesTaskWorkspace } from "./external-provider.js";
 import { heartbeatRuns, issues, projects, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
@@ -19,7 +19,7 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "../execution-workspace-policy.js";
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
-import { isBoundIsolatedTaskDirectory, shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
+import { isBoundIsolatedTaskDirectory, shouldUseIsolatedTaskDirectory, shouldUseProtectedSshInitialTaskDirectory } from "../isolated-task-directory.js";
 import { readTaskDirectoryRetention } from "../isolated-task-directory-retention.js";
 import { isBoundFreshPluginTaskDirectory } from "../provider-fresh-workspace.js";
 import {
@@ -90,9 +90,10 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const { run, agent } = input;
   const { issueRef, issueContext, issueId, context, executionProjectId, workspaceProjectContext, boundSourceWorkspace, hasSelectedWorkspaceSource, taskWorkspaceIntent, responsibleUserId } = input.task;
   const {
-    trustPreset, requestedExecutionWorkspaceMode, isolatedWorkspacesEnabled: runtimeWorkspaceSelectionEnabled,
+    trustPreset, requestedExecutionWorkspaceMode: originalRequestedMode, isolatedWorkspacesEnabled: runtimeWorkspaceSelectionEnabled,
     projectExecutionWorkspacePolicy, issueExecutionWorkspaceSettings,
   } = input.policy;
+  let requestedExecutionWorkspaceMode = originalRequestedMode;
   const { config, sourceWorkspaceConfig, issueAssigneeOverrides } = input.config;
   const { executionWorkspacesSvc, environmentsSvc, instanceSettings, findSharedWorkspaceHolder, findExecutionWorkspaceHolder } = input.services;
   // A native run's execution input is immutable once persisted. Recovery must therefore
@@ -236,7 +237,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     managedSandboxOnly,
     managedSandboxEnvironmentId: managedSandboxEnvironment?.id ?? null,
   });
-  const effectiveExecutionWorkspaceMode: ReturnType<
+  let effectiveExecutionWorkspaceMode: ReturnType<
     typeof resolveExecutionWorkspaceMode
   > = requestedExecutionWorkspaceMode;
   const executionPolicy = {
@@ -326,6 +327,21 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
         ? await environmentsSvc.getById(selectedEnvironmentId)
         : null;
   assertControllerSafeEnvironment(selectedEnvironmentForConfig);
+  const initialIsolatedTaskDirectory = shouldUseProtectedSshInitialTaskDirectory({
+    protectedExecution: controllerExecutionProtected(), isolatedWorkspacesEnabled: runtimeWorkspaceSelectionEnabled, environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
+    mode: requestedExecutionWorkspaceMode, controllerOnly, hasIssue: issueRef !== null,
+    hasBinding: Boolean(issueRef?.executionWorkspaceId || existingExecutionWorkspace || reusableExistingExecutionWorkspace),
+    hasPersistedInput: persistedNativeExecutionInput !== null, fresh,
+    hasWorkspaceIntent: taskWorkspaceIntent !== null, hasTaskSettings: Object.keys(parseObject(issueExecutionWorkspaceSettings)).length > 0,
+    hasProjectPolicy: Object.keys(parseObject(projectExecutionWorkspacePolicy)).length > 0,
+    hasProjectWorkspace: Boolean(workspaceProjectContext?.hasWorkspace || issueRef?.projectWorkspaceId),
+    hasSelectedSource: Boolean(boundSourceWorkspace || hasSelectedWorkspaceSource),
+    workspaceStrategies: [config.workspaceStrategy, sourceWorkspaceConfig.workspaceStrategy, issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,
+      projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy],
+    workspaceConfig: sourceWorkspaceConfig,
+  });
+  if (initialIsolatedTaskDirectory) requestedExecutionWorkspaceMode = effectiveExecutionWorkspaceMode = "isolated_workspace";
+
   const nativeChatWorkspaceScope = controllerOnly ? null : await findNativeChatWorkspaceScope(db, {
     adapterType: agent.adapterType,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
@@ -541,7 +557,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   if (retainedDirectory && !boundTaskDirectory) throw new WorkspaceValidationFailure("The saved Retry task directory is unavailable.", {
     workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId },
   });
-  const useIsolatedTaskDirectory = !controllerOnly && issueRef !== null && (reuseTaskDirectory || (fresh && !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId) || shouldUseIsolatedTaskDirectory({
+  const useIsolatedTaskDirectory = !controllerOnly && issueRef !== null && (initialIsolatedTaskDirectory || reuseTaskDirectory || (fresh && !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId) || shouldUseIsolatedTaskDirectory({
     trustPreset: trustPreset.kind,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
     mode: requestedExecutionWorkspaceMode,
@@ -577,5 +593,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     materializeNativeChatWorktree,
     explicitTaskDirectory,
     useIsolatedTaskDirectory,
+    initialIsolatedTaskDirectory,
+    requestedExecutionWorkspaceMode,
   };
 }

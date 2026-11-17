@@ -22,6 +22,29 @@ export function shouldUseIsolatedTaskDirectory(input: {
     && input.workspaceStrategies.every((value) => Object.keys(parseObject(value)).length === 0);
 }
 
+/** Protected SSH can transfer an exact private task attempt, never the shared
+ * controller task root. Choose this only for an otherwise unspecified initial
+ * repository-free task; explicit workspace/source/setup choices retain control.
+ */
+export function shouldUseProtectedSshInitialTaskDirectory(input: {
+  protectedExecution: boolean; isolatedWorkspacesEnabled: boolean; environmentDriver: string | null;
+  mode: string; controllerOnly: boolean; hasIssue: boolean;
+  hasBinding: boolean; hasPersistedInput: boolean; fresh: boolean;
+  hasWorkspaceIntent: boolean; hasTaskSettings: boolean; hasProjectPolicy: boolean;
+  hasProjectWorkspace: boolean; hasSelectedSource: boolean;
+  workspaceStrategies: unknown[]; workspaceConfig: Record<string, unknown>;
+}): boolean {
+  return input.protectedExecution && input.isolatedWorkspacesEnabled && input.environmentDriver === "ssh" && !input.controllerOnly && input.hasIssue
+    && ["shared_workspace", "isolated_workspace"].includes(input.mode)
+    && !input.hasBinding && !input.hasPersistedInput && !input.fresh
+    && !input.hasWorkspaceIntent && !input.hasTaskSettings && !input.hasProjectPolicy
+    && !input.hasProjectWorkspace && !input.hasSelectedSource
+    && input.workspaceConfig.workspaceRuntime == null
+    && input.workspaceStrategies.every(value => value == null || (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0))
+    && ["cwd", "repo", "repoUrl", "repoRef", "worktreePath", "workspaceSetup", "setupCommand", "bootstrapCommand"]
+      .every(key => input.workspaceConfig[key] == null || input.workspaceConfig[key] === "");
+}
+
 /** Stable across turns, separate from project roots and shared agent homes. */
 export async function materializeIsolatedTaskDirectory(input: {
   companyId: string;

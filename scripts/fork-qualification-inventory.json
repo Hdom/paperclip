@@ -4,6 +4,36 @@
     {
       "cwd": "server",
       "files": [
+        "src/services/isolated-task-directory.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/heartbeat/environment-selection.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/heartbeat/workspace-preparation.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
         "src/__tests__/retained-ssh-workspace-source.test.ts"
       ],
       "extra": [
@@ -927,7 +957,10 @@
     "src/services/workspace-recovery-source.test.ts",
     "src/services/workspace-recovery-stop-proof.test.ts",
     "packages/adapters/codex-local/src/server/codex-home.test.ts",
-    "packages/adapter-utils/src/ssh-stopped-workspace-snapshot.test.ts"
+    "packages/adapter-utils/src/ssh-stopped-workspace-snapshot.test.ts",
+    "src/services/isolated-task-directory.test.ts",
+    "src/services/heartbeat/environment-selection.test.ts",
+    "src/services/heartbeat/workspace-preparation.test.ts"
   ],
   "isolatedQualification": {
     "script": "scripts/tests/qualify-isolated-ssh.py",

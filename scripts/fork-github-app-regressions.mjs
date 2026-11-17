@@ -21,6 +21,9 @@ function execute({ cwd, files, extra }) {
 }
 
 for (const file of [
+  "src/services/isolated-task-directory.test.ts",
+  "src/services/heartbeat/environment-selection.test.ts",
+  "src/services/heartbeat/workspace-preparation.test.ts",
   "src/__tests__/retained-ssh-workspace-source.test.ts",
   "src/__tests__/issue-blocker-stall-wakeups.test.ts",
   "src/__tests__/heartbeat-runtime-skills.test.ts",

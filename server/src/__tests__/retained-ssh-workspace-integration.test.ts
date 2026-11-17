@@ -98,8 +98,8 @@ async function seed() {
   return { input: { companyId, issueId, runId, actionId }, config, agentId, workspaceId, environmentId, leaseId, providerLeaseId, scope, source, recovery, metadata };
 }
 
-it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer","ResearcherRetry"])("fresh %s heartbeat prepares linked saved skills, returns status before copyback and stops SSH",async scenario=>{
-  const unboundRetry=scenario==="ResearcherRetry",role=unboundRetry?"Researcher":scenario;
+it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer","ResearcherRetry","CoordinatorInitial","ResearcherInitial","PlannerInitial","ImplementerInitial","ReviewerInitial"])("fresh %s heartbeat prepares linked saved skills, returns status before copyback and stops SSH",async scenario=>{
+  const unboundRetry=scenario==="ResearcherRetry",unboundInitial=scenario.endsWith("Initial"),role=scenario.replace(/(?:Retry|Initial)$/, "");
   const companyId=randomUUID(),agentId=randomUUID(),issueId=randomUUID(),environmentId=randomUUID(),skillId=randomUUID(),key=`company/${companyId}/linked-test`;
   await db.insert(companies).values({id:companyId,name:"Fresh "+role,issuePrefix:"F"+companyId.replaceAll("-",""),requireBoardApprovalForNewAgents:false,defaultResponsibleUserId:"operator"});
   await db.insert(companyMemberships).values({companyId,principalType:"user",principalId:"operator",status:"active",membershipRole:"member"});
@@ -121,7 +121,7 @@ it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer","Research
   await db.insert(issues).values({id:issueId,companyId,title:"Fresh "+role+" qualification",status:"todo",assigneeAgentId:agentId,});
   // Match the approved run's explicit native directory binding. Fresh here
   // means no previous agent run or skill-version map, not a Git worktree.
-  if(!unboundRetry){
+  if(!unboundRetry&&!unboundInitial){
   const nativeCwd=await materializeIsolatedTaskDirectory({companyId,issueId});
   const [nativeWorkspace]=await db.insert(executionWorkspaces).values({companyId,sourceIssueId:issueId,name:"Explicit native task directory",mode:"isolated_workspace",strategyType:"project_primary",cwd:nativeCwd,providerType:"local_fs"}).returning();
   await executionWorkspaceService(db).bindTaskWorkspace(companyId,issueId,nativeWorkspace.id);
@@ -147,7 +147,7 @@ it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer","Research
     const expectedTarget=controllerSshWorkspaceTarget(ctx.executionTarget.spec,ctx.runId,path.posix.join(ctx.executionTarget.spec.remoteCwd,".paperclip-runtime/runs",ctx.runId,"workspace"));
     expect(bound).toMatchObject({cwd:localCwd,mode:"isolated_workspace",strategy:"project_primary",repo:null,branch:null});
     expect(hasControllerWorkspaceAuthority(localCwd,expectedTarget)).toBe(true);
-    if(unboundRetry){
+    if(unboundRetry||unboundInitial){
       expect(localCwd).toBe(path.join(root,"instances/default/isolated-workspace-attempts",companyId,issueId,ctx.runId));
 
     }
