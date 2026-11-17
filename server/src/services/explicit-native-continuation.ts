@@ -8,7 +8,7 @@ import { readTaskRetryIntent } from "./task-retry.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
-import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
+import { hasVerifiedWorkspaceRepair, verifiedSshWorkspacePreservationReceipt } from "./workspace-recovery-receipt.js";
 import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from "./native-runtime/native-failed-workspace-recovery.js";
@@ -568,7 +568,8 @@ export async function admitExplicitNativeContinuation(input: {
     }
     if (nativeQueuedSend && await hasPendingRunCleanup(db, companyId, run.id))
       return blocked("cleanup_pending", "Waiting for the previous run to finish cleanup. Your message is saved.");
-    if (freshIntent && !await hasVerifiedWorkspaceRepair(db, run)) {
+    if (freshIntent && (!await hasVerifiedWorkspaceRepair(db, run)
+        || await verifiedSshWorkspacePreservationReceipt(db, run))) {
       freshSources.set(run.id, freshIntent);
       freshCandidates.push({ run, intent: freshIntent, cause: action.cause, evidence: strategyEvidence, remote,
         leaseIds: leases.map(lease => lease.id) });

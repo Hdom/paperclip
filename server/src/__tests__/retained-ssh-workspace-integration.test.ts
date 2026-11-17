@@ -1,3 +1,4 @@
+import { requestTaskRetry } from "../services/task-retry.js";
 import { materializeIsolatedTaskDirectory } from "../services/isolated-task-directory.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { hasControllerWorkspaceAuthority } from "@paperclipai/adapter-utils/controller-workspace-authority";
@@ -18,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentWakeupRequests, agents, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, workspaceOperations } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issueRelations, issues, workspaceOperations } from "@paperclipai/db";
 import { probeSshRunScope, prepareSshRunScope, stopSshRunScope, runSshCommand, shellQuote, type SshConnectionConfig } from "@paperclipai/adapter-utils/ssh";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { retainedSshHostKeyPolicySha256 } from "../services/retained-ssh-workspace-source.js";
@@ -97,7 +98,8 @@ async function seed() {
   return { input: { companyId, issueId, runId, actionId }, config, agentId, workspaceId, environmentId, leaseId, providerLeaseId, scope, source, recovery, metadata };
 }
 
-it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer"])("fresh %s heartbeat prepares linked saved skills, returns status before copyback and stops SSH",async role=>{
+it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer","ResearcherRetry"])("fresh %s heartbeat prepares linked saved skills, returns status before copyback and stops SSH",async scenario=>{
+  const unboundRetry=scenario==="ResearcherRetry",role=unboundRetry?"Researcher":scenario;
   const companyId=randomUUID(),agentId=randomUUID(),issueId=randomUUID(),environmentId=randomUUID(),skillId=randomUUID(),key=`company/${companyId}/linked-test`;
   await db.insert(companies).values({id:companyId,name:"Fresh "+role,issuePrefix:"F"+companyId.replaceAll("-",""),requireBoardApprovalForNewAgents:false,defaultResponsibleUserId:"operator"});
   await db.insert(companyMemberships).values({companyId,principalType:"user",principalId:"operator",status:"active",membershipRole:"member"});
@@ -119,10 +121,12 @@ it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer"])("fresh 
   await db.insert(issues).values({id:issueId,companyId,title:"Fresh "+role+" qualification",status:"todo",assigneeAgentId:agentId,});
   // Match the approved run's explicit native directory binding. Fresh here
   // means no previous agent run or skill-version map, not a Git worktree.
+  if(!unboundRetry){
   const nativeCwd=await materializeIsolatedTaskDirectory({companyId,issueId});
   const [nativeWorkspace]=await db.insert(executionWorkspaces).values({companyId,sourceIssueId:issueId,name:"Explicit native task directory",mode:"isolated_workspace",strategyType:"project_primary",cwd:nativeCwd,providerType:"local_fs"}).returning();
   await executionWorkspaceService(db).bindTaskWorkspace(companyId,issueId,nativeWorkspace.id);
   await db.update(issues).set({executionWorkspacePreference:"reuse_existing",workspaceSelection:{version:1,source:"explicit",selection:{kind:"existing",workspaceId:nativeWorkspace.id}}}).where(eq(issues.id,issueId));
+  }
   await instanceSettingsService(db).updateExperimental({enableBetaSkills:true,enableIsolatedWorkspaces:true});
   vi.stubEnv("PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS","1");vi.stubEnv("PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG","");
   vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_SSH_TARGETS",JSON.stringify([{...connection,privateKey:undefined}]));
@@ -143,6 +147,10 @@ it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer"])("fresh 
     const expectedTarget=controllerSshWorkspaceTarget(ctx.executionTarget.spec,ctx.runId,path.posix.join(ctx.executionTarget.spec.remoteCwd,".paperclip-runtime/runs",ctx.runId,"workspace"));
     expect(bound).toMatchObject({cwd:localCwd,mode:"isolated_workspace",strategy:"project_primary",repo:null,branch:null});
     expect(hasControllerWorkspaceAuthority(localCwd,expectedTarget)).toBe(true);
+    if(unboundRetry){
+      expect(localCwd).toBe(path.join(root,"instances/default/isolated-workspace-attempts",companyId,issueId,ctx.runId));
+
+    }
     const [enteredTask]=await db.select({status:issues.status,executionRunId:issues.executionRunId}).from(issues).where(eq(issues.id,issueId));
     expect(enteredTask).toMatchObject({status:"in_progress",executionRunId:ctx.runId});
     const runtime=await prepareRemoteManagedRuntime({spec:ctx.executionTarget.spec,runId:ctx.runId,adapterKey:"synthetic-fresh-role",workspaceLocalDir:localCwd,assets:[{key:"saved-skill",localDir:skill!.source}]});
@@ -154,7 +162,19 @@ it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer"])("fresh 
   }});
   const heartbeat=heartbeatService(db);
   try{
-    const started=await heartbeat.invoke(agentId,"on_demand",{issueId,wakeReason:"issue_assigned"},"manual");
+    let started;
+    if(unboundRetry){
+      // Match DNL-31: failed before provider preparation, no task workspace,
+      // no selection, and no agent-supplied fresh-mode override.
+      const [failed]=await db.insert(heartbeatRuns).values({companyId,agentId,issueId,status:"failed",runtimeMode:"legacy",
+        contextSnapshot:{issueId},errorCode:"configuration_incomplete",startedAt:new Date(Date.now()-2000),finishedAt:new Date(Date.now()-1000)}).returning();
+      await db.update(issues).set({status:"blocked"}).where(eq(issues.id,issueId));
+      const retry=await requestTaskRetry({db,companyId,issueId,actorId:"operator",actorSource:"session",observedRunId:failed.id,idempotencyKey:randomUUID()});
+      expect(retry.accepted).toBe(true);
+      await heartbeat.resumeTaskRetry(companyId,retry.requestId!);
+      const [receipt]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,retry.requestId!));
+      expect(receipt.runId).toBeTruthy();started=await heartbeat.getRun(receipt.runId!);
+    }else started=await heartbeat.invoke(agentId,"on_demand",{issueId,wakeReason:"issue_assigned"},"manual");
     const diagnostic=started?[]:await db.select({status:agentWakeupRequests.status,reason:agentWakeupRequests.reason,error:agentWakeupRequests.error}).from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId,agentId));
     expect(started,JSON.stringify(diagnostic)).not.toBeNull();
     let finished=await heartbeat.getRun(started!.id);
@@ -163,17 +183,20 @@ it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer"])("fresh 
     expect(providerCount).toBe(1);expect(await readFile(path.join(localCwd,"returned.txt"),"utf8")).toBe(role+" returned work");
     const leases=await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId,started!.id));
     expect(leases).toHaveLength(1);expect(hasRemoteTerminationReceipt(leases[0])).toBe(true);
-    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,companyId))).map(run=>run.id)).toEqual([started!.id]);
+    const roleRuns=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,companyId));
+    expect(roleRuns).toHaveLength(unboundRetry?2:1);
+    expect(roleRuns.filter(run=>run.status!=="failed").map(run=>run.id)).toEqual([started!.id]);
   }finally{registerServerAdapter(original);await heartbeat.drainActiveRunExecutions();}
 },90000);
 
-it("preserves immutable output before exact audited wake retirement and genuine recovery completion",async()=>{
+it.each(["retry_first","notification_first"])("preserves immutable output before exact audited wake retirement, recovery and public Retry: %s",async order=>{
   const f=await seed(), spec={...connection,remoteCwd:connection.remoteWorkspacePath!,runScope:f.scope};
   await prepareSshRunScope(connection,f.scope);
   await runSshCommand(spec,`mkdir -p ${shellQuote(f.source.remoteDir)} && chmod 700 ${shellQuote(f.source.remoteDir)} && printf 'retained synthetic output' > ${shellQuote(f.source.remoteDir+'/saved.txt')}`);
   await stopSshRunScope(spec,f.scope);
   await expect(runSshCommand(spec,"true")).rejects.toMatchObject({code:125});
   const [child]=await db.insert(issues).values({companyId:f.input.companyId,title:"Stalled child",status:"blocked",parentId:f.input.issueId,assigneeAgentId:f.agentId}).returning();
+  await db.insert(issueRelations).values({companyId:f.input.companyId,issueId:child.id,relatedIssueId:f.input.issueId,type:"blocks"});
   const [childAction]=await db.insert(issueRecoveryActions).values({companyId:f.input.companyId,sourceIssueId:child.id,kind:"run_recovery",status:"escalated",ownerType:"board",cause:"execution_recovery_budget_exhausted",fingerprint:randomUUID(),nextAction:"Retry child"}).returning();
   const [wake]=await db.insert(agentWakeupRequests).values({companyId:f.input.companyId,agentId:f.agentId,source:"automation",requestedByActorType:"system",requestedByActorId:"issue-blocker-stall",status:"deferred_issue_execution",
     payload:{issueId:f.input.issueId,stalledIssueId:child.id,recoveryAction:{id:childAction.id},_paperclipWakeContext:{issueId:f.input.issueId,wakeReason:"issue_blocker_stalled",blockerStall:{stalledIssueId:child.id,recoveryAction:{id:childAction.id}}}}}).returning();
@@ -232,5 +255,72 @@ it("preserves immutable output before exact audited wake retirement and genuine 
   const sourceOperations=await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId,f.input.runId));
   expect(sourceOperations.filter(operation=>operation.phase==="workspace_recovery_snapshot")).toHaveLength(1);
   await expect(runSshCommand(spec,"true")).rejects.toMatchObject({code:125});
+  // Queue the one explicit source-bound continuation while company dispatch is
+  // fenced. Both delivery orders must retain the same archive and one successor.
+  await db.insert(companyMemberships).values({companyId:f.input.companyId,principalType:"user",principalId:"operator",status:"active",membershipRole:"owner"});
+  await db.update(companies).set({status:"paused",defaultResponsibleUserId:"operator"}).where(eq(companies.id,f.input.companyId));
+  const providerSecret=await secretService(db).create(f.input.companyId,{name:"synthetic-retry-provider",provider:"local_encrypted",value:"sk-synthetic-retry-never-sent-to-provider"});
+  await secretService(db).createBinding({companyId:f.input.companyId,secretId:providerSecret.id,targetType:"agent",targetId:f.agentId,configPath:"env.OPENAI_API_KEY"});
+  await db.update(agents).set({status:"idle",defaultEnvironmentId:f.environmentId,runtimeConfig:{heartbeat:{wakeOnDemand:true}},
+    adapterConfig:{env:{OPENAI_API_KEY:{type:"secret_ref",secretId:providerSecret.id,version:"latest"}}}}).where(eq(agents.id,f.agentId));
+  vi.stubEnv("PAPERCLIP_API_URL","http://127.0.0.1:3100/api");vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET","synthetic-only-fixture-jwt-signing-secret-64-characters-long-value");
+  await instanceSettingsService(db).updateExperimental({enableBetaSkills:true,enableIsolatedWorkspaces:true});
+  const original=getServerAdapter("codex_local"),heartbeat=heartbeatService(db);let continued=0;
+  let releaseContinuation!:()=>void;
+  const continuationFence=new Promise<void>(resolve=>{releaseContinuation=resolve;});
+  registerServerAdapter({...original,type:"codex_local",execute:async ctx=>{
+    continued++;
+    const recovered=ctx.context.recoveredWorkspaceFiles as Array<{operationId:string;sourceRunId:string;path:string}>;
+    const copy=recovered?.find(item=>item.operationId===preserved.value&&item.sourceRunId===f.input.runId);
+    expect(copy,"The public Retry must deliver the preserved source archive").toBeDefined();
+    const cwd=String((ctx.context.paperclipWorkspace as {cwd?:string})?.cwd??"");
+    expect(await readFile(path.join(cwd,copy!.path,"files/saved.txt"),"utf8")).toBe("retained synthetic output");
+    if(ctx.executionTarget?.kind!=="remote"||ctx.executionTarget.transport!=="ssh")throw Error("Retry target not SSH");
+    const runtime=await prepareRemoteManagedRuntime({spec:ctx.executionTarget.spec,runId:ctx.runId,adapterKey:"synthetic-recovered-role",workspaceLocalDir:cwd,assets:[]});
+    try{
+      expect((await runSshCommand(ctx.executionTarget.spec,`cat ${shellQuote(path.posix.join(runtime.workspaceRemoteDir,copy!.path,"files/saved.txt"))}`)).stdout).toBe("retained synthetic output");
+      await continuationFence;
+      await issueService(db).update(f.input.issueId,{status:"done",actorAgentId:f.agentId,actorRunId:ctx.runId});
+    }finally{await runtime.restoreWorkspace();}
+    return {exitCode:0,signal:null,timedOut:false,label:"Recovered archive verified by synthetic provider"};
+  }});
+  try{
+    const retry=await requestTaskRetry({db,companyId:f.input.companyId,issueId:f.input.issueId,actorId:"operator",actorSource:"session",observedRunId:f.input.runId,idempotencyKey:randomUUID()});
+    expect(retry.accepted).toBe(true);expect(retry.requestId).toBeTruthy();
+    await expect(heartbeat.resumeTaskRetry(f.input.companyId,retry.requestId!)).rejects.toThrow("Company is not active");expect(continued).toBe(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.input.companyId))).toHaveLength(1);
+    // The specialist is still blocked at admission resume. The canonical
+    // Coordinator Retry must stay behind real unresolved dependencies.
+    await db.update(companies).set({status:"active"}).where(eq(companies.id,f.input.companyId));
+    await heartbeat.resumeTaskRetry(f.input.companyId,retry.requestId!);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.input.companyId))).toHaveLength(1);
+    expect(continued).toBe(0);
+    await issueService(db).update(child.id,{status:"done",actorUserId:"operator"});
+    await db.update(issueRecoveryActions).set({status:"resolved",resolvedAt:new Date()}).where(eq(issueRecoveryActions.id,childAction.id));
+    await db.update(companies).set({status:"active"}).where(eq(companies.id,f.input.companyId));
+    const notify=async()=>{
+      const result=await heartbeat.reconcileResolvedDependencyWakes({companyId:f.input.companyId,blockerIssueId:child.id});
+      expect(result.checked).toBe(1);
+      expect(result.enqueueFailed).toBe(0);
+      const [intentReceipt]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,retry.requestId!));
+      expect(intentReceipt).toMatchObject({reason:"task_retry",requestedByActorType:"user",requestedByActorId:"operator"});
+      expect(intentReceipt.payload?.taskRetry).toMatchObject({sourceRunId:f.input.runId,generationId:retry.requestId});
+      expect(result.healed+result.livePathSkipped+result.interactionSkipped+result.existingWakeSkipped).toBe(1);
+      return result;
+    };
+    if(order==="notification_first")await notify();
+    await heartbeat.resumeTaskRetry(f.input.companyId,retry.requestId!);
+    if(order==="retry_first")await notify();
+    await heartbeat.resumeExecutionWaitComments({companyId:f.input.companyId,requestId:retry.requestId!});
+    releaseContinuation();
+    await heartbeat.drainActiveRunExecutions();
+    const allRuns=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.input.companyId));
+    const successors=allRuns.filter(run=>run.id!==f.input.runId);expect(successors).toHaveLength(1);
+    expect(successors[0].status,successors[0].error??undefined).toBe("succeeded");expect(continued).toBe(1);
+    await heartbeat.resumeTaskRetry(f.input.companyId,retry.requestId!);
+    await heartbeat.reconcileResolvedDependencyWakes({companyId:f.input.companyId,blockerIssueId:child.id});
+    await heartbeat.drainActiveRunExecutions();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.input.companyId))).toHaveLength(2);
+  }finally{releaseContinuation();registerServerAdapter(original);await heartbeat.drainActiveRunExecutions();}
 },90000);
 });

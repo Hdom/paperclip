@@ -38,10 +38,15 @@ def main():
   public=run('ssh-keygen','-y','-f',str(root/'host_key')).stdout.decode().strip()
   (root/'known_hosts').write_text('[192.0.2.2]:2222 '+public+'\n')
   (root/'workspace').mkdir(mode=0o700)
+  # Hosted runners can have a locked password field. PAM performs its normal
+  # account/session checks while authentication remains generated-public-key
+  # only. Never unlock or otherwise modify the ambient runner account.
+  account=run('passwd','-S',args.user).stdout.decode().split()
+  print(json.dumps({'fixtureAccountPasswordState':account[1] if len(account)>1 else 'unknown'}),flush=True)
   (root/'sshd_config').write_text('\n'.join([
    'Port 2222','ListenAddress 192.0.2.2','HostKey '+str(root/'host_key'),'PidFile '+str(root/'sshd.pid'),
    'AuthorizedKeysFile '+str(root/'authorized_keys'),'PasswordAuthentication no','KbdInteractiveAuthentication no',
-   'PubkeyAuthentication yes','PermitRootLogin no','UsePAM no','StrictModes no','AllowUsers '+args.user,'LogLevel ERROR'])+'\n')
+   'PubkeyAuthentication yes','PermitRootLogin no','UsePAM yes','StrictModes no','AllowUsers '+args.user,'LogLevel INFO'])+'\n')
   for file in root.iterdir():
    os.chown(file,owner.pw_uid,owner.pw_gid);file.chmod(0o700 if file.is_dir() else 0o600)
   os.chown(root,owner.pw_uid,owner.pw_gid)

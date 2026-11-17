@@ -2,7 +2,7 @@ import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
-import { verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
+import { verifiedSshWorkspacePreservationReceipt, verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
 import { persistActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -353,7 +353,10 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
         ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
     )).limit(1);
     if (!source) throw new Error("Fresh retry source changed");
-    if (intent.strategy !== "fresh_isolated_workspace") {
+    // SSH preservation has no durable merge baseline. Keep its bytes as a
+    // source-bound attachment; never resume the old host directory as repaired.
+    const sshPreservation = await verifiedSshWorkspacePreservationReceipt(db, source);
+    if (!sshPreservation && intent.strategy !== "fresh_isolated_workspace") {
       const stoppedWorkspace = await stoppedNativeContinuationWorkspace(db, source, { runId: run.id, issueId, retryIntentId: wake.id });
       if (stoppedWorkspace) return stoppedWorkspace;
       const preservationReceiptId = await verifiedWorkspaceRepairReceipt(db, source);

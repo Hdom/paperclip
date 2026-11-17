@@ -264,9 +264,20 @@ Commands, in order when applicable:
    releases the hold. The `verify` operator command is read-only and reports the
    existing execution blocker without dispatching anything.
 
-After completion, retry only the intended existing task through normal
-Paperclip controls and observe dependency continuation. Do not additionally
-launch its parent or duplicate a queued wake. These rare legacy provenance and
+Keep company admission paused through source recovery and continuation setup.
+After verified completion, persist one canonical public Retry for the original
+Coordinator task, bound to the observed source run, while admission is still
+paused. Persist the intended specialist Retry through the same supported flow.
+An attempted dispatch while paused must remain refused; do not alter wake JSON
+or launch an extra parent turn. SSH snapshot proof settles preservation, not a
+merge into the old directory: the canonical Retry must select a fresh attempt
+and attach the immutable archive through its committed source ancestry.
+Before restoring the previously active company, verify the exact specialist-to-
+Coordinator blocks relation and the canonical Retry source/generation receipt.
+After restoration, confirm the parent Retry remains deferred with zero new
+parent runs while the specialist is unresolved; observe dependency continuation
+and Retry suppression/coalescing after specialist completion. Do not additionally launch
+its parent or duplicate a queued wake. These rare legacy provenance and
 incident dispositions stay in the reviewed operator tool; normal agent
 environment, Secrets, skill version and task recovery controls retain their
 existing UI. A rollback during this operation must remain operationally paused
