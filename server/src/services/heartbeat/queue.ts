@@ -1,5 +1,6 @@
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
 import { connectionIntentService } from "../connection-intents.js";
+import { isReconciledBlockerStall } from "../../modules/wake-queue/index.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
@@ -3123,6 +3124,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+
+          // A stall sweep can race with owner reconciliation after selecting
+          // its candidate. Recheck under the same issue-row lock before any
+          // receipt, run or coalescing mutation, even if dependencies resolved.
+          if (source === "automation" && opts.requestedByActorType === "system" &&
+              opts.requestedByActorId === "issue-blocker-stall" &&
+              await isReconciledBlockerStall(tx as unknown as Db, agent.companyId, issueId, enrichedContextSnapshot))
+            return { kind: "skipped" as const };
 
           let resumedHandoff: ReturnType<typeof readHandoffWake> = null;
           if (executionWaitRequestId) {

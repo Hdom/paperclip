@@ -316,3 +316,35 @@ The provider executable in assembled fresh-role tests is deterministic test
 code, not an external model. Distinguish this admission/return/recovery evidence
 from a real connector run and actual GitHub tool/provider acceptance. Live
 continuation remains a separate verified step after deployment and source repair.
+
+### Reconcile a lifecycle-cancelled stall notification
+
+Public company Pause normally cancels unclaimed stall notifications. Such a
+cancellation is not the explicit source-preservation disposition described
+above. Keep its status, error and timestamps intact. Ordinary cancelled stalls
+remain retryable; do not reset one to deferred or forge a retirement marker.
+
+For this retained-output recovery only, while the company and original agent
+are fully paused, use `inspect-cancelled-wake` with the exact `wakeId`,
+`stalledIssueId` and `stalledActionId`. It returns a SHA-256 fingerprint of the
+whole cancellation row (timestamps are timezone independent). After `preserve`
+has verified the immutable source snapshot, use `reconcile-cancelled-wake`
+with the same identity, `cancellationSha256`, actual public company-Pause
+`pauseActivityId` and verified `snapshotOperationId`.
+
+The operation checks current operator task authority, exact company/run/action,
+source hold, stopped source/lease evidence, current stalled dependency and
+absence of competing execution or notification ownership. It records
+`issue.stall_cancellation_reconciled`, including separate pause and recovery
+operator attribution; it does not modify the original wake or dispatch work.
+Changed cancellation/source/snapshot/stop evidence invalidates the receipt.
+Both later stall sweeps and locked task admission honor only that exact
+incident. An ordinary cancellation or a new recovery incident still follows
+normal delivery. Recovery completion remains held without this evidence.
+
+Reconciliation is not copy-back. Complete the existing recovery through its
+public action only after verifying the snapshot bytes. Then queue the approved
+canonical task continuations under pause, recheck dependencies/ownership,
+resume through the public company control and monitor the actual specialist
+handoff and return-file finalization. Never infer live acceptance from an
+immutable archive or deterministic qualification alone.

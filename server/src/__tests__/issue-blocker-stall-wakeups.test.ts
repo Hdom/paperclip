@@ -1,3 +1,4 @@
+import { assertNoPendingDeferredBlockerStall } from "../modules/wake-queue/adapters/retire-deferred-stall.js";
 import { randomUUID } from "node:crypto";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -58,6 +59,42 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       cause: "execution_recovery_budget_exhausted", fingerprint: "fixture", nextAction: "Retry the run or reassign the task" }).returning();
     return { companyId, parentAgent, childAgent, parent, child, action };
   }
+
+  it("does not settle retained recovery merely because public lifecycle cancelled its notification", async () => {
+    const f = await fixture();
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.parentAgent,
+      source: "automation", status: "cancelled", requestedByActorType: "system", requestedByActorId: "issue-blocker-stall",
+      payload: { issueId: f.parent.id, stalledIssueId: f.child.id, recoveryAction: { id: f.action.id },
+        _paperclipWakeContext: {wakeReason:"issue_blocker_stalled",blockerStall:{stalledIssueId:f.child.id,recoveryAction:{id:f.action.id}}} },
+      error: "Agent lifecycle stop requested", finishedAt: new Date() });
+    await expect(assertNoPendingDeferredBlockerStall(db, f.companyId, f.parent.id)).rejects.toThrow(/reconciled/);
+  });
+
+  it("ignores lifecycle cancellations for a superseded dependency incident", async () => {
+    const f = await fixture();
+    await db.insert(agentWakeupRequests).values({companyId:f.companyId,agentId:f.parentAgent,source:"automation",status:"cancelled",
+      requestedByActorType:"system",requestedByActorId:"issue-blocker-stall",error:"Agent lifecycle stop requested",finishedAt:new Date(),
+      payload:{issueId:f.parent.id,stalledIssueId:f.child.id,recoveryAction:{id:f.action.id},
+        _paperclipWakeContext:{wakeReason:"issue_blocker_stalled",blockerStall:{stalledIssueId:f.child.id,recoveryAction:{id:f.action.id}}}}});
+    await db.update(issueRecoveryActions).set({status:"resolved",resolvedAt:new Date()}).where(eq(issueRecoveryActions.id,f.action.id));
+    await expect(assertNoPendingDeferredBlockerStall(db,f.companyId,f.parent.id)).resolves.toBeUndefined();
+  });
+
+  it("requires an exact terminal source and ignores cancellations predating its recovery", async () => {
+    const f=await fixture();
+    const [source]=await db.insert(heartbeatRuns).values({companyId:f.companyId,agentId:f.parentAgent,issueId:f.parent.id,
+      status:"failed",finishedAt:new Date(),contextSnapshot:{issueId:f.parent.id}}).returning();
+    await db.insert(agentWakeupRequests).values({companyId:f.companyId,agentId:f.parentAgent,source:"automation",status:"cancelled",
+      requestedByActorType:"system",requestedByActorId:"issue-blocker-stall",error:"Agent lifecycle stop requested",finishedAt:new Date(Date.now()-60_000),
+      payload:{issueId:f.parent.id,stalledIssueId:f.child.id,recoveryAction:{id:f.action.id},
+        _paperclipWakeContext:{wakeReason:"issue_blocker_stalled",blockerStall:{stalledIssueId:f.child.id,recoveryAction:{id:f.action.id}}}}});
+    await expect(assertNoPendingDeferredBlockerStall(db,f.companyId,f.parent.id,source.id)).resolves.toBeUndefined();
+    await expect(assertNoPendingDeferredBlockerStall(db,f.companyId,f.parent.id,randomUUID())).rejects.toThrow(/terminal recovery source/);
+    await db.update(heartbeatRuns).set({status:"interrupted"}).where(eq(heartbeatRuns.id,source.id));
+    await expect(assertNoPendingDeferredBlockerStall(db,f.companyId,f.parent.id,source.id)).resolves.toBeUndefined();
+    await db.update(heartbeatRuns).set({status:"running",finishedAt:null}).where(eq(heartbeatRuns.id,source.id));
+    await expect(assertNoPendingDeferredBlockerStall(db,f.companyId,f.parent.id,source.id)).rejects.toThrow(/terminal recovery source/);
+  });
 
   it("wakes the parent's assignee once per stall, with the stalled child and its recovery action", async () => {
     const f = await fixture();

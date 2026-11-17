@@ -1,3 +1,13 @@
+import express from "express";
+import request from "supertest";
+import { companyRoutes } from "../routes/companies.js";
+import { errorHandler } from "../middleware/error-handler.js";
+import { startAgentLifecycle } from "../services/agent-lifecycle.js";
+import { createLifecycleDriver } from "../services/agent-lifecycle-driver.js";
+import { reconcileCancelledBlockerStallWake } from "../modules/wake-queue/adapters/reconcile-cancelled-stall.js";
+import { stallWakeSha256 } from "../modules/wake-queue/adapters/stall-disposition.js";
+import { wakeWaitersOfStalledIssues, issueBlockerStalledWakeKey } from "../services/recovery/blocker-stall-wakeups.js";
+import { activityLog } from "@paperclipai/db";
 import { requestTaskRetry } from "../services/task-retry.js";
 import { materializeIsolatedTaskDirectory } from "../services/isolated-task-directory.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
@@ -17,7 +27,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile, writeFile, mkdtemp, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentWakeupRequests, agents, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issueRelations, issues, workspaceOperations } from "@paperclipai/db";
 import { probeSshRunScope, prepareSshRunScope, stopSshRunScope, runSshCommand, shellQuote, type SshConnectionConfig } from "@paperclipai/adapter-utils/ssh";
@@ -189,8 +199,10 @@ it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer","Research
   }finally{registerServerAdapter(original);await heartbeat.drainActiveRunExecutions();}
 },90000);
 
-it.each(["retry_first","notification_first"])("preserves immutable output before exact audited wake retirement, recovery and public Retry: %s",async order=>{
+it.each(["retry_first","notification_first","pause_retry_first","pause_interrupted_notification_first"])("preserves immutable output before exact audited wake retirement, recovery and public Retry: %s",async order=>{
+  const paused=order.startsWith("pause_"),deliveryOrder=order.replace(/^pause_/,"").replace(/^interrupted_/,"");
   const f=await seed(), spec={...connection,remoteCwd:connection.remoteWorkspacePath!,runScope:f.scope};
+  if(order.includes("interrupted"))await db.update(heartbeatRuns).set({status:"interrupted"}).where(eq(heartbeatRuns.id,f.input.runId));
   await prepareSshRunScope(connection,f.scope);
   await runSshCommand(spec,`mkdir -p ${shellQuote(f.source.remoteDir)} && chmod 700 ${shellQuote(f.source.remoteDir)} && printf 'retained synthetic output' > ${shellQuote(f.source.remoteDir+'/saved.txt')}`);
   await stopSshRunScope(spec,f.scope);
@@ -198,31 +210,95 @@ it.each(["retry_first","notification_first"])("preserves immutable output before
   const [child]=await db.insert(issues).values({companyId:f.input.companyId,title:"Stalled child",status:"blocked",parentId:f.input.issueId,assigneeAgentId:f.agentId}).returning();
   await db.insert(issueRelations).values({companyId:f.input.companyId,issueId:child.id,relatedIssueId:f.input.issueId,type:"blocks"});
   const [childAction]=await db.insert(issueRecoveryActions).values({companyId:f.input.companyId,sourceIssueId:child.id,kind:"run_recovery",status:"escalated",ownerType:"board",cause:"execution_recovery_budget_exhausted",fingerprint:randomUUID(),nextAction:"Retry child"}).returning();
+  const app=express();app.use(express.json());app.use((req,_res,next)=>{
+    req.actor={type:"board",userId:"operator",source:"session",companyIds:[f.input.companyId],
+      memberships:[{companyId:f.input.companyId,membershipRole:"owner",status:"active"}]};next();
+  });app.use("/api/companies",companyRoutes(db));app.use(errorHandler);
+  const patchCompany=async(status:"active"|"paused")=>{
+    const result=await request(app).patch(`/api/companies/${f.input.companyId}`).send({status});
+    expect(result.status,result.text).toBe(200);
+  };
+  const actualDriver=createLifecycleDriver(db,{} as never);
+  // Real public route, company policy projection and host Stop. Provider setup
+  // verification is synthetic; it must not call a real model in qualification.
+  const lifecycle=paused?startAgentLifecycle(db,{...actualDriver,runHost:async agent=>
+    agent.lifecycleState==="verifying"?"complete":actualDriver.runHost(agent)},()=>true):null;
+  const settleLifecycle=async(state:"ready"|"paused")=>{
+    for(let n=0;n<20;n++){
+      await lifecycle!.sweep();
+      const [agent]=await db.select().from(agents).where(eq(agents.id,f.agentId));
+      if(agent.lifecycleState===state)return;
+    }
+    throw Error("Public lifecycle did not settle to "+state);
+  };
+  let staleDelivery:Promise<unknown>|undefined,releaseStale!:()=>void,heartbeatForStale:ReturnType<typeof heartbeatService>;
+  if(paused){
+    let selected!:()=>void;const selectedFence=new Promise<void>(resolve=>{selected=resolve;});
+    const admissionFence=new Promise<void>(resolve=>{releaseStale=resolve;});
+    // The sweep selects the incident before pause/reconciliation, but its
+    // actual public queue admission is deliberately delayed until afterward.
+    staleDelivery=wakeWaitersOfStalledIssues(db,async(agentId,input)=>{
+      selected();await admissionFence;return heartbeatForStale.wakeup(agentId,input);
+    },{companyId:f.input.companyId});
+    await selectedFence;
+  }
   const [wake]=await db.insert(agentWakeupRequests).values({companyId:f.input.companyId,agentId:f.agentId,source:"automation",requestedByActorType:"system",requestedByActorId:"issue-blocker-stall",status:"deferred_issue_execution",
-    payload:{issueId:f.input.issueId,stalledIssueId:child.id,recoveryAction:{id:childAction.id},_paperclipWakeContext:{issueId:f.input.issueId,wakeReason:"issue_blocker_stalled",blockerStall:{stalledIssueId:child.id,recoveryAction:{id:childAction.id}}}}}).returning();
+    idempotencyKey:issueBlockerStalledWakeKey({waiterIssueId:f.input.issueId,stalledIssueId:child.id,recoveryActionId:childAction.id}),
+    requestedAt:new Date(Date.now()-11*60_000),payload:{issueId:f.input.issueId,stalledIssueId:child.id,recoveryAction:{id:childAction.id},_paperclipWakeContext:{issueId:f.input.issueId,wakeReason:"issue_blocker_stalled",blockerStall:{stalledIssueId:child.id,recoveryAction:{id:childAction.id}}}}}).returning();
+  await db.insert(companyMemberships).values({companyId:f.input.companyId,principalType:"user",principalId:"operator",status:"active",membershipRole:"owner"});
+  let cancelled:typeof wake|undefined,pauseActivityId="",cancellationSha256="";
+  const cancellationIdentity=async()=> (await db.select({sha256:stallWakeSha256()}).from(agentWakeupRequests).where(eq(agentWakeupRequests.id,wake.id)))[0].sha256;
+  if(paused){
+    await patchCompany("paused");await settleLifecycle("paused");
+    [cancelled]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,wake.id));
+    expect(cancelled).toMatchObject({status:"cancelled",runId:null,error:"Agent lifecycle stop requested"});
+    const pauses=await db.select().from(activityLog).where(eq(activityLog.companyId,f.input.companyId));
+    pauseActivityId=pauses.find(row=>row.action==="company.updated"&&row.details?.status==="paused")!.id;
+    cancellationSha256=await cancellationIdentity();
+    const utc=await db.transaction(async tx=>{
+      await tx.execute(sql`set local time zone 'UTC'`);
+      return (await tx.select({sha256:stallWakeSha256()}).from(agentWakeupRequests).where(eq(agentWakeupRequests.id,wake.id)))[0].sha256;
+    });expect(utc).toBe(cancellationSha256);
+  }
   const disposition={...f.input,sourceActionId:f.input.actionId,wakeId:wake.id,stalledIssueId:child.id,stalledActionId:childAction.id,actorId:"operator"};
   expect((await getExecutionBlocker(db,f.input.companyId,f.input.issueId))?.workspaceRepairRequired).toBe(true);
-  await expect(retireDeferredBlockerStallWake(db,disposition)).rejects.toThrow(/immutable snapshot/);
+  await expect(paused?reconcileCancelledBlockerStallWake(db,{...disposition,pauseActivityId,cancellationSha256,snapshotOperationId:randomUUID()}):retireDeferredBlockerStallWake(db,disposition)).rejects.toThrow(/snapshot/);
   await expect(assertNoPendingDeferredBlockerStall(db,f.input.companyId,f.input.issueId)).rejects.toThrow();
   const storage=storageModule.getStorageService(),put=storage.putFile.bind(storage);
   const lostReply=vi.spyOn(storage,"putFile").mockImplementationOnce(async input=>{await put(input);throw Error("synthetic lost archive upload reply");});
   try{
     await expect(withNativeWorkspaceFinalizationOwnership({db,companyId:f.input.companyId,runId:f.input.runId,retainedRepairActionId:f.input.actionId},
       owner=>preserveRetainedSshWorkspace({...f.input,db,assertHeld:owner.assertHeld}))).rejects.toThrow("synthetic lost archive upload reply");
-    await expect(retireDeferredBlockerStallWake(db,disposition)).rejects.toThrow(/immutable snapshot/);
+    await expect(paused?reconcileCancelledBlockerStallWake(db,{...disposition,pauseActivityId,cancellationSha256,snapshotOperationId:randomUUID()}):retireDeferredBlockerStallWake(db,disposition)).rejects.toThrow(/snapshot/);
   }finally{lostReply.mockRestore();}
   const preserved=await withNativeWorkspaceFinalizationOwnership({db,companyId:f.input.companyId,runId:f.input.runId,retainedRepairActionId:f.input.actionId},
     owner=>preserveRetainedSshWorkspace({...f.input,db,assertHeld:owner.assertHeld}));
   expect(preserved.acquired).toBe(true);
   if(!preserved.acquired)throw Error("Source ownership not acquired");
   expect(await retainedSshPreservationReceipt(db,{...f.input,operationIds:[preserved.value]})).toBe(preserved.value);
+  const reconcile={...disposition,pauseActivityId,cancellationSha256,snapshotOperationId:preserved.value};
+  if(paused){
+    for(const change of [{pauseActivityId:randomUUID()},{snapshotOperationId:randomUUID()},{sourceActionId:randomUUID()},
+      {cancellationSha256:"0".repeat(64)},{stalledActionId:randomUUID()},{actorId:"unrelated-user"}])
+      await expect(reconcileCancelledBlockerStallWake(db,{...reconcile,...change})).rejects.toThrow();
+    // Timestamps are part of the fingerprint, independent of DB timezone.
+    for(const key of ["updatedAt","finishedAt"] as const){
+      await db.update(agentWakeupRequests).set({[key]:new Date(cancelled![key]!.getTime()+1000)}).where(eq(agentWakeupRequests.id,wake.id));
+      expect(await cancellationIdentity()).not.toBe(cancellationSha256);
+      await expect(reconcileCancelledBlockerStallWake(db,reconcile)).rejects.toThrow(/cancellation changed/);
+      await db.update(agentWakeupRequests).set({[key]:cancelled![key]}).where(eq(agentWakeupRequests.id,wake.id));
+    }
+  }
   // Claimed notifications and an active successor must never be retired.
   await db.update(agentWakeupRequests).set({status:"claimed"}).where(eq(agentWakeupRequests.id,wake.id));
-  await expect(retireDeferredBlockerStallWake(db,disposition)).rejects.toThrow(/pending incident/);
-  await db.update(agentWakeupRequests).set({status:"deferred_issue_execution"}).where(eq(agentWakeupRequests.id,wake.id));
-  const [successor]=await db.insert(heartbeatRuns).values({companyId:f.input.companyId,agentId:f.agentId,issueId:f.input.issueId,status:"queued",runtimeMode:"legacy",contextSnapshot:{issueId:f.input.issueId}}).returning();
-  try{await expect(retireDeferredBlockerStallWake(db,disposition)).rejects.toThrow();}
-  finally{await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id,successor.id));}
+  if(paused)await expect(reconcileCancelledBlockerStallWake(db,reconcile)).rejects.toThrow(/cancellation changed/);
+  else await expect(retireDeferredBlockerStallWake(db,disposition)).rejects.toThrow(/pending incident/);
+  await db.update(agentWakeupRequests).set({status:paused?"cancelled":"deferred_issue_execution"}).where(eq(agentWakeupRequests.id,wake.id));
+  for(const status of paused?["queued","succeeded"]:["queued"]){
+    const [successor]=await db.insert(heartbeatRuns).values({companyId:f.input.companyId,agentId:f.agentId,issueId:f.input.issueId,status,runtimeMode:"legacy",contextSnapshot:{issueId:f.input.issueId}}).returning();
+    try{await expect(paused?reconcileCancelledBlockerStallWake(db,reconcile):retireDeferredBlockerStallWake(db,disposition)).rejects.toThrow();}
+    finally{await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id,successor.id));}
+  }
   const [savedOperation]=await db.select().from(workspaceOperations).where(eq(workspaceOperations.id,preserved.value));
   const archive=savedOperation.metadata!.archive as {objectKey:string;sha256:string;byteSize:number};
   const stored=await storageModule.getStorageService().getObject(f.input.companyId,archive.objectKey);
@@ -239,10 +315,42 @@ it.each(["retry_first","notification_first"])("preserves immutable output before
   await recoverRetainedWorkspace({...f.input,db,environmentRuntime:environmentRuntimeService(db)});
   const [pendingAction]=await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id,f.input.actionId));
   expect(readSystemRecovery(pendingAction.evidence)).toMatchObject({state:"exhausted",failure:{code:"effect_unresolved",retryClass:"user_action_required"}});
-  expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,wake.id)))[0]).toMatchObject({status:"deferred_issue_execution",runId:null});
+  expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,wake.id)))[0]).toMatchObject({status:paused?"cancelled":"deferred_issue_execution",runId:null});
   expect((await getExecutionBlocker(db,f.input.companyId,f.input.issueId))?.workspaceRepairRequired).toBe(true);
-  await expect(retireDeferredBlockerStallWake(db,disposition)).resolves.toMatchObject({alreadyRetired:false,dispatchCreated:false});
-  await expect(retireDeferredBlockerStallWake(db,disposition)).resolves.toMatchObject({alreadyRetired:true,dispatchCreated:false});
+  if(paused){
+    await expect(reconcileCancelledBlockerStallWake(db,reconcile)).resolves.toMatchObject({alreadyReconciled:false,dispatchCreated:false});
+    await expect(reconcileCancelledBlockerStallWake(db,reconcile)).resolves.toMatchObject({alreadyReconciled:true,dispatchCreated:false});
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,wake.id)))[0]).toEqual(cancelled);
+    // Suppression/completion must revalidate the evidence the owner actually
+    // certified, not just trust a surviving audit or a matching archive hash.
+    const [sourceRun]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,f.input.runId));
+    const [sourceAction]=await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id,f.input.actionId));
+    const [sourceLease]=await db.select().from(environmentLeases).where(eq(environmentLeases.id,f.leaseId));
+    const mutations=[
+      {apply:()=>db.update(issueRecoveryActions).set({evidence:{...sourceAction.evidence,workspaceRestoreRecovery:{...f.recovery,source:{...f.source,remoteDir:"/unrelated"}}}}).where(eq(issueRecoveryActions.id,f.input.actionId)),
+        restore:()=>db.update(issueRecoveryActions).set({evidence:sourceAction.evidence}).where(eq(issueRecoveryActions.id,f.input.actionId))},
+      {apply:()=>db.update(workspaceOperations).set({metadata:{...savedOperation.metadata,archive:{...savedOperation.metadata!.archive as Record<string,unknown>,byteSize:1}}}).where(eq(workspaceOperations.id,preserved.value)),
+        restore:()=>db.update(workspaceOperations).set({metadata:savedOperation.metadata}).where(eq(workspaceOperations.id,preserved.value))},
+      {apply:()=>db.update(heartbeatRuns).set({resultJson:{...sourceRun.resultJson,workspaceRestoreRecovery:{...f.recovery,source:{...f.source,generation:randomUUID()}}}}).where(eq(heartbeatRuns.id,f.input.runId)),
+        restore:()=>db.update(heartbeatRuns).set({resultJson:sourceRun.resultJson}).where(eq(heartbeatRuns.id,f.input.runId))},
+      {apply:()=>db.update(environmentLeases).set({cleanupStatus:"pending"}).where(eq(environmentLeases.id,f.leaseId)),
+        restore:()=>db.update(environmentLeases).set({cleanupStatus:sourceLease.cleanupStatus}).where(eq(environmentLeases.id,f.leaseId))},
+      {apply:()=>db.update(workspaceOperations).set({metadata:{...savedOperation.metadata,sourceProof:{schema:"unverified"}}}).where(eq(workspaceOperations.id,preserved.value)),
+        restore:()=>db.update(workspaceOperations).set({metadata:savedOperation.metadata}).where(eq(workspaceOperations.id,preserved.value))},
+      {apply:()=>db.update(agentWakeupRequests).set({finishedAt:new Date(cancelled!.finishedAt!.getTime()+1000)}).where(eq(agentWakeupRequests.id,wake.id)),
+        restore:()=>db.update(agentWakeupRequests).set({finishedAt:cancelled!.finishedAt}).where(eq(agentWakeupRequests.id,wake.id))},
+    ];
+    for(const change of mutations){
+      await change.apply();
+      try{await expect(assertNoPendingDeferredBlockerStall(db,f.input.companyId,f.input.issueId,f.input.runId)).rejects.toThrow(/reconciled/);}
+      finally{await change.restore();}
+    }
+    await expect(assertNoPendingDeferredBlockerStall(db,f.input.companyId,f.input.issueId,f.input.runId)).resolves.toBeUndefined();
+    const enqueue=vi.fn();await wakeWaitersOfStalledIssues(db,enqueue,{companyId:f.input.companyId});expect(enqueue).not.toHaveBeenCalled();
+  }else{
+    await expect(retireDeferredBlockerStallWake(db,disposition)).resolves.toMatchObject({alreadyRetired:false,dispatchCreated:false});
+    await expect(retireDeferredBlockerStallWake(db,disposition)).resolves.toMatchObject({alreadyRetired:true,dispatchCreated:false});
+  }
   await requestWorkspaceRecovery({...f.input,db,idempotencyKey:randomUUID(),actorId:"operator"});
   await recoverRetainedWorkspace({...f.input,db,environmentRuntime:environmentRuntimeService(db)});
   const [action]=await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id,f.input.actionId));
@@ -257,15 +365,14 @@ it.each(["retry_first","notification_first"])("preserves immutable output before
   await expect(runSshCommand(spec,"true")).rejects.toMatchObject({code:125});
   // Queue the one explicit source-bound continuation while company dispatch is
   // fenced. Both delivery orders must retain the same archive and one successor.
-  await db.insert(companyMemberships).values({companyId:f.input.companyId,principalType:"user",principalId:"operator",status:"active",membershipRole:"owner"});
-  await db.update(companies).set({status:"paused",defaultResponsibleUserId:"operator"}).where(eq(companies.id,f.input.companyId));
+  await db.update(companies).set({...(paused?{}:{status:"paused"}),defaultResponsibleUserId:"operator"}).where(eq(companies.id,f.input.companyId));
   const providerSecret=await secretService(db).create(f.input.companyId,{name:"synthetic-retry-provider",provider:"local_encrypted",value:"sk-synthetic-retry-never-sent-to-provider"});
   await secretService(db).createBinding({companyId:f.input.companyId,secretId:providerSecret.id,targetType:"agent",targetId:f.agentId,configPath:"env.OPENAI_API_KEY"});
-  await db.update(agents).set({status:"idle",defaultEnvironmentId:f.environmentId,runtimeConfig:{heartbeat:{wakeOnDemand:true}},
+  await db.update(agents).set({...(paused?{}:{status:"idle"}),defaultEnvironmentId:f.environmentId,runtimeConfig:{heartbeat:{wakeOnDemand:true}},
     adapterConfig:{env:{OPENAI_API_KEY:{type:"secret_ref",secretId:providerSecret.id,version:"latest"}}}}).where(eq(agents.id,f.agentId));
   vi.stubEnv("PAPERCLIP_API_URL","http://127.0.0.1:3100/api");vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET","synthetic-only-fixture-jwt-signing-secret-64-characters-long-value");
   await instanceSettingsService(db).updateExperimental({enableBetaSkills:true,enableIsolatedWorkspaces:true});
-  const original=getServerAdapter("codex_local"),heartbeat=heartbeatService(db);let continued=0;
+  const original=getServerAdapter("codex_local"),heartbeat=heartbeatService(db);heartbeatForStale=heartbeat;let continued=0;
   let releaseContinuation!:()=>void;
   const continuationFence=new Promise<void>(resolve=>{releaseContinuation=resolve;});
   registerServerAdapter({...original,type:"codex_local",execute:async ctx=>{
@@ -291,10 +398,18 @@ it.each(["retry_first","notification_first"])("preserves immutable output before
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.input.companyId))).toHaveLength(1);
     // The specialist is still blocked at admission resume. The canonical
     // Coordinator Retry must stay behind real unresolved dependencies.
-    await db.update(companies).set({status:"active"}).where(eq(companies.id,f.input.companyId));
+    if(paused){await patchCompany("active");await settleLifecycle("ready");}
+    else await db.update(companies).set({status:"active"}).where(eq(companies.id,f.input.companyId));
     await heartbeat.resumeTaskRetry(f.input.companyId,retry.requestId!);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.input.companyId))).toHaveLength(1);
     expect(continued).toBe(0);
+    if(paused){
+      releaseStale();await staleDelivery;
+      const allWakeRows=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId,f.input.companyId));
+      expect(allWakeRows.filter(row=>row.requestedByActorId==="issue-blocker-stall")).toHaveLength(1);
+      expect(allWakeRows.find(row=>row.id===wake.id)).toEqual(cancelled);
+      const enqueue=vi.fn();await wakeWaitersOfStalledIssues(db,enqueue,{companyId:f.input.companyId});expect(enqueue).not.toHaveBeenCalled();
+    }
     await issueService(db).update(child.id,{status:"done",actorUserId:"operator"});
     await db.update(issueRecoveryActions).set({status:"resolved",resolvedAt:new Date()}).where(eq(issueRecoveryActions.id,childAction.id));
     await db.update(companies).set({status:"active"}).where(eq(companies.id,f.input.companyId));
@@ -308,9 +423,9 @@ it.each(["retry_first","notification_first"])("preserves immutable output before
       expect(result.healed+result.livePathSkipped+result.interactionSkipped+result.existingWakeSkipped).toBe(1);
       return result;
     };
-    if(order==="notification_first")await notify();
+    if(deliveryOrder==="notification_first")await notify();
     await heartbeat.resumeTaskRetry(f.input.companyId,retry.requestId!);
-    if(order==="retry_first")await notify();
+    if(deliveryOrder==="retry_first")await notify();
     await heartbeat.resumeExecutionWaitComments({companyId:f.input.companyId,requestId:retry.requestId!});
     releaseContinuation();
     await heartbeat.drainActiveRunExecutions();
@@ -321,6 +436,6 @@ it.each(["retry_first","notification_first"])("preserves immutable output before
     await heartbeat.reconcileResolvedDependencyWakes({companyId:f.input.companyId,blockerIssueId:child.id});
     await heartbeat.drainActiveRunExecutions();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.input.companyId))).toHaveLength(2);
-  }finally{releaseContinuation();registerServerAdapter(original);await heartbeat.drainActiveRunExecutions();}
+  }finally{releaseContinuation();if(paused)releaseStale();registerServerAdapter(original);await heartbeat.drainActiveRunExecutions();await lifecycle?.stop();}
 },90000);
 });

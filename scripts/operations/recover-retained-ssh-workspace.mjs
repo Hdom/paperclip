@@ -11,12 +11,14 @@ const profileNames=new Set(['PAPERCLIP_HOME','PAPERCLIP_INSTANCE_ID','PAPERCLIP_
  'PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS','PAPERCLIP_CONTROLLER_PROTECTED_PATHS','PAPERCLIP_CONTROLLER_AGENT_SSH_TARGETS',
  'PAPERCLIP_CONTROLLER_ASSET_SNAPSHOT_ROOT','PAPERCLIP_SECRETS_MASTER_KEY_FILE']);
 export function validateRetainedSshOptions(o){
- if(!o||!['attest','preserve','retire-wake','verify'].includes(o.command)||o.confirm!==true||
+ if(!o||!['attest','preserve','retire-wake','inspect-cancelled-wake','reconcile-cancelled-wake','verify'].includes(o.command)||o.confirm!==true||
    !['companyId','issueId','runId','actionId'].every(k=>uuid.test(o[k]??''))||typeof o.actorId!=='string'||!o.actorId||o.actorId.length>255||
    !/^[a-f0-9]{40}$/.test(o.sourceCommit??'')||!/^\/opt\/paperclip-data\/cli\/installs\/git\/[a-f0-9]{12}$/.test(o.payload??'')||
    o.config!=='/opt/paperclip-data/instances/default/config.json'||
    !/^\/var\/lib\/paperclip\/operator-receipts\/[a-f0-9-]{36}\.json$/.test(o.receipt??''))throw Error('Explicit scoped operator options required');
  if(o.command==='retire-wake'&&!['wakeId','stalledIssueId','stalledActionId'].every(k=>uuid.test(o[k]??'')))throw Error('Exact deferred stall identity required');
+ if(['inspect-cancelled-wake','reconcile-cancelled-wake'].includes(o.command)&&!['wakeId','stalledIssueId','stalledActionId'].every(k=>uuid.test(o[k]??'')))throw Error('Exact cancelled stall identity required');
+ if(o.command==='reconcile-cancelled-wake'&&(!['pauseActivityId','snapshotOperationId'].every(k=>uuid.test(o[k]??''))||! /^[a-f0-9]{64}$/.test(o.cancellationSha256??'')))throw Error('Exact pause, snapshot and cancellation fingerprint required');
  if(o.command==='attest'&&(!/^paperclip_qualify_[a-f0-9]{12}$/.test(o.cloneDatabase??'')||
    !/^[a-f0-9]{64}$/.test(o.expectedRestoreSha256??'')||!/^[a-f0-9]{64}$/.test(o.expectedHostKeyPolicySha256??'')||
    !/^\/var\/backups\/paperclip\/[a-zA-Z0-9_./-]+\.dump$/.test(o.historicalBackup??'')||o.historicalBackup.split('/').includes('..')))throw Error('Verified historical endpoint provenance required');
@@ -102,7 +104,7 @@ export async function recoverRetainedSshWorkspace(o){
    process.setgroups([]);process.setgid(gid);process.setuid(uid);
    const dbEntry=path.join(root,'node_modules/@paperclipai/db/dist/index.js');dbModule=await import(pathToFileURL(dbEntry).href);
    const require=createRequire(dbEntry),postgres=require('postgres');
-   if(o.command==='verify')live.searchParams.set('options','-c default_transaction_read_only=on');
+   if(['verify','inspect-cancelled-wake'].includes(o.command))live.searchParams.set('options','-c default_transaction_read_only=on');
    const db=dbModule.createDb(live.href,{maxConnections:2});
    const load=name=>import(pathToFileURL(path.join(root,'node_modules/@paperclipai/server/dist',name+'.js')).href);
    const input={companyId:o.companyId,issueId:o.issueId,runId:o.runId,actionId:o.actionId};
@@ -113,6 +115,19 @@ export async function recoverRetainedSshWorkspace(o){
      const {attestRetainedSshEndpointFromHistoricalEnvironment}=await load('services/retained-ssh-endpoint-attestation');
      outcome=await attestRetainedSshEndpointFromHistoricalEnvironment(db,{...input,historicalDb,historicalDatabase:o.cloneDatabase,historicalBackupSha256:o.expectedRestoreSha256,
        expectedHostKeyPolicySha256:o.expectedHostKeyPolicySha256,actorId:o.actorId});
+   }else if(o.command==='inspect-cancelled-wake'){
+     const {stallWakeSha256}=await load('modules/wake-queue/index');
+     const {and,eq}=require('drizzle-orm');
+     const w=dbModule.agentWakeupRequests;
+     const [row]=await db.select({sha256:stallWakeSha256(),status:w.status,runId:w.runId,finishedAt:w.finishedAt}).from(w)
+       .where(and(eq(w.companyId,o.companyId),eq(w.id,o.wakeId)));
+     if(!row||row.status!=='cancelled'||row.runId)throw Error('Unclaimed cancellation required');
+     outcome={wakeId:o.wakeId,cancellationSha256:row.sha256,finishedAt:row.finishedAt};
+   }else if(o.command==='reconcile-cancelled-wake'){
+     const {reconcileCancelledBlockerStallWake}=await load('modules/wake-queue/index');
+     outcome=await reconcileCancelledBlockerStallWake(db,{...input,sourceActionId:o.actionId,wakeId:o.wakeId,
+       stalledIssueId:o.stalledIssueId,stalledActionId:o.stalledActionId,actorId:o.actorId,pauseActivityId:o.pauseActivityId,
+       snapshotOperationId:o.snapshotOperationId,cancellationSha256:o.cancellationSha256});
    }else if(o.command==='retire-wake'){
      const {retireDeferredBlockerStallWake}=await load('modules/wake-queue/index');
      outcome=await retireDeferredBlockerStallWake(db,{...input,sourceActionId:o.actionId,wakeId:o.wakeId,
