@@ -279,6 +279,8 @@ export interface AdapterExecutionContext {
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onUsage?: (receipt: AdapterUsageCheckpoint) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
+  /** Host-only lazy attestation after genuine workspace copy-back. Never supplied by agent configuration. */
+  onWorkspaceCopyback?: import("./remote-managed-runtime.js").WorkspaceCopybackSink;
   /**
    * Reports that execution has crossed the adapter's dispatch boundary.
    * Process-backed adapters normally report this through `onSpawn`; adapters

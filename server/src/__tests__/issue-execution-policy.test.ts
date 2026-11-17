@@ -2322,3 +2322,25 @@ describe("review round circuit breaker", () => {
     });
   });
 });
+
+describe("durable workflow monitor planning", () => {
+  it("revalidates the accepted final review at its server-pinned planning time", () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      monitor: { nextCheckAt: "2099-01-01T00:00:00.000Z" },
+    })!;
+    const submitted = applyIssueExecutionPolicyTransition({ issue: { status: "in_progress", assigneeAgentId: coderAgentId },
+      policy, requestedStatus: "in_review", requestedAssigneePatch: {}, actor: { agentId: coderAgentId }, commentBody: "Submit exact evidence." });
+    const decide = (now: Date) => applyIssueExecutionPolicyTransition({
+      issue: { status: "in_review", assigneeAgentId: qaAgentId, executionPolicy: policy, executionState: submitted.patch.executionState as Record<string, unknown> },
+      policy, previousPolicy: policy, requestedStatus: "done", requestedAssigneePatch: {}, actor: { agentId: qaAgentId },
+      commentBody: "The exact submitted evidence is approved.", now,
+    });
+    const acceptedAt = new Date("2026-11-17T12:00:00.000Z");
+    const first = decide(acceptedAt);
+    expect(decide(new Date(acceptedAt))).toEqual(first);
+    expect(parseIssueExecutionState(first.patch.executionState)?.monitor).toMatchObject({ status: "cleared", clearReason: "done", clearedAt: acceptedAt.toISOString() });
+    expect(first.patch.monitorNextCheckAt).toBeNull();expect(first.patch.monitorWakeRequestedAt).toBeNull();
+    expect(decide(new Date("2026-11-17T12:01:00.000Z"))).not.toEqual(first);
+  });
+});

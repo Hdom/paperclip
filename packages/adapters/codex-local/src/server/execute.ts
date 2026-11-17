@@ -880,6 +880,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             detectCommand: command,
             onProgress: (line) => onLog("stdout", line),
             onRuntimeProgress: ctx.onRuntimeProgress,
+            onWorkspaceCopyback: ctx.onWorkspaceCopyback,
             assets: [
               {
                 key: "home",

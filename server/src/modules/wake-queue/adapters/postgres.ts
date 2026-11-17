@@ -1,3 +1,4 @@
+import { workflowHandoffBlocksRun } from "../../../services/task-workflow-handoff-state.js";
 import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
@@ -1278,6 +1279,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             await notifyNativeStatusReassessment(tx, { companyId: input.companyId, issueId: issue.id });
           }
         }
+        if (await workflowHandoffBlocksRun(tx, input.companyId, run.id)) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         // Two separate updates: a retry can move `executionRunId` to a new run
         // while `checkoutRunId` still points at this one finishing.
         await tx

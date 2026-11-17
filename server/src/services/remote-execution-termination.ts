@@ -44,6 +44,23 @@ export function remoteTerminationScopeSql(alias: string): string {
       AND ${scope} = ${receipt}->'resourceScope'))) `;
 }
 
+/** Fixed SQL aliases only. Never infer physical stop from status or expiry. */
+export function remoteTerminationReceiptSql(alias: string): string {
+  const scope = remoteTerminationScopeSql(alias);
+  const receipt = `${alias}.metadata->'remoteExecutionTermination'`;
+  return `coalesce(${alias}.released_at is not null and ${alias}.cleanup_status = 'success'
+    and ${alias}.status in ('released', 'expired', 'failed')
+    and ${alias}.heartbeat_run_id is not null and ${alias}.provider is not null and ${alias}.provider <> 'local'
+    and ${alias}.provider_lease_id is not null and ${alias}.provider_lease_id <> ''
+    and ${receipt}->>'schema' = 'paperclip.remote-termination.v1'
+    and ${receipt}->>'companyId' = ${alias}.company_id::text
+    and ${receipt}->>'runId' = ${alias}.heartbeat_run_id::text
+    and ${receipt}->>'leaseId' = ${alias}.id::text
+    and ${receipt}->>'provider' = ${alias}.provider
+    and ${receipt}->>'providerLeaseId' = ${alias}.provider_lease_id
+    and ${receipt}->>'state' in ('stopped', 'destroyed') and ${scope}, false)`;
+}
+
 /** Bind a provider receipt to the exact host-owned lease and run. Old plugins
  * return void; that remains supported but grants no continuation authority. */
 export function remoteTerminationReceipt(lease: LeaseIdentity, value: unknown) {

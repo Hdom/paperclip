@@ -53,6 +53,8 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  /** Server-pinned planning time for durable workflow revalidation. */
+  now?: Date;
 };
 
 type TransitionResult = {
@@ -1099,13 +1101,13 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
       targetMonitorState = buildClearedMonitorState({
         previous: currentMonitorState,
         clearReason: invalidReason,
-        clearedAt: new Date(),
+        clearedAt: (input.now ?? new Date()),
       });
     } else {
       const exhaustedReason = exhaustedMonitorClearReason({
         monitor: input.policy.monitor,
         attemptCount: currentMonitorState?.attemptCount ?? 0,
-        now: new Date(),
+        now: (input.now ?? new Date()),
       });
       if (exhaustedReason) {
         if (input.monitorExplicitlyUpdated) {
@@ -1117,7 +1119,7 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
         targetMonitorState = buildClearedMonitorState({
           previous: currentMonitorState,
           clearReason: exhaustedReason,
-          clearedAt: new Date(),
+          clearedAt: (input.now ?? new Date()),
         });
       } else {
         patch.monitorNextCheckAt = new Date(input.policy.monitor.nextCheckAt);
@@ -1136,7 +1138,7 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
         input.monitorExplicitlyUpdated
           ? "manual"
           : monitorClearReasonForIssue(nextStatus, assigneeAgentId, assigneeUserId) ?? "manual",
-      clearedAt: new Date(),
+      clearedAt: (input.now ?? new Date()),
     });
   }
 

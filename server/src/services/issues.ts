@@ -1,3 +1,5 @@
+import { workflowHandoffCommitAuthorized } from "./task-workflow-handoff.js";
+import { workflowHandoffBlocksRun } from "./task-workflow-handoff-state.js";
 import { recordTaskWorkspaceReturnDisposition } from "./task-workspace-return-disposition.js";
 import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-mcp/upload-cleanup.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
@@ -8059,6 +8061,7 @@ export function issueService(db: Db) {
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
       if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (run && await workflowHandoffBlocksRun(tx as unknown as Db, issue.companyId, run.id)) return false;
       if (isExplicitContinuationRetryClaim(issue, run) || await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
         { companyId: issue.companyId, runId: issue.executionRunId, issueId })) return false;
 
@@ -8115,6 +8118,7 @@ export function issueService(db: Db) {
         .where(eq(heartbeatRuns.id, issue.checkoutRunId))
         .then((rows) => rows[0] ?? null);
       if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (run && await workflowHandoffBlocksRun(tx as unknown as Db, issue.companyId, run.id)) return false;
       if (isExplicitContinuationRetryClaim(issue, run) || await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
         { companyId: issue.companyId, runId: issue.checkoutRunId, issueId })) return false;
 
@@ -11893,10 +11897,13 @@ export function issueService(db: Db) {
         if (actorAgentId && actorRunId) {
           // Recheck under a run lock: a request admitted before Stop must not
           // commit a late Done after cancellation revoked its credentials.
+          const workflowCommit = workflowHandoffCommitAuthorized(tx as unknown as Db, receiptExisting, { agentId: actorAgentId, runId: actorRunId, patch: issueData as Record<string, unknown> });
+          if (!workflowCommit) {
           const actorRun = await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
             agentId: actorAgentId, runId: actorRunId, stopId: actorRunStopId,
           });
           assertLegacyRunTaskOwnership(actorRun, receiptExisting);
+          }
         }
         if (blockedByIssueIds !== undefined) {
           await assertOnboardingFirstTaskDependenciesAllowed(tx as Db, {

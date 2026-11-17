@@ -1,3 +1,4 @@
+import { recordTaskWorkflowReturn } from "../task-workflow-handoff.js";
 import { withScopedTaskWorkspaceAuthority } from "../scoped-task-workspace-authority.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { readContextCompactionRequest } from "../context-compaction.js";
@@ -913,6 +914,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                   issueId,
                 );
               },
+              onWorkspaceCopyback: verify => recordTaskWorkflowReturn(db, { companyId: run.companyId, runId: run.id }, verify),
               onProviderStopped: collectStoppedInstructions,
               onDispatch: markDispatchStarted,
               signal: executionControl.controller.signal,

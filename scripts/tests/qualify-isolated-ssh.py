@@ -3,17 +3,17 @@ Run as root with --user <unprivileged test owner> --node-bin <supported Node bin
 The worker has no default route; production target admission remains unchanged.
 This is network separation only: both processes still share this test host's FS.
 """
-import argparse, ipaddress, json, os, pathlib, pwd, shutil, signal, subprocess, tempfile, uuid, time
+import argparse, ipaddress, json, os, pathlib, pwd, shutil, signal, subprocess, tempfile, uuid, time, threading
 
 def main():
- parser=argparse.ArgumentParser();parser.add_argument('--user',required=True);parser.add_argument('--node-bin',required=True);parser.add_argument('--case',choices=['all','coordinator','recovery'],default='all')
+ parser=argparse.ArgumentParser();parser.add_argument('--user',required=True);parser.add_argument('--node-bin',required=True);parser.add_argument('--case',choices=['all','coordinator','recovery','workflow','chain','faults','ownership','guards'],default='all');parser.add_argument('--handoff-pool-max',type=int,choices=[1,10],default=10)
  args=parser.parse_args();owner=pwd.getpwnam(args.user)
  if os.geteuid()!=0 or owner.pw_uid<1000 or not hasattr(os,'pidfd_open') or not hasattr(signal,'pidfd_send_signal'):raise ValueError('Root fixture setup and unprivileged test owner required')
  node=pathlib.Path(args.node_bin).resolve();repo=pathlib.Path(__file__).resolve().parents[2]
  if not node.is_absolute() or not (node/'node').is_file() or not (node/'corepack').exists():raise ValueError('Supported Node and pnpm required')
  root=pathlib.Path(tempfile.mkdtemp(prefix='paperclip-isolated-ssh-'));root.chmod(0o700)
  token=uuid.uuid4().hex[:8];namespace='pcq'+token;hostlink='pcqh'+token;peer='pcqw'+token
- daemon=None;namespace_created=False;link_created=False;namespace_identity=None
+ daemon=None;daemon_reader=None;daemon_tail=bytearray();daemon_reader_errors=[];namespace_created=False;link_created=False;namespace_identity=None
  def run(*argv,**kwargs):return subprocess.run(argv,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,**kwargs)
  try:
   subnet=ipaddress.ip_network('192.0.2.0/30')
@@ -52,13 +52,26 @@ def main():
   os.chown(root,owner.pw_uid,owner.pw_gid)
   daemon=subprocess.Popen(['ip','netns','exec',namespace,'/usr/sbin/sshd','-D','-e','-f',str(root/'sshd_config')],
    stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,start_new_session=True)
+  # Keep draining throughout the suite: an unread stderr PIPE eventually
+  # blocks sshd and turns larger matrices into false lease-acquisition errors.
+  # Retain only a bounded synthetic diagnostic tail, never an unbounded log.
+  def drain_daemon():
+   try:
+    while True:
+     chunk=os.read(daemon.stderr.fileno(),4096)
+     if not chunk:break
+     daemon_tail.extend(chunk)
+     if len(daemon_tail)>2000:del daemon_tail[:-2000]
+   except Exception as error:daemon_reader_errors.append(type(error).__name__)
+  daemon_reader=threading.Thread(target=drain_daemon,daemon=True);daemon_reader.start()
   config={'host':'192.0.2.2','port':2222,'username':args.user,'remoteWorkspacePath':str(root/'workspace'),
    'privateKeyPath':str(root/'client_key'),'knownHostsPath':str(root/'known_hosts'),'strictHostKeyChecking':True}
   fixture=root/'fixture.json';fixture.write_text(json.dumps(config));fixture.chmod(0o600);os.chown(fixture,owner.pw_uid,owner.pw_gid)
   environment={'HOME':owner.pw_dir,'USER':args.user,'LOGNAME':args.user,'PATH':str(node)+':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
    'COREPACK_ENABLE_NETWORK':'0','PAPERCLIP_TEST_ISOLATED_SSH_FIXTURE':str(fixture)}
+  if args.handoff_pool_max==1:environment['PAPERCLIP_TEST_HANDOFF_DB_POOL_MAX']='1'
   result=subprocess.run(['runuser','-u',args.user,'--',str(node/'corepack'),'pnpm','exec','vitest','run',
-   'server/src/__tests__/retained-ssh-workspace-integration.test.ts']+([] if args.case=='all' else ['-t','fresh Coordinator' if args.case=='coordinator' else 'preserves immutable']),cwd=repo,env=environment)
+   'server/src/__tests__/retained-ssh-workspace-integration.test.ts']+([] if args.case=='all' else ['-t',{'coordinator':'fresh Coordinator','recovery':'preserves immutable','workflow':'actual Codex adapter','chain':'actual Codex adapter.*chain','faults':'actual Codex adapter.*(cancel|provider_failed|doc_changed|unsafe_link|restart|drain)','ownership':'actual Codex adapter.*(older_writer|db_disconnect)','guards':'actual Codex adapter.*(doc_changed|unsupported_workspace)'}[args.case]]),cwd=repo,env=environment)
   return result.returncode
  finally:
   errors=[];empty=not namespace_created
@@ -89,9 +102,14 @@ def main():
    except Exception as error:errors.append(type(error).__name__+': '+str(error))
   if daemon:
    try:
-    _,output=daemon.communicate(timeout=5)
-    if output:print(output.decode(errors='replace')[-2000:])
+    daemon.wait(timeout=5)
+    if daemon_reader:
+     daemon_reader.join(timeout=5)
+     if daemon_reader.is_alive():raise RuntimeError('Fixture diagnostic reader did not settle')
+    if daemon_reader_errors:raise RuntimeError('Fixture diagnostic reader failed: '+daemon_reader_errors[0])
+    if daemon_tail:print(daemon_tail.decode(errors='replace'))
    except Exception as error:errors.append('Fixture daemon join: '+type(error).__name__)
+   finally:daemon.stderr.close()
   if link_created:
    try:run('ip','link','del',hostlink)
    except Exception as error:errors.append('Fixture link cleanup: '+type(error).__name__)

@@ -1,6 +1,6 @@
 {
-  "id": "e2a678da-05cc-4316-a40e-d85a69be01e3",
-  "prevId": "aaf06ddb-56bd-4455-b2d1-fdb0254445e7",
+  "id": "d685dc0b-ee70-4071-a8f8-610d6984f089",
+  "prevId": "bdfd100d-714f-452d-bb1c-0d47abaacfce",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -18387,6 +18387,28 @@
           "method": "btree",
           "with": {}
         },
+        "company_secrets_controller_key_uq": {
+          "name": "company_secrets_controller_key_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"company_secrets\".\"scope\" = 'controller' and \"company_secrets\".\"deleted_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "company_secrets_company_key_uq": {
           "name": "company_secrets_company_key_uq",
           "columns": [
@@ -18541,7 +18563,7 @@
       "checkConstraints": {
         "company_secrets_scope_shape_check": {
           "name": "company_secrets_scope_shape_check",
-          "value": "(\n        \"company_secrets\".\"scope\" = 'company'\n        and \"company_secrets\".\"owner_user_id\" is null\n        and \"company_secrets\".\"user_secret_definition_id\" is null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'user'\n        and \"company_secrets\".\"owner_user_id\" is not null\n        and \"company_secrets\".\"user_secret_definition_id\" is not null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'instance'\n        and \"company_secrets\".\"owner_user_id\" is null and \"company_secrets\".\"user_secret_definition_id\" is null\n        and (\"company_secrets\".\"owner_agent_id\" is not null) <> (\"company_secrets\".\"owner_project_id\" is not null)\n        and \"company_secrets\".\"owner_plugin_id\" is not null\n      )"
+          "value": "(\n        \"company_secrets\".\"scope\" in ('company', 'controller')\n        and \"company_secrets\".\"owner_user_id\" is null\n        and \"company_secrets\".\"user_secret_definition_id\" is null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'user'\n        and \"company_secrets\".\"owner_user_id\" is not null\n        and \"company_secrets\".\"user_secret_definition_id\" is not null\n        and \"company_secrets\".\"owner_agent_id\" is null and \"company_secrets\".\"owner_project_id\" is null and \"company_secrets\".\"owner_plugin_id\" is null\n      ) or (\n        \"company_secrets\".\"scope\" = 'instance'\n        and \"company_secrets\".\"owner_user_id\" is null and \"company_secrets\".\"user_secret_definition_id\" is null\n        and (\"company_secrets\".\"owner_agent_id\" is not null) <> (\"company_secrets\".\"owner_project_id\" is not null)\n        and \"company_secrets\".\"owner_plugin_id\" is not null\n      )"
         }
       },
       "isRLSEnabled": false
@@ -33752,6 +33774,85 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.github_app_settings": {
+      "name": "github_app_settings",
+      "schema": "",
+      "columns": {
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "settings": {
+          "name": "settings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "verification": {
+          "name": "verification",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "github_app_settings_company_id_companies_id_fk": {
+          "name": "github_app_settings_company_id_companies_id_fk",
+          "tableFrom": "github_app_settings",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "github_app_settings_company_check": {
+          "name": "github_app_settings_company_check",
+          "value": "\"github_app_settings\".\"settings\"->>'companyId' = \"github_app_settings\".\"company_id\"::text"
+        },
+        "github_app_settings_revision_check": {
+          "name": "github_app_settings_revision_check",
+          "value": "\"github_app_settings\".\"revision\" >= 0"
+        },
+        "github_app_settings_native_refs_check": {
+          "name": "github_app_settings_native_refs_check",
+          "value": "\n    \"github_app_settings\".\"settings\" #> '{apps,coordinator,signingKeySecret}' IS NOT NULL AND\n    \"github_app_settings\".\"settings\" #> '{apps,implementer,signingKeySecret}' IS NOT NULL AND\n    \"github_app_settings\".\"settings\" #> '{apps,reviewer,signingKeySecret}' IS NOT NULL AND\n    \"github_app_settings\".\"settings\" #> '{apps,coordinator,privateKeyPath}' IS NULL AND\n    \"github_app_settings\".\"settings\" #> '{apps,implementer,privateKeyPath}' IS NULL AND\n    \"github_app_settings\".\"settings\" #> '{apps,reviewer,privateKeyPath}' IS NULL"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.goals": {
       "name": "goals",
       "schema": "",
@@ -35021,6 +35122,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "worker_supervision": {
+          "name": "worker_supervision",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "worker_check_in_deadline_at": {
+          "name": "worker_check_in_deadline_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "execution_control_deadline_at": {
           "name": "execution_control_deadline_at",
           "type": "timestamp with time zone",
@@ -35830,6 +35943,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_worker_check_in_deadline_idx": {
+          "name": "heartbeat_runs_worker_check_in_deadline_idx",
+          "columns": [
+            {
+              "expression": "worker_check_in_deadline_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"worker_check_in_deadline_at\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -42860,6 +42989,262 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.issue_workflow_handoffs": {
+      "name": "issue_workflow_handoffs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_run_id": {
+          "name": "source_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lease_id": {
+          "name": "lease_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "intent": {
+          "name": "intent",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "return_proof": {
+          "name": "return_proof",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "committed_at": {
+          "name": "committed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "issue_workflow_handoffs_company_source_uq": {
+          "name": "issue_workflow_handoffs_company_source_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_workflow_handoffs_company_issue_state_idx": {
+          "name": "issue_workflow_handoffs_company_issue_state_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_workflow_handoffs_state_created_idx": {
+          "name": "issue_workflow_handoffs_state_created_idx",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "issue_workflow_handoffs_company_id_companies_id_fk": {
+          "name": "issue_workflow_handoffs_company_id_companies_id_fk",
+          "tableFrom": "issue_workflow_handoffs",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "issue_workflow_handoffs_issue_id_issues_id_fk": {
+          "name": "issue_workflow_handoffs_issue_id_issues_id_fk",
+          "tableFrom": "issue_workflow_handoffs",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "issue_workflow_handoffs_source_run_id_heartbeat_runs_id_fk": {
+          "name": "issue_workflow_handoffs_source_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "issue_workflow_handoffs",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "source_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "issue_workflow_handoffs_agent_id_agents_id_fk": {
+          "name": "issue_workflow_handoffs_agent_id_agents_id_fk",
+          "tableFrom": "issue_workflow_handoffs",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "issue_workflow_handoffs_workspace_id_execution_workspaces_id_fk": {
+          "name": "issue_workflow_handoffs_workspace_id_execution_workspaces_id_fk",
+          "tableFrom": "issue_workflow_handoffs",
+          "tableTo": "execution_workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "issue_workflow_handoffs_lease_id_environment_leases_id_fk": {
+          "name": "issue_workflow_handoffs_lease_id_environment_leases_id_fk",
+          "tableFrom": "issue_workflow_handoffs",
+          "tableTo": "environment_leases",
+          "columnsFrom": [
+            "lease_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -58512,7 +58897,7 @@
         },
         "tool_connections_auth_kind_check": {
           "name": "tool_connections_auth_kind_check",
-          "value": "\"tool_connections\".\"auth_kind\" in ('oauth', 'api_key', 'none')"
+          "value": "\"tool_connections\".\"auth_kind\" in ('oauth', 'api_key', 'none', 'github_app')"
         },
         "tool_connections_credential_source_check": {
           "name": "tool_connections_credential_source_check",

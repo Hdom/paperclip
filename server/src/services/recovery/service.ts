@@ -1,3 +1,4 @@
+import { workflowHandoffBlocksRun } from "../task-workflow-handoff-state.js";
 import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
 import { INTERACTION_DELIVERY_DENIED, isInteractionDeliveryDeniedRun } from "../agent-interaction-delivery.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -6613,6 +6614,7 @@ export function recoveryService(
           .from(issues).where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id))).for("update");
         if (!locked || locked.checkoutRunId !== issue.checkoutRunId || locked.executionRunId !== issue.executionRunId) return null;
         for (const runId of new Set([locked.checkoutRunId, locked.executionRunId])) {
+          if (runId && await workflowHandoffBlocksRun(tx as unknown as Db, issue.companyId, runId)) return null;
           if (runId && await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
             { companyId: issue.companyId, runId, issueId: issue.id })) return null;
         }

@@ -1,3 +1,6 @@
+import { WORKFLOW_PATCH_KEYS } from "../services/task-workflow-handoff-state.js";
+import { admitTaskWorkflowHandoff, taskWorkflowHandoffEligible } from "../services/task-workflow-handoff.js";
+import { buildExecutionStageWakeup } from "../services/task-workflow-stage-wakeup.js";
 import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
 import { assertQueuedCommentInteractionDelivery, recheckQueuedCommentInteractionDelivery } from "../services/agent-interaction-delivery.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
@@ -2827,116 +2830,6 @@ function diffExecutionParticipants(
   };
 }
 
-function buildExecutionStageWakeup(input: {
-  issueId: string;
-  previousState: ParsedExecutionState | null;
-  nextState: ParsedExecutionState | null;
-  interruptedRunId: string | null;
-  requestedByActorType: "user" | "agent";
-  requestedByActorId: string;
-}) {
-  const { issueId, previousState, nextState, interruptedRunId } = input;
-  if (!nextState) return null;
-
-  if (nextState.status === "pending") {
-    const agentId =
-      nextState.currentParticipant?.type === "agent"
-        ? (nextState.currentParticipant.agentId ?? null)
-        : null;
-    const stageChanged =
-      previousState?.status !== "pending" ||
-      previousState?.currentStageId !== nextState.currentStageId ||
-      !executionPrincipalsEqual(
-        previousState?.currentParticipant ?? null,
-        nextState.currentParticipant ?? null,
-      );
-    if (!agentId || !stageChanged) return null;
-
-    const reason =
-      nextState.currentStageType === "approval"
-        ? "execution_approval_requested"
-        : "execution_review_requested";
-    const executionStage = buildExecutionStageWakeContext({
-      state: nextState,
-      wakeRole:
-        nextState.currentStageType === "approval" ? "approver" : "reviewer",
-      allowedActions: ["approve", "request_changes"],
-    });
-
-    return {
-      agentId,
-      wakeup: {
-        source: "assignment" as const,
-        triggerDetail: "system" as const,
-        reason,
-        payload: {
-          issueId,
-          mutation: "update",
-          executionStage,
-          ...(interruptedRunId ? { interruptedRunId } : {}),
-        },
-        requestedByActorType: input.requestedByActorType,
-        requestedByActorId: input.requestedByActorId,
-        contextSnapshot: {
-          issueId,
-          taskId: issueId,
-          wakeReason: reason,
-          source: "issue.execution_stage",
-          executionStage,
-          ...(interruptedRunId ? { interruptedRunId } : {}),
-        },
-      },
-    };
-  }
-
-  if (nextState.status === "changes_requested") {
-    const agentId =
-      nextState.returnAssignee?.type === "agent"
-        ? (nextState.returnAssignee.agentId ?? null)
-        : null;
-    const becameChangesRequested =
-      previousState?.status !== "changes_requested" ||
-      previousState?.lastDecisionId !== nextState.lastDecisionId ||
-      !executionPrincipalsEqual(
-        previousState?.returnAssignee ?? null,
-        nextState.returnAssignee ?? null,
-      );
-    if (!agentId || !becameChangesRequested) return null;
-
-    const executionStage = buildExecutionStageWakeContext({
-      state: nextState,
-      wakeRole: "executor",
-      allowedActions: ["address_changes", "resubmit"],
-    });
-
-    return {
-      agentId,
-      wakeup: {
-        source: "assignment" as const,
-        triggerDetail: "system" as const,
-        reason: "execution_changes_requested",
-        payload: {
-          issueId,
-          mutation: "update",
-          executionStage,
-          ...(interruptedRunId ? { interruptedRunId } : {}),
-        },
-        requestedByActorType: input.requestedByActorType,
-        requestedByActorId: input.requestedByActorId,
-        contextSnapshot: {
-          issueId,
-          taskId: issueId,
-          wakeReason: "execution_changes_requested",
-          source: "issue.execution_stage",
-          executionStage,
-          ...(interruptedRunId ? { interruptedRunId } : {}),
-        },
-      },
-    };
-  }
-
-  return null;
-}
 
 class AutoApprovalIssueMissingError extends Error {
   constructor() {
@@ -15272,9 +15165,11 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
+      const workflowPlanningAt = new Date();
       const transition: ReturnType<typeof applyIssueExecutionPolicyTransition> = expectedStatusVersion !== undefined
         ? { patch: {} }
         : applyIssueExecutionPolicyTransition({
+        now: workflowPlanningAt,
         issue: existing,
         policy: nextExecutionPolicy,
         previousPolicy: previousExecutionPolicy,
@@ -15549,6 +15444,41 @@ export function issueRoutes(
             assigneeUserId: nextAssigneeUserId,
           });
         }
+      }
+
+      // A scoped producer's authenticated workflow request is accepted now,
+      // but its existing ownership must survive until genuine return and stop.
+      if (req.actor.type === "agent" && req.actor.source === "agent_jwt" && actor.agentId && actor.runId &&
+          existing.assigneeAgentId === actor.agentId && existing.executionRunId === actor.runId &&
+          (transition.workflowControlledAssignment || transition.decision) &&
+          await taskWorkflowHandoffEligible(db, existing.companyId, actor.runId)) {
+        const planned = Object.fromEntries(WORKFLOW_PATCH_KEYS
+          .filter(key => Object.hasOwn(updateFields, key)).map(key => [key, (updateFields as Record<string, unknown>)[key]]));
+        const commentProvenance = { authorizationReason: issueMutationAuthorizationReason ?? null,
+          sourceTrust: commentBody ? await sourceTrustForActorWrite(existing, actor) : null,
+          onBehalfOfUserId: authenticatedActorResponsibleUserId(req) ?? null };
+        const accepted = await admitTaskWorkflowHandoff(db, { companyId: existing.companyId, issueId: id, commentProvenance,
+          agentId: actor.agentId, runId: actor.runId, plannedAt: workflowPlanningAt.toISOString(), request: req.body, patch: planned,
+          decision: transition.decision && decisionId ? { id: decisionId, ...transition.decision } : null,
+          validate: async (tx, locked) => {
+            const previewService = issueService(tx);
+            if (guardedStageDecision) {
+              assertStageDecisionSnapshot(locked, guardedStageDecision, decisionActor, existing);
+              if (await readPlanRevisionForDecision(tx, existing.companyId, id) !== guardedStageDecision.expectedPlanRevisionId)
+                throw conflict("The plan changed. Reload the task before deciding.", { code: "stage_decision_plan_changed" });
+            }
+            if (reviewVerdictRequested && locked.reviewPolicy && locked.reviewPolicy !== "anyone")
+              await assertIssueReviewVerdictActorAllowed(tx, { issue: locked,
+                actor: { type: "agent", id: actor.agentId! }, reviewPolicy: locked.reviewPolicy });
+            await previewService.update(id, { ...planned, companyGuard: existing.companyId,
+              actorAgentId: actor.agentId, actorRunId: actor.runId, expectedExecutionLock: checkedExecutionLock ?? undefined } as any, tx, [], []);
+            if (commentBody) await previewService.addComment(id, commentBody, { agentId: actor.agentId!, runId: actor.runId,
+              onBehalfOfUserId: authenticatedActorResponsibleUserId(req) }, {
+                authorizationReason: commentProvenance.authorizationReason, sourceTrust: commentProvenance.sourceTrust,
+              }, tx);
+          },
+        });
+        res.status(202).json({ ...accepted.task, pendingWorkflowHandoff: accepted.handoff }); return;
       }
 
       // Only this request may finish a mutation that intentionally stops its

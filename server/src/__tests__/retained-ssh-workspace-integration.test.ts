@@ -1,3 +1,15 @@
+import { withScopedTaskWorkspaceAuthority } from "../services/scoped-task-workspace-authority.js";
+import { recordTaskWorkflowReturn } from "../services/task-workflow-handoff.js";
+import { withDedicatedDbConnection } from "@paperclipai/db";
+import { commitTaskWorkflowHandoff } from "../services/task-workflow-handoff.js";
+import { withDirectoryMergeLock, tryWithDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerTaskWorkflowHandoffWork } from "../services/task-workflow-handoff-work.js";
+import { issueWorkflowHandoffs } from "@paperclipai/db";
+import { agentRoutes } from "../routes/agents.js";
+import { issueRoutes } from "../routes/issues.js";
+import { actorMiddleware } from "../middleware/auth.js";
+import type { Server } from "node:http";
 import express from "express";
 import request from "supertest";
 import { companyRoutes } from "../routes/companies.js";
@@ -24,7 +36,7 @@ import { authUsers, companyMemberships, companySkills } from "@paperclipai/db";
 import { extractControllerWorkspaceArchive } from "@paperclipai/adapter-utils/controller-workspace-archive";
 import { secretService } from "../services/secrets.js";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, writeFile, mkdtemp, mkdir, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, mkdir, rm, link } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
@@ -438,4 +450,364 @@ it.each(["retry_first","notification_first","pause_retry_first","pause_interrupt
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.input.companyId))).toHaveLength(2);
   }finally{releaseContinuation();if(paused)releaseStale();registerServerAdapter(original);await heartbeat.drainActiveRunExecutions();await lifecycle?.stop();}
 },90000);
+
+it.each([
+  { role:"Researcher", action:"submit", target:"Coordinator" },
+  { role:"Planner", action:"submit", target:"Coordinator" },
+  { role:"Implementer", action:"submit", target:"Reviewer" },
+  { role:"Reviewer", action:"approve", target:"Implementer" },
+  { role:"Coordinator", action:"approve", target:"Researcher" },
+  { role:"Reviewer", action:"changes", target:"Implementer" },
+  { role:"Planner", action:"human", target:"Coordinator" },
+  { role:"Coordinator", action:"next_human", target:"Researcher" },
+  { role:"Implementer", action:"chain", target:"Reviewer" },
+  { role:"Researcher", action:"cancel", target:"Coordinator" },
+  { role:"Researcher", action:"provider_failed", target:"Coordinator" },
+  { role:"Researcher", action:"doc_changed", target:"Coordinator" },
+  { role:"Researcher", action:"unsafe_link", target:"Coordinator" },
+  { role:"Researcher", action:"restart", target:"Coordinator" },
+  { role:"Implementer", action:"drain", target:"Reviewer" },
+  { role:"Researcher", action:"older_writer", target:"Coordinator" },
+  { role:"Researcher", action:"db_disconnect", target:"Coordinator" },
+  { role:"Researcher", action:"unsupported_workspace", target:"Coordinator" },
+])("actual Codex adapter and agent-JWT HTTP $role $action returns real bytes before workflow assignment",async scenario=>{
+  const companyId=randomUUID(),producerId=randomUUID(),reviewerId=randomUUID(),issueId=randomUUID(),environmentId=randomUUID();
+  const deciding=["approve","changes","next_human"].includes(scenario.action), chain=["chain","drain"].includes(scenario.action);
+  const controlled=["cancel","doc_changed","unsafe_link","restart","drain","older_writer","db_disconnect"].includes(scenario.action);
+  const failed=["cancel","provider_failed","doc_changed","unsafe_link","older_writer"].includes(scenario.action);
+  const controlFile=path.join(connection.remoteWorkspacePath,"synthetic-control-"+companyId);
+  const requestedStatus=deciding ? scenario.action==="changes" ? "in_progress" : "done" : "in_review";
+  const syntheticHome=path.join(root,'http-synthetic-codex-shared');await mkdir(syntheticHome,{recursive:true,mode:0o700});vi.stubEnv('CODEX_HOME',syntheticHome);
+  const managedHome=path.join(root,'instances/default/companies',companyId,'codex-home');
+  vi.stubEnv('PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS',JSON.stringify([path.join(root,'staging'),syntheticHome,managedHome]));
+  await db.insert(companies).values({id:companyId,name:"Actual HTTP review handoff",issuePrefix:"H"+companyId.replaceAll("-",""),defaultResponsibleUserId:"operator",requireBoardApprovalForNewAgents:false});
+  await db.insert(companyMemberships).values({companyId,principalType:"user",principalId:"operator",status:"active",membershipRole:"owner"});
+  // Scope this regression to the changed handoff boundaries. Generic startup,
+  // Retry admission and checkout retain their existing pools. The authenticated
+  // PATCH route, exact source validator, real copy-back recorder and workflow
+  // commit owner share ONE main connection, with the normal shared work signals.
+  let runtimeDb=db, releaseHandoffPool=()=>{};
+  let handoffPoolLifetime:Promise<void>|undefined;
+  if(process.env.PAPERCLIP_TEST_HANDOFF_DB_POOL_MAX==="1"){
+    let ready!:()=>void;const allocated=new Promise<void>(resolve=>ready=resolve);
+    const release=new Promise<void>(resolve=>releaseHandoffPool=resolve);
+    handoffPoolLifetime=withDedicatedDbConnection(db,async dedicated=>{runtimeDb=dedicated;ready();await release;});
+    await allocated;
+  }
+  const storage=createStorageService(createLocalDiskStorageProvider(path.join(root,"http-handoff-objects")));
+  const app=express();app.use(express.json());app.use(actorMiddleware(runtimeDb,{deploymentMode:"authenticated"}));
+  const handoffRoutes=issueRoutes(runtimeDb,storage),ordinaryRoutes=runtimeDb===db?handoffRoutes:issueRoutes(db,storage);
+  app.use("/api",(req,res,next)=>req.method==="POST"&&/\/issues\/[^/]+\/checkout$/.test(req.path)
+    ?ordinaryRoutes(req,res,next):handoffRoutes(req,res,next));app.use(errorHandler);
+  const server:Server=await new Promise(resolve=>{const v=app.listen(0,"0.0.0.0",()=>resolve(v));});
+  const port=(server.address() as {port:number}).port;
+  const executable=path.join(connection.remoteWorkspacePath,"synthetic-codex-"+companyId);
+  const script=`#!/usr/bin/python3
+import json,os,sys,time,urllib.request
+if '--version' in sys.argv:
+ print('codex-cli 0.159.0');sys.exit(0)
+print(json.dumps({'type':'thread.started','thread_id':'synthetic-'+os.environ['PAPERCLIP_RUN_ID']}),flush=True)
+print(json.dumps({'type':'turn.started'}),flush=True)
+recipient=os.environ['PAPERCLIP_AGENT_ID']!='${producerId}'
+with open('reviewed.txt' if recipient else 'returned.txt','w') as f:f.write('real adapter handoff bytes\\n')
+base='http://192.0.2.1:${port}/api'
+headers={'Authorization':'Bearer '+os.environ['PAPERCLIP_TEST_AGENT_JWT'],'X-Paperclip-Run-Id':os.environ['PAPERCLIP_RUN_ID']}
+with urllib.request.urlopen(urllib.request.Request(base+'/issues/'+os.environ['PAPERCLIP_TASK_ID'],headers=headers),timeout=30) as response: before=json.load(response)
+checkout=urllib.request.Request(base+'/issues/'+os.environ['PAPERCLIP_TASK_ID']+'/checkout',data=json.dumps({'agentId':os.environ['PAPERCLIP_AGENT_ID'],'expectedStatuses':[before['status']]}).encode(),method='POST',headers={**headers,'Content-Type':'application/json'})
+with urllib.request.urlopen(checkout,timeout=30) as response: checked=json.load(response)
+assert checked['executionRunId']==os.environ['PAPERCLIP_RUN_ID'] and checked['checkoutRunId']==os.environ['PAPERCLIP_RUN_ID']
+with urllib.request.urlopen(urllib.request.Request(base+'/issues/'+os.environ['PAPERCLIP_TASK_ID'],headers=headers),timeout=30) as response: before=json.load(response)
+body={'status':'done' if recipient else '${requestedStatus}','comment':'The exact saved evidence supports this configured workflow decision.'}
+if recipient or ${deciding ? "True" : "False"}:
+ body.update({'expectedExecutionStageId':before['executionState']['currentStageId'],'expectedDecisionStatusVersion':before['statusVersion'],'expectedDecisionLastDecisionId':before['executionState'].get('lastDecisionId'),'expectedPlanRevisionId':None})
+body=json.dumps(body).encode()
+req=urllib.request.Request(base+'/issues/'+os.environ['PAPERCLIP_TASK_ID'],data=body,method='PATCH',headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ['PAPERCLIP_TEST_AGENT_JWT'],'X-Paperclip-Run-Id':os.environ['PAPERCLIP_RUN_ID']})
+try:
+ with urllib.request.urlopen(req,timeout=30) as response:
+  assert response.status==202
+  result=json.load(response)
+ assert result['assigneeAgentId']==os.environ['PAPERCLIP_AGENT_ID']
+ assert result['status']==before['status'] and result['executionRunId']==os.environ['PAPERCLIP_RUN_ID']
+ # A lost reply must join the same intent, not duplicate comments or decisions.
+ with urllib.request.urlopen(req,timeout=30) as response: replay=json.load(response)
+ assert replay['pendingWorkflowHandoff']['id']==result['pendingWorkflowHandoff']['id']
+except urllib.error.HTTPError as error:
+ payload=json.loads(error.read().decode())
+ if ${scenario.action==="unsupported_workspace" ? "True" : "False"}:
+  assert error.code==422 and payload['details']['code']=='workflow_handoff_workspace_unsupported'
+  print(json.dumps({'type':'item.completed','item':{'id':'blocked','type':'agent_message','text':'Workspace setup is blocked; no review handoff was performed.'}}),flush=True)
+  print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_tokens':1,'cached_input_tokens':0}}),flush=True);sys.exit(0)
+ print(json.dumps(payload),file=sys.stderr,flush=True);raise
+if not recipient and ${controlled ? "True" : "False"}:
+ with open('${controlFile}.accepted','w') as accepted:accepted.write('The exact replay was acknowledged.')
+ while not os.path.exists('${controlFile}'):time.sleep(0.05)
+if not recipient and ${scenario.action==="provider_failed" ? "True" : "False"}:sys.exit(42)
+print(json.dumps({'type':'item.completed','item':{'id':'msg','type':'agent_message','text':'Review handoff accepted; returning files.'}}),flush=True)
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_tokens':1,'cached_input_tokens':0}}),flush=True)
+`;
+  await writeFile(executable,script,{mode:0o700});
+  const secret=await secretService(db).create(companyId,{name:"synthetic-http-ssh",provider:"local_encrypted",value:connection.privateKey!});
+  await secretService(db).createBinding({companyId,secretId:secret.id,targetType:"environment",targetId:environmentId,configPath:"privateKeySecretRef"});
+  await db.insert(environments).values({id:environmentId,name:"HTTP workflow fixture "+environmentId,driver:"ssh",config:{...connection,privateKey:null,privateKeySecretRef:{type:"secret_ref",secretId:secret.id,version:"latest"}}});
+  await db.insert(agents).values([{id:producerId,companyId,name:scenario.role,role:"general",status:"idle",adapterType:"codex_local",defaultEnvironmentId:environmentId,runtimeConfig:{heartbeat:{wakeOnDemand:true}},adapterConfig:{command:executable,engine:"cli",paperclipSkillSync:{desiredSkills:[]}},permissions:{}},{id:reviewerId,companyId,name:scenario.target,role:"pm",status:"idle",adapterType:"codex_local",defaultEnvironmentId:environmentId,runtimeConfig:{heartbeat:{wakeOnDemand:chain}},adapterConfig:{command:executable,engine:"cli",paperclipSkillSync:{desiredSkills:[]}},permissions:{}}]);
+  const providerSecret=await secretService(db).create(companyId,{name:"synthetic-no-provider",provider:"local_encrypted",value:"sk-synthetic-not-sent-to-provider"});
+  await secretService(db).createBinding({companyId,secretId:providerSecret.id,targetType:"agent",targetId:producerId,configPath:"env.OPENAI_API_KEY"});
+  await db.update(agents).set({adapterConfig:{command:executable,engine:"cli",paperclipSkillSync:{desiredSkills:[]},env:{OPENAI_API_KEY:{type:"secret_ref",secretId:providerSecret.id,version:"latest"}}}}).where(eq(agents.id,producerId));
+  if(chain){
+    await secretService(db).createBinding({companyId,secretId:providerSecret.id,targetType:"agent",targetId:reviewerId,configPath:"env.OPENAI_API_KEY"});
+    await db.update(agents).set({adapterConfig:{command:executable,engine:"cli",paperclipSkillSync:{desiredSkills:[]},env:{OPENAI_API_KEY:{type:"secret_ref",secretId:providerSecret.id,version:"latest"}}}}).where(eq(agents.id,reviewerId));
+  }
+  const {normalizeIssueExecutionPolicy,applyIssueExecutionPolicyTransition}=await import("../services/issue-execution-policy.js");
+  const policy=normalizeIssueExecutionPolicy({mode:"normal",stages:[
+    {type:scenario.action==="human"?"approval":"review",participants:[scenario.action==="human"?{type:"user",userId:"operator"}:{type:"agent",agentId:deciding?producerId:reviewerId}]},
+    ...(scenario.action==="next_human"?[{type:"approval",participants:[{type:"user",userId:"operator"}]}]:[]),
+  ]});
+  const seedTask={status:"in_progress",assigneeAgentId:reviewerId,assigneeUserId:null,responsibleUserId:"operator",executionPolicy:policy,executionState:null};
+  const initial=deciding ? applyIssueExecutionPolicyTransition({issue:seedTask,policy,previousPolicy:policy,requestedStatus:"in_review",requestedAssigneePatch:{},actor:{agentId:reviewerId},commentBody:"Submit the exact work to its configured reviewer."}).patch : {};
+  await db.insert(issues).values({id:issueId,companyId,title:"Actual configured "+scenario.role+" "+scenario.action,status:deciding?"in_review":"todo",assigneeAgentId:producerId,responsibleUserId:"operator",executionPolicy:policy as unknown as Record<string,unknown>,executionState:initial.executionState as Record<string,unknown>|null});
+  if(deciding){
+    // A real reviewer inherits the producer's persisted native task workspace.
+    // Do not replace that production precondition with an unbound fallback.
+    const nativeCwd=await materializeIsolatedTaskDirectory({companyId,issueId});
+    const [nativeWorkspace]=await db.insert(executionWorkspaces).values({companyId,sourceIssueId:issueId,name:"Submitted review workspace",mode:"isolated_workspace",strategyType:"project_primary",cwd:nativeCwd,providerType:"local_fs"}).returning();
+    await executionWorkspaceService(db).bindTaskWorkspace(companyId,issueId,nativeWorkspace.id);
+    await db.update(issues).set({executionWorkspacePreference:"reuse_existing",workspaceSelection:{version:1,source:"explicit",selection:{kind:"existing",workspaceId:nativeWorkspace.id}}}).where(eq(issues.id,issueId));
+    await writeFile(path.join(nativeCwd,"submitted.txt"),"Exact prior producer bytes.");
+  }
+  if(scenario.action==="unsupported_workspace"){
+    // Ordinary static policy is already approved in this synthetic profile;
+    // its shared flat workspace is deliberately outside the native handoff contract.
+    const cwd=path.join(root,"static-approved-shared",companyId,issueId);await mkdir(cwd,{recursive:true,mode:0o700});
+    const [workspace]=await db.insert(executionWorkspaces).values({companyId,sourceIssueId:issueId,name:"Already approved static shared source",mode:"shared_workspace",strategyType:"project_primary",cwd,providerType:"local_fs"}).returning();
+    await executionWorkspaceService(db).bindTaskWorkspace(companyId,issueId,workspace.id);
+    await db.update(issues).set({executionWorkspacePreference:"reuse_existing",workspaceSelection:{version:1,source:"explicit",selection:{kind:"existing",workspaceId:workspace.id}}}).where(eq(issues.id,issueId));
+    vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS",JSON.stringify([path.join(root,"staging"),syntheticHome,managedHome,cwd]));
+    vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS",JSON.stringify([path.join(root,"legacy"),cwd]));
+  }
+  vi.stubEnv("PAPERCLIP_API_URL",`http://192.0.2.1:${port}/api`);vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET","synthetic-http-workflow-test-secret-not-a-live-credential");
+  vi.stubEnv("PAPERCLIP_PROTECT_CONTROLLER_GITHUB_KEYS","1");vi.stubEnv("PAPERCLIP_GITHUB_PROJECT_APPS_CONFIG","");
+  vi.stubEnv("PAPERCLIP_CONTROLLER_AGENT_SSH_TARGETS",JSON.stringify([{...connection,privateKey:undefined}]));
+  await instanceSettingsService(db).updateExperimental({enableIsolatedWorkspaces:false});
+  const {documentService}=await import("../services/documents.js");
+  await documentService(db).upsertIssueDocument({issueId,key:"research",format:"markdown",body:"Existing exact research revision must remain unchanged.",baseRevisionId:null,createdByUserId:"operator"});
+  const originalAdapter=getServerAdapter("codex_local");
+  let sourceJwt:string|null=null;
+  registerServerAdapter({...originalAdapter,execute:async ctx=>{
+    if(ctx.agent.id===producerId)sourceJwt=ctx.authToken??null;
+    const actual=()=>originalAdapter.execute({...ctx,
+      ...(runtimeDb!==db?{onWorkspaceCopyback:(verify:Parameters<typeof recordTaskWorkflowReturn>[2])=>recordTaskWorkflowReturn(runtimeDb,{companyId,runId:ctx.runId},verify)}:{}),
+      config:{...ctx.config,env:{...(ctx.config.env as Record<string,unknown>),PAPERCLIP_TEST_AGENT_JWT:ctx.authToken}}});
+    if(runtimeDb===db)return actual();
+    const [bound]=await runtimeDb.select({id:executionWorkspaces.id,cwd:executionWorkspaces.cwd}).from(issues)
+      .innerJoin(executionWorkspaces,eq(issues.executionWorkspaceId,executionWorkspaces.id)).where(eq(issues.id,issueId));
+    return withScopedTaskWorkspaceAuthority(runtimeDb,{companyId,agentId:ctx.agent.id,issueId,runId:ctx.runId,
+      workspaceId:bound.id,workspaceCwd:bound.cwd!,target:ctx.executionTarget,signal:ctx.signal??new AbortController().signal},actual);
+  }});
+  const heartbeat=heartbeatService(db);
+  const ownerErrors: unknown[] = [];
+  let allowDispatch=true;
+  const makeCoordinator=()=>createDeliveryWorkCoordinator({owner:runtimeDb,canRun:()=>allowDispatch,canReconcile:()=>true,onError:error=>ownerErrors.push(error)});
+  let coordinator=makeCoordinator();
+  let workflowOwner=registerTaskWorkflowHandoffWork(runtimeDb,coordinator);await workflowOwner.ready;
+  const receiptOwner=chain?heartbeat.registerDeferredReceiptWork(coordinator,()=>true):null;await receiptOwner?.ready;
+  let releaseBlockedRead=()=>{}, releaseOldWriter=()=>{};
+  let oldWriter:Promise<unknown>|undefined, injectedCommit:Promise<{error?:unknown;value?:boolean}>|undefined;
+  let hashSpy:{mockRestore():void}|undefined, lossDb:ReturnType<typeof createDb>|undefined;
+  const chainDiagnostic=chain?setInterval(()=>{void Promise.all([
+    db.select({id:heartbeatRuns.id,agentId:heartbeatRuns.agentId,status:heartbeatRuns.status,errorCode:heartbeatRuns.errorCode}).from(heartbeatRuns).where(eq(heartbeatRuns.companyId,companyId)),
+    db.select({id:issueWorkflowHandoffs.id,state:issueWorkflowHandoffs.state,failure:issueWorkflowHandoffs.failureCode}).from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.companyId,companyId)),
+    db.select({id:agentWakeupRequests.id,status:agentWakeupRequests.status,runId:agentWakeupRequests.runId,reason:agentWakeupRequests.reason}).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId,companyId)),
+  ]).then(([runs,intents,wakes])=>console.info("isolated workflow chain",JSON.stringify({runs,intents,wakes}))).catch(()=>{});},5000):null;
+  try{
+    let started:Awaited<ReturnType<typeof heartbeat.getRun>> | null;
+    if(deciding || scenario.action==="unsupported_workspace"){
+      started=await heartbeat.wakeup(producerId,{source:"assignment",triggerDetail:"system",reason:"execution_review_requested",payload:{issueId},contextSnapshot:{issueId},requestedByActorType:"user",requestedByActorId:"operator"});
+    }else{
+      const [prior]=await db.insert(heartbeatRuns).values({companyId,agentId:producerId,issueId,runtimeMode:"legacy",status:"failed",errorCode:"configuration_incomplete",contextSnapshot:{issueId},startedAt:new Date(Date.now()-2000),finishedAt:new Date(Date.now()-1000)}).returning();
+      await db.update(issues).set({status:"blocked"}).where(eq(issues.id,issueId));
+      const retry=await requestTaskRetry({db,companyId,issueId,actorId:"operator",actorSource:"session",observedRunId:prior.id,idempotencyKey:randomUUID()});
+      await heartbeat.resumeTaskRetry(companyId,retry.requestId!);
+      const [retryWake]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,retry.requestId!));
+      started=await heartbeat.getRun(retryWake.runId!);
+    }
+    expect(started).not.toBeNull();
+    if(controlled){
+      await vi.waitFor(async()=>{
+        const [intent]=await db.select().from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.sourceRunId,started!.id));expect(intent?.state).toBe("pending");
+      },{timeout:15000});
+      if(["restart","older_writer","db_disconnect"].includes(scenario.action)){workflowOwner.stop();await coordinator.stop();}
+      if(scenario.action==="drain")allowDispatch=false;
+      if(scenario.action==="doc_changed"){
+        // Change the reviewed document only after both original acceptance and
+        // its exact replay have actually returned to the provider.
+        await vi.waitFor(async()=>expect(await readFile(controlFile+".accepted","utf8")).toBe("The exact replay was acknowledged."),{timeout:15000});
+        const {documentService}=await import("../services/documents.js");
+        await documentService(db).upsertIssueDocument({issueId,key:"plan",format:"markdown",body:"A material plan changed after this review request.",baseRevisionId:null,createdByUserId:"operator"});
+        const replay=await request(app).patch(`/api/issues/${issueId}`).set("Authorization","Bearer "+sourceJwt).set("X-Paperclip-Run-Id",started!.id)
+          .send({status:"in_review",comment:"The exact saved evidence supports this configured workflow decision."});
+        expect(replay.status,replay.text).toBe(409);
+      }
+      if(scenario.action==="unsafe_link"){
+        const [bound]=await db.select({cwd:executionWorkspaces.cwd}).from(issues).innerJoin(executionWorkspaces,eq(issues.executionWorkspaceId,executionWorkspaces.id)).where(eq(issues.id,issueId));
+        const synthetic=path.join(root,"synthetic-keys","synthetic-workflow-"+companyId);await writeFile(synthetic,"synthetic-protected-key-must-never-enter-the-snapshot",{mode:0o600});
+        await link(synthetic,path.join(bound.cwd!,"unsafe-controller-alias"));
+      }
+      if(scenario.action==="cancel"){
+        const operatorApp=express();operatorApp.use(express.json());operatorApp.use((req,_res,next)=>{req.actor={type:"board",userId:"operator",source:"session",companyIds:[companyId],memberships:[{companyId,membershipRole:"owner",status:"active"}]};next();});
+        operatorApp.use("/api",agentRoutes(runtimeDb));operatorApp.use(errorHandler);
+        const stopped=await request(operatorApp).post(`/api/heartbeat-runs/${started!.id}/cancel`).send({});
+        expect(stopped.status,stopped.text).toBe(200);
+      }
+      await writeFile(controlFile,"The isolated test may return.");
+    }
+    await heartbeat.drainActiveRunExecutions();
+    if(scenario.action==="older_writer"){
+      const [saved]=await db.select().from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.sourceRunId,started!.id));
+      expect(saved.state).toBe("pending");expect(saved.returnProof).not.toBeNull();
+      const [workspace]=await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id,saved.workspaceId));
+      const [alias]=await db.insert(executionWorkspaces).values({companyId,sourceIssueId:issueId,name:"Earlier record for the exact same physical directory",mode:"isolated_workspace",strategyType:"project_primary",providerType:"local_fs",cwd:workspace.cwd}).returning();
+      const [realLease]=await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId,started!.id));
+      const cleanHistory=Array.from({length:105},()=>({id:randomUUID(),companyId,agentId:producerId,issueId,runtimeMode:"legacy",status:"succeeded",
+        contextSnapshot:{issueId,executionWorkspaceId:alias.id},createdAt:new Date(started!.createdAt.getTime()-10000),startedAt:new Date(started!.createdAt.getTime()-9000),finishedAt:new Date(started!.createdAt.getTime()-8000)}));
+      await db.insert(heartbeatRuns).values(cleanHistory);
+      await db.insert(environmentLeases).values(cleanHistory.map(history=>{
+        const id=randomUUID(),scope={...(realLease.metadata!.remoteExecutionScope as Record<string,unknown>),runId:history.id,leaseId:id,generation:randomUUID()};
+        return {id,companyId,environmentId,issueId,heartbeatRunId:history.id,executionWorkspaceId:alias.id,provider:"ssh",providerLeaseId:realLease.providerLeaseId,
+          status:"released",releasedAt:new Date(),cleanupStatus:"success",leasePolicy:"ephemeral",metadata:{remoteExecutionScopeRequired:true,remoteExecutionScope:scope,
+            remoteExecutionTermination:{schema:"paperclip.remote-termination.v1",companyId,runId:history.id,leaseId:id,provider:"ssh",providerLeaseId:realLease.providerLeaseId,state:"stopped",resourceScope:scope}}};
+      }));
+      const [old]=await db.insert(heartbeatRuns).values({companyId,agentId:producerId,issueId,runtimeMode:"legacy",status:"succeeded",
+        contextSnapshot:{issueId,executionWorkspaceId:alias.id},createdAt:new Date(started!.createdAt.getTime()-5000),startedAt:new Date(started!.createdAt.getTime()-4000),finishedAt:new Date(started!.createdAt.getTime()-3000)}).returning();
+      let enter!:()=>void;const entered=new Promise<void>(resolve=>enter=resolve);
+      const permit=new Promise<void>(resolve=>releaseOldWriter=resolve);
+      oldWriter=withNativeWorkspaceFinalizationOwnership({db,companyId,runId:old.id,liveLegacyPublication:true},async owner=>{
+        await owner.assertHeld();enter();await permit;
+        await withDirectoryMergeLock(workspace.cwd!,async()=>{await owner.assertHeld();await writeFile(path.join(workspace.cwd!,"older-publisher.txt"),"Genuine older callback bytes must not be silently merged into this decision.");});
+      });
+      await entered;coordinator=makeCoordinator();workflowOwner=registerTaskWorkflowHandoffWork(runtimeDb,coordinator);await workflowOwner.ready;
+      await vi.waitFor(async()=>{
+        const [held]=await db.select().from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.id,saved.id));
+        expect(held).toMatchObject({state:"pending",failureCode:"workflow_handoff_competing_writer"});
+      },{timeout:15000});
+      const [beforeOldJoins]=await db.select().from(issues).where(eq(issues.id,issueId));expect(beforeOldJoins.assigneeAgentId).toBe(producerId);
+      releaseOldWriter();await oldWriter;
+    }
+    if(scenario.action==="db_disconnect"){
+      const [saved]=await db.select().from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.sourceRunId,started!.id));
+      const [workspace]=await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id,saved.workspaceId));
+      const materializer=await import("@paperclipai/adapter-utils/controller-source-materialization");
+      const actual=materializer.createControllerSourceSnapshot;
+      let enter!:()=>void;const entered=new Promise<void>(resolve=>enter=resolve);
+      const permit=new Promise<void>(resolve=>releaseBlockedRead=resolve);
+      hashSpy=vi.spyOn(materializer,"createControllerSourceSnapshot").mockImplementation(async(...args)=>{enter();await permit;return actual(...args);});
+      const applicationName="workflow-disconnect-"+companyId;
+      lossDb=createDb(database.connectionString,{maxConnections:1,applicationName});
+      let settled=false;
+      injectedCommit=commitTaskWorkflowHandoff(lossDb,companyId,started!.id).then(value=>{settled=true;return {value};},error=>{settled=true;return {error};});
+      await entered;
+      const sessions=await db.execute<{pid:number}>(sql`select pid from pg_stat_activity where datname=current_database() and application_name=${applicationName} and state='idle in transaction'`);
+      expect(sessions).toHaveLength(1);
+      await db.execute(sql`select pg_terminate_backend(${sessions[0].pid})`);
+      await vi.waitFor(async()=>{expect(await db.execute(sql`select pid from pg_stat_activity where pid=${sessions[0].pid}`)).toHaveLength(0);});
+      expect(settled).toBe(false);
+      expect(await tryWithDirectoryMergeLock(workspace.cwd!,async()=>true)).toBeUndefined();
+      releaseBlockedRead();const result=await injectedCommit;expect(result.error).toBeDefined();
+      hashSpy.mockRestore();hashSpy=undefined;
+      expect(await tryWithDirectoryMergeLock(workspace.cwd!,async()=>true)).toBe(true);
+      const [unchanged]=await db.select().from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.id,saved.id));expect(unchanged.state).toBe("pending");
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId,reviewerId))).toHaveLength(0);
+      await lossDb.$client.end({timeout:5});lossDb=undefined;
+      coordinator=makeCoordinator();workflowOwner=registerTaskWorkflowHandoffWork(runtimeDb,coordinator);await workflowOwner.ready;
+    }
+    if(scenario.action==="restart"){
+      const [saved]=await db.select().from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.sourceRunId,started!.id));
+      expect(saved.state).toBe("pending");expect(saved.returnProof).not.toBeNull();
+      const [owned]=await db.select().from(issues).where(eq(issues.id,issueId));
+      expect(owned).toMatchObject({executionRunId:started!.id,checkoutRunId:started!.id});
+      const guards=issueService(db);
+      expect(await guards.clearExecutionRunIfTerminal(issueId)).toBe(false);
+      expect(await guards.clearCheckoutRunIfTerminal(issueId)).toBe(false);
+      expect((await heartbeat.sweepStaleIssueLocks({companyId,issueId})).cleared).toBe(0);
+      const [stillOwned]=await db.select().from(issues).where(eq(issues.id,issueId));
+      expect(stillOwned).toMatchObject({executionRunId:started!.id,checkoutRunId:started!.id});
+      coordinator=makeCoordinator();workflowOwner=registerTaskWorkflowHandoffWork(runtimeDb,coordinator);await workflowOwner.ready;
+    }
+    const finished=await heartbeat.getRun(started!.id);
+    const [diagnostic]=await db.select({stderr:heartbeatRuns.stderrExcerpt,stdout:heartbeatRuns.stdoutExcerpt}).from(heartbeatRuns).where(eq(heartbeatRuns.id,started!.id));
+    expect(finished?.status,JSON.stringify(diagnostic)).toBe(scenario.action==="cancel"?"cancelled":["provider_failed","unsafe_link"].includes(scenario.action)?"failed":"succeeded");
+    if(scenario.action==="unsupported_workspace"){
+      expect(await db.select().from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.sourceRunId,started!.id))).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId,reviewerId))).toHaveLength(0);
+      const [blocked]=await db.select().from(issues).where(eq(issues.id,issueId));expect(blocked).toMatchObject({status:"in_progress",assigneeAgentId:producerId});
+      const [workspace]=await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id,blocked.executionWorkspaceId!));
+      expect(await readFile(path.join(workspace.cwd!,"returned.txt"),"utf8")).toBe("real adapter handoff bytes\n");
+      const leases=await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId,started!.id));expect(hasRemoteTerminationReceipt(leases[0])).toBe(true);
+      return;
+    }
+    if(failed){
+      await vi.waitFor(async()=>{
+        const [intent]=await db.select().from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.sourceRunId,started!.id));expect(intent?.state).toBe("held");
+      },{timeout:15000});
+      const [unchanged]=await db.select().from(issues).where(eq(issues.id,issueId));
+      expect(unchanged.assigneeAgentId).toBe(producerId);expect(unchanged.status).toBe("in_progress");
+      const blocker=await getExecutionBlocker(db,companyId,issueId);expect(blocker?.canRetry).toBe(false);expect(blocker?.workspaceRepairRequired).toBe(true);
+      const targetWakes=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId,reviewerId));expect(targetWakes).toHaveLength(0);
+      const leases=await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId,started!.id));expect(leases).toHaveLength(1);expect(hasRemoteTerminationReceipt(leases[0])).toBe(true);
+      await vi.waitFor(async()=>{
+        const [source]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,started!.id));
+        expect(source.resultJson?.workspaceRestoreRecovery).toMatchObject({source:{runId:source.id,leaseId:leases[0].id,providerLeaseId:leases[0].providerLeaseId}});
+      },{timeout:15000});
+      if(scenario.action==="cancel"){
+        const denied=await request(app).patch(`/api/issues/${issueId}`).set("Authorization","Bearer "+sourceJwt)
+          .set("X-Paperclip-Run-Id",started!.id).send({status:"in_review",comment:"A canceled token cannot reacquire handoff authority."});
+        expect([401,403,409]).toContain(denied.status);
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId,reviewerId))).toHaveLength(0);
+      }
+      if(scenario.action==="unsafe_link")expect(await readFile(path.join(root,"synthetic-keys","synthetic-workflow-"+companyId),"utf8")).toBe("synthetic-protected-key-must-never-enter-the-snapshot");
+      return;
+    }
+    const [bound]=await db.select({cwd:executionWorkspaces.cwd}).from(issues).innerJoin(executionWorkspaces,eq(issues.executionWorkspaceId,executionWorkspaces.id)).where(eq(issues.id,issueId));
+    const cwd=bound.cwd!;
+    expect(await readFile(path.join(cwd,"returned.txt"),"utf8")).toBe("real adapter handoff bytes\n");
+    await vi.waitFor(async()=>{
+      const [intent]=await db.select().from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.sourceRunId,started!.id));
+      const revisions=await db.execute(sql`select l.key,d.latest_revision_id from issue_documents l join documents d on d.id=l.document_id where l.company_id=${companyId} and l.issue_id=${issueId}`);
+      expect({state:intent?.state},JSON.stringify({failure:intent?.failureCode,errors:ownerErrors.map(String),savedDocuments:intent?.intent.documentRevisions,currentDocuments:revisions})).toMatchObject({state:"committed"});
+    },{timeout:15000});
+    if(scenario.action==="drain"){
+      const beforeOpen=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,companyId));
+      expect(beforeOpen.filter(run=>run.agentId===reviewerId)).toHaveLength(0);
+      const [waiting]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId,reviewerId));
+      expect(waiting).toMatchObject({status:"deferred_issue_execution",runId:null});
+      allowDispatch=true;receiptOwner!.wake();
+    }
+    const [task]=await db.select().from(issues).where(eq(issues.id,issueId));
+    const expectedStatus=scenario.action==="approve"?"done":scenario.action==="changes"?"in_progress":"in_review";
+    if(!chain) expect(task).toMatchObject({status:expectedStatus,assigneeAgentId:["human","next_human"].includes(scenario.action)?null:scenario.action==="approve"?producerId:reviewerId,executionRunId:null,checkoutRunId:null});
+    if(["human","next_human"].includes(scenario.action)) expect(task.assigneeUserId).toBe("operator");
+    const leases=await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId,started!.id));
+    expect(leases).toHaveLength(1);expect(hasRemoteTerminationReceipt(leases[0])).toBe(true);
+    const wakes=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId,reviewerId));
+    expect(wakes).toHaveLength(["approve","human","next_human"].includes(scenario.action)?0:1);
+    if(chain){
+      await vi.waitFor(async()=>{
+        const [completed]=await db.select().from(issues).where(eq(issues.id,issueId));
+        expect(completed.status,JSON.stringify(ownerErrors.map(String))).toBe("done");
+      },{timeout:30000});
+      await heartbeat.drainActiveRunExecutions();
+      const all=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,companyId));
+      const executed=all.filter(run=>run.status==="succeeded");expect(executed).toHaveLength(2);
+      expect(new Set(executed.map(run=>run.agentId))).toEqual(new Set([producerId,reviewerId]));
+      const [finalTask]=await db.select().from(issues).where(eq(issues.id,issueId));
+      const [finalWorkspace]=await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id,finalTask.executionWorkspaceId!));
+      expect(await readFile(path.join(finalWorkspace.cwd!,"reviewed.txt"),"utf8")).toBe("real adapter handoff bytes\n");
+      const intents=await db.select().from(issueWorkflowHandoffs).where(eq(issueWorkflowHandoffs.companyId,companyId));
+      expect(intents).toHaveLength(2);expect(intents.every(intent=>intent.state==="committed")).toBe(true);
+      await heartbeat.resumeExecutionWaitComments({companyId});await heartbeat.drainActiveRunExecutions();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,companyId))).toHaveLength(all.length);
+    }
+    expect(await getExecutionBlocker(db,companyId,issueId)).toBeNull();
+  }finally{releaseBlockedRead();releaseOldWriter();await injectedCommit;await oldWriter;hashSpy?.mockRestore();await lossDb?.$client.end({timeout:5});if(controlled)await writeFile(controlFile,"Release isolated fixture on cleanup.");if(chainDiagnostic)clearInterval(chainDiagnostic);workflowOwner.stop();await receiptOwner?.stop();await coordinator.stop();registerServerAdapter(originalAdapter);await heartbeat.drainActiveRunExecutions();await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));releaseHandoffPool();await handoffPoolLifetime;}
+},180000);
+
 });

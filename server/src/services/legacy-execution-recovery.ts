@@ -1,3 +1,4 @@
+import { workflowHandoffBlocksRun } from "./task-workflow-handoff-state.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -20,7 +21,7 @@ import { claimedAdapterType, hasConversationContinuationPolicy } from "./convers
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, getTableColumns, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issueWorkflowHandoffs, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { executionStartedEventPredicate, isPreDispatchResourceWait } from "./pre-dispatch-execution-evidence.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -145,6 +146,20 @@ export async function terminalizeLegacyExecution(input: {
     )).for("update");
     if (!current || (current.runtimeMode !== "legacy" && !(input.recordRestoreFailureOnly && current.runtimeMode === "native")) ||
         (!input.recordRestoreFailureOnly && !(input.fromStatuses ?? [run.status]).includes(current.status))) return null;
+    // Revoke the deferred transition and pin its original source in the SAME
+    // terminal transaction. A canceled run gets no read/write return authority.
+    const [handoff] = await tx.select().from(issueWorkflowHandoffs).where(and(
+      eq(issueWorkflowHandoffs.companyId, run.companyId), eq(issueWorkflowHandoffs.sourceRunId, run.id),
+      inArray(issueWorkflowHandoffs.state, ["pending", "held"]))).for("update");
+    if (handoff && !input.recordRestoreFailureOnly && (status !== "succeeded" || !handoff.returnProof)) {
+      const source = handoff.intent.source;
+      if (!source || typeof source !== "object") throw new Error("workflow_handoff_source_missing");
+      patch = { ...patch, resultJson: { ...current.resultJson, ...patch?.resultJson,
+        workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: { schema: LEGACY_WORKSPACE_RECOVERY_SCHEMA,
+          leaseIds: [handoff.leaseId], source } } };
+      await tx.update(issueWorkflowHandoffs).set({ state: "held", failureCode: status === "succeeded"
+        ? "workflow_handoff_copyback_unproven" : "workflow_handoff_source_revoked", updatedAt: new Date() }).where(eq(issueWorkflowHandoffs.id, handoff.id));
+    }
     if (patch?.resultJson !== undefined) patch = { ...patch,
       resultJson: preserveWorkspaceRestoreRecoveryMetadata(current.resultJson,
         input.recordRestoreFailureOnly ? { ...current.resultJson, ...patch.resultJson } : patch.resultJson),
@@ -191,9 +206,11 @@ export async function terminalizeLegacyExecution(input: {
         sql`${heartbeatRuns.resultJson} is distinct from ${JSON.stringify(retainedResult)}::jsonb`)).returning();
       if (retained) updated = retained;
     }
+    if (!input.recordRestoreFailureOnly && updated.status === "succeeded" && !hasRequiredWorkspaceRecovery(updated.resultJson)
+      && !hasWorkspaceRestoreFailure(updated.resultJson) && await workflowHandoffBlocksRun(tx as unknown as Db, run.companyId, run.id)) return updated;
     const needsRecovery = input.recordRestoreFailureOnly
       ? retainedLeaseIds.length > 0 || hasRequiredWorkspaceRecovery(updated.resultJson)
-      : !input.reconcileIfNeeded || await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, updated);
+      : hasRequiredWorkspaceRecovery(updated.resultJson) || !input.reconcileIfNeeded || await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, updated);
     if (!needsRecovery) return updated;
     if (!input.recordRestoreFailureOnly && task && (task.executionRunId === run.id || task.checkoutRunId === run.id)) {
       await notifyNativeStatusReassessment(tx, { companyId: task.companyId, issueId: task.id });

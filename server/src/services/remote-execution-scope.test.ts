@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { hasRemoteTerminationReceipt, remoteTerminationReceipt, remoteTerminationScopeMatches, remoteTerminationScopeSql } from "./remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, remoteTerminationReceipt, remoteTerminationScopeMatches, remoteTerminationScopeSql, remoteTerminationReceiptSql } from "./remote-execution-termination.js";
 
 const scope={schema:"paperclip.ssh-run-scope.v1",generation:randomUUID(),bootId:randomUUID()};
 const cases:Array<{name:string;metadata:Record<string,unknown>;receipt:Record<string,unknown>;valid:boolean}>=[
@@ -34,6 +34,25 @@ const support=await getEmbeddedPostgresTestSupport();
     expect(Boolean(canonical)).toBe(valid);
     if(canonical){
       expect(hasRemoteTerminationReceipt({...identity,releasedAt:new Date(),cleanupStatus:"success",status:"released",metadata:{...metadata,remoteExecutionTermination:canonical}})).toBe(true);
+    }
+  });
+  it.each(cases)("keeps full lease-stop SQL and JS equivalent for $name",async({metadata,receipt})=>{
+    const identity={id:randomUUID(),companyId:randomUUID(),heartbeatRunId:randomUUID(),provider:"ssh",providerLeaseId:"ssh://fixture/work"};
+    const canonical={schema:"paperclip.remote-termination.v1",companyId:identity.companyId,runId:identity.heartbeatRunId,
+      leaseId:identity.id,provider:identity.provider,providerLeaseId:identity.providerLeaseId,state:"stopped",...receipt};
+    const base={...identity,releasedAt:new Date("2026-11-17T12:00:00.000Z"),cleanupStatus:"success",status:"released",
+      metadata:{...metadata,remoteExecutionTermination:canonical}};
+    const variants=[base,{...base,releasedAt:null},{...base,cleanupStatus:null},{...base,status:"active"},
+      {...base,provider:"local"},{...base,providerLeaseId:""},
+      {...base,metadata:{...metadata,remoteExecutionTermination:{...canonical,runId:randomUUID()}}}];
+    for(const lease of variants){
+      const wire={id:lease.id,company_id:lease.companyId,heartbeat_run_id:lease.heartbeatRunId,provider:lease.provider,
+        provider_lease_id:lease.providerLeaseId,released_at:lease.releasedAt?.toISOString()??null,
+        cleanup_status:lease.cleanupStatus,status:lease.status,metadata:lease.metadata};
+      const rows=await db.execute(sql`select ${sql.raw(remoteTerminationReceiptSql("lease"))} as matches
+        from jsonb_to_record(${JSON.stringify(wire)}::jsonb) lease(id uuid,company_id uuid,heartbeat_run_id uuid,provider text,
+          provider_lease_id text,released_at timestamptz,cleanup_status text,status text,metadata jsonb)`);
+      expect(rows[0]?.matches).toBe(hasRemoteTerminationReceipt(lease));
     }
   });
 });

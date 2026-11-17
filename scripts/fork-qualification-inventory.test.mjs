@@ -8,7 +8,7 @@ test('retains the qualified baseline inventory, working directories and known-ga
   const actual = JSON.parse(execFileSync(process.execPath, [fileURLToPath(new URL('./fork-github-app-regressions.mjs', import.meta.url)), '--list'], { encoding: 'utf8' }));
   assert.equal(expected.baseline, '37767b35e5a142c957c8eeda55da163527443c58');
   assert.deepEqual(actual, expected.tasks);
-  assert.equal(actual.length, 63);
+  assert.equal(actual.length, 64);
   assert.equal(expected.baselineTasks.length, 26);
   for (const baseline of expected.baselineTasks) assert.ok(actual.some(task => task.cwd === baseline.cwd
     && JSON.stringify(task.extra) === JSON.stringify(baseline.extra)
@@ -24,4 +24,14 @@ test('retains assembled protected SSH qualification with its unchanged target gu
  assert.ok(workflow.includes('sudo -n python3 scripts/tests/qualify-isolated-ssh.py --user'));
  const harness=fs.readFileSync(new URL('./tests/qualify-isolated-ssh.py',import.meta.url),'utf8');
  assert.ok(harness.includes('retained-ssh-workspace-integration.test.ts'));
+});
+
+test('retains actual adapter workflow roles, failures, recovery races and one-connection qualification',()=>{
+ const fixture=fs.readFileSync(new URL('../server/src/__tests__/retained-ssh-workspace-integration.test.ts',import.meta.url),'utf8');
+ for(const role of ['Coordinator','Researcher','Planner','Implementer','Reviewer']) assert.ok(fixture.includes(`role:"${role}"`),`Missing real-adapter role ${role}`);
+ for(const action of ['submit','approve','changes','human','next_human','chain','cancel','provider_failed','doc_changed','unsafe_link','restart','drain','older_writer','db_disconnect','unsupported_workspace'])
+   assert.ok(fixture.includes(`action:"${action}"`),`Missing actual workflow boundary ${action}`);
+ const workflow=fs.readFileSync(new URL('../.github/workflows/fork-linux-release.yml',import.meta.url),'utf8');
+ assert.ok(workflow.includes('--case chain --handoff-pool-max 1'));
+ assert.match(workflow,/name: Qualify single-connection handoff boundaries\n\s+working-directory: source/);
 });

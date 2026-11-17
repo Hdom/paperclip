@@ -1,3 +1,4 @@
+import { workflowHandoffBlocksRun, pendingTaskWorkflowHandoff } from "./task-workflow-handoff-state.js";
 import { isPreDispatchReviewWait, neverStartedDispatchCancellationPredicate } from "./pre-dispatch-review-wait.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
@@ -75,6 +76,7 @@ export const EXECUTION_BLOCKER_PERSON_RETRY_ACTION =
   "A person can use Retry on this task, or send it a new message, to continue once the previous execution has stopped. Agents cannot retry it for them.";
 
 export async function hasPendingRunCleanup(db: Db, companyId: string, runId: string): Promise<boolean> {
+  if (await workflowHandoffBlocksRun(db, companyId, runId)) return true;
   if (await nativeManualAdmissionHoldsExecution(db, { companyId, runId })) return true;
   // Recovery saved the files and re-stopped this sandbox before queueing its
   // destroy. That destroy is resource cleanup, not a live owner of the run.
@@ -289,6 +291,7 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
 }
 
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
+  const workflow = await pendingTaskWorkflowHandoff(db, companyId, issueId);
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,
     boundaryId: issues.conversationBoundaryCommentId, status: issues.status,
     assigneeAgentId: issues.assigneeAgentId, statusVersion: issues.statusVersion,
@@ -332,6 +335,13 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
   )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
+  if (!action && workflow) return { recoveryActionId: null, runId: workflow.sourceRunId, agentId: workflow.agentId,
+    cause: workflow.state === "held" ? "workflow_handoff_held" : "workflow_handoff_pending",
+    nextAction: workflow.failureCode === "workflow_handoff_competing_writer"
+      ? "Another saved workspace operation must finish or be reconciled before this handoff can continue."
+      : workflow.state === "held" ? "The saved work must be verified before the review handoff can continue."
+      : "Paperclip is finishing and saving the current agent's work before applying its review handoff.",
+    canContinue: false, canRetry: false, workspaceRepairRequired: workflow.state === "held" };
   if (!action) return null;
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);
   const runId = parsedRunId.success ? parsedRunId.data : null;
