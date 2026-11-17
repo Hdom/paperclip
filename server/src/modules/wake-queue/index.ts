@@ -129,3 +129,5 @@ export function createQueuedCommentQueue(db: Db, deps: QueuedCommentQueuePostgre
 }
 
 export type QueuedCommentQueue = ReturnType<typeof createQueuedCommentQueue>;
+
+export { retireDeferredBlockerStallWake, assertNoPendingDeferredBlockerStall } from "./adapters/retire-deferred-stall.js";

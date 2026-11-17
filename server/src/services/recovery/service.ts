@@ -2609,6 +2609,10 @@ export function recoveryService(
                   : recoveryCause === "configuration_incomplete"
                     ? readConfigurationIncompletePayload(input.latestRun)?.reason === "workspace_base_ref_unresolved"
                       ? "Check the starting branch and repository access, then repair the task’s branch and retry the original assignee."
+                      : readConfigurationIncompletePayload(input.latestRun)?.reason === "mcp_policy_conflict"
+                      ? "Review the agent’s governed MCP delivery policy and preserve stricter approvals, then explicitly retry the original owner."
+                      : readConfigurationIncompletePayload(input.latestRun)?.reason === "controller_source_protection_refused"
+                      ? "Review saved skill versions and workspace delivery for this run without expanding source access, then explicitly retry the original owner after repair."
                       : readConfigurationIncompletePayload(input.latestRun)?.reason === "ai_connection_unavailable"
                       ? "Reconnect the selected AI account or choose an available connection, then continue the task."
                       : readConfigurationIncompletePayload(input.latestRun)?.reason === RESTRICTED_WORKSPACE_SOURCE_REASON

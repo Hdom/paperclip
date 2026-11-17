@@ -8,11 +8,20 @@ test('retains the qualified baseline inventory, working directories and known-ga
   const actual = JSON.parse(execFileSync(process.execPath, [fileURLToPath(new URL('./fork-github-app-regressions.mjs', import.meta.url)), '--list'], { encoding: 'utf8' }));
   assert.equal(expected.baseline, '37767b35e5a142c957c8eeda55da163527443c58');
   assert.deepEqual(actual, expected.tasks);
-  assert.equal(actual.length, 52);
+  assert.equal(actual.length, 63);
   assert.equal(expected.baselineTasks.length, 26);
   for (const baseline of expected.baselineTasks) assert.ok(actual.some(task => task.cwd === baseline.cwd
     && JSON.stringify(task.extra) === JSON.stringify(baseline.extra)
     && baseline.files.every(file => task.files.includes(file))), `Missing baseline coverage: ${baseline.files.join(', ')}`);
   for (const file of expected.reviewedAdditions) assert.ok(actual.some(task => task.files.includes(file)), `Missing reviewed feature coverage: ${file}`);
   assert.deepEqual(actual.filter(task => task.extra.includes('-t')).map(task => task.extra.at(-1)), ['Local placement', 'protected']);
+});
+
+test('retains assembled protected SSH qualification with its unchanged target guard',()=>{
+ const inventory=JSON.parse(fs.readFileSync(new URL('./fork-qualification-inventory.json',import.meta.url),'utf8'));
+ assert.deepEqual(inventory.isolatedQualification.files,['server/src/__tests__/retained-ssh-workspace-integration.test.ts']);
+ const workflow=fs.readFileSync(new URL('../.github/workflows/fork-linux-release.yml',import.meta.url),'utf8');
+ assert.ok(workflow.includes('sudo -n python3 scripts/tests/qualify-isolated-ssh.py --user'));
+ const harness=fs.readFileSync(new URL('./tests/qualify-isolated-ssh.py',import.meta.url),'utf8');
+ assert.ok(harness.includes('retained-ssh-workspace-integration.test.ts'));
 });

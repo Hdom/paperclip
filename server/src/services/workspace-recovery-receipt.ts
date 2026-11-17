@@ -1,3 +1,4 @@
+import { retainedSshPreservationReceipt } from "./retained-ssh-workspace-preservation.js";
 import { and, desc, eq, inArray, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionBlocker } from "@paperclipai/shared";
@@ -94,11 +95,32 @@ async function verifiedNativeCopybackReceipt(db: Db, input: {
   return state?.runId === input.runId && state.status === "recovered" ? receipt.id : null;
 }
 
-/** Only the host writes workspace operations. Adapter output and a user-supplied
- * repair note cannot substitute for this exact copyback receipt. Stop/authority
- * are checked separately at every continuation admission. */
+/** A verified archive settles preservation, but is not a live-directory merge.
+ * Retry must attach it to a fresh attempt using committed source ancestry.
+ */
+export async function verifiedSshWorkspacePreservationReceipt(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">) {
+  const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
+  if (typeof issueId === "string") {
+    const completed = await db.select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`, completedWorkspaceRecoveryCondition(run.id)));
+    for (const action of completed) {
+      const ids = (action.evidence.systemRecovery as { preservationOperationIds?: string[] } | undefined)?.preservationOperationIds ?? [];
+      const saved = await retainedSshPreservationReceipt(db, { companyId: run.companyId, issueId, runId: run.id, actionId: action.id, operationIds: ids });
+      if (saved) return saved;
+    }
+  }
+  return null;
+}
+
+/** Host-owned recovery completion proof. SSH archive preservation settles the
+ * hold, but callers selecting a live directory must distinguish preservation
+ * from native copy-back using verifiedSshWorkspacePreservationReceipt. */
 export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">) {
+  const sshPreservation = await verifiedSshWorkspacePreservationReceipt(db, run);
+  if (sshPreservation) return sshPreservation;
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
   const reference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
   const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);

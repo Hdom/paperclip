@@ -128,6 +128,7 @@ export interface HeartbeatWorkspacePreparationInput {
     effectiveExecutionWorkspaceMode: ParsedExecutionWorkspaceMode;
     requestedExecutionWorkspaceMode: ParsedExecutionWorkspaceMode;
     useIsolatedTaskDirectory: boolean;
+    initialIsolatedTaskDirectory?: boolean;
     nativeChatWorkspaceScope: NativeChatWorkspaceScope | null;
     projectExecutionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
     issueExecutionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
@@ -421,7 +422,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           cwd = await materializeIsolatedTaskDirectory({
             companyId: agent.companyId,
             issueId: issueRef.id,
-            ...(fresh && !reusableExistingExecutionWorkspace ? { attemptId: run.id } : {}),
+            ...((fresh || input.policy.initialIsolatedTaskDirectory) && !reusableExistingExecutionWorkspace ? { attemptId: run.id } : {}),
             ...(reusableExistingExecutionWorkspace ? { reuseCwd: reusableExistingExecutionWorkspace.cwd! } : {}),
           });
         } catch (error) {

@@ -6179,10 +6179,12 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       try {
         let installedResolution: RuntimeSkillSourceResolution | null = null;
         const unpinned = !options.versionSelections?.get(skill.key);
-        const savedManagedContent = Boolean(options.protectedRunExport && skill.metadata?.sourceKind === "managed_local");
-        if (savedManagedContent && unpinned && !skill.currentVersionId)
-          throw new ControllerSourceProtectionError("Protected native skill delivery requires a saved version");
-        const originalDirectory = options.snapshotLatest && unpinned && !savedManagedContent && skill.sourceType === "local_path"
+        // Execution consumes committed versions for linked-local skills too. Refresh/import is
+        // an administrative save, never authority to recapture an arbitrary working source.
+        const savedLocalContent = Boolean(options.protectedRunExport && skill.sourceType === "local_path");
+        if (savedLocalContent && unpinned && !skill.currentVersionId)
+          throw new ControllerSourceProtectionError("Protected skill delivery requires a saved version; import or save the linked skill before execution");
+        const originalDirectory = options.snapshotLatest && unpinned && !savedLocalContent && skill.sourceType === "local_path"
           && skill.metadata?.sourceKind !== "paperclip_bundled"
           ? await resolveExistingSkillDirectory(normalizeSkillDirectory(skill)) : null;
         if (options.protectedRunExport && originalDirectory) capture = await createControllerSourceSnapshot(originalDirectory,

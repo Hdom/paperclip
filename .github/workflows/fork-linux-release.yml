@@ -113,6 +113,9 @@ jobs:
       - name: Scoped GitHub Apps, native secrets and SSH lifecycle qualification
         working-directory: source
         run: node scripts/fork-github-app-regressions.mjs
+      - name: Protected SSH assembled handoff and retained-output recovery
+        working-directory: source
+        run: sudo -n python3 scripts/tests/qualify-isolated-ssh.py --user "$(id -un)" --node-bin "$(dirname "$(command -v node)")"
       - name: Operator utility source and safety regressions
         working-directory: source
         run: |

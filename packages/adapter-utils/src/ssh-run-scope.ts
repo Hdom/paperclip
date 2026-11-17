@@ -38,6 +38,13 @@ export function sshRunScopeControl(mode: "prepare" | "stop", owner: SshRunScope)
   parseSshRunScope(owner);
   return `python3 -c ${quote(SSH_RUN_SUPERVISOR_SOURCE)} ${mode} ${quote(JSON.stringify(owner))}`;
 }
+/** Fixed read-only protocol; it never reopens exec admission or accepts a workload command. */
+export function stoppedSshWorkspaceSnapshotCommand(owner: SshRunScope, remoteCwd: string): string {
+  parseSshRunScope(owner);
+  if (!owner.runId || !remoteCwd.startsWith("/") || remoteCwd.includes("\\") || remoteCwd.split("/").some(p => p === "." || p === ".."))
+    throw new Error("ssh_run_scope_unverified");
+  return `python3 -c ${quote(SSH_RUN_SUPERVISOR_SOURCE)} snapshot ${quote(JSON.stringify(owner))} ${quote(JSON.stringify(remoteCwd))}`;
+}
 export function supervisedSshCommand(scope: SshRunScope | undefined, script: string): string {
   if (!scope) return script;
   parseSshRunScope(scope);
@@ -104,25 +111,25 @@ def secure(path, directory=False):
         reject()
 
 
-def scope_root():
+def scope_root(create=True):
     home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
     if home.resolve() != home or home.stat().st_uid != os.getuid() or home.stat().st_mode & 0o022:
         reject()
     root = home
     for part in ('.local', 'state', 'paperclip'):
         root = root / part
-        root.mkdir(mode=0o700, exist_ok=True)
+        if create: root.mkdir(mode=0o700, exist_ok=True)
         s = root.lstat()
         if not stat.S_ISDIR(s.st_mode) or s.st_uid != os.getuid() or s.st_mode & 0o022 or root.is_symlink():
             reject()
     root = root / 'ssh-scopes-v1'
-    root.mkdir(mode=0o700, exist_ok=True)
+    if create: root.mkdir(mode=0o700, exist_ok=True)
     secure(root, True)
     return root
 
 
-def paths(owner):
-    root = scope_root()
+def paths(owner, create=True):
+    root = scope_root(create)
     return root, root / owner['leaseId']
 
 
@@ -350,6 +357,90 @@ def serve(folder, owner):
             # Stay closed and wake on child exit or an explicit Stop retry.
 
 
+def stopped_snapshot(folder, owner, remote_cwd):
+    # Read only a deterministic per-run tree after exact kernel stop proof.
+    # Shared-UID writers remain a limitation: this attests bytes at read time.
+    import tarfile
+    expected = {'owner': owner, 'phase': 'stopped', 'waitProof': 'ECHILD_WALL', 'admissionClosed': True}
+    if read_state(folder) != expected or not owner['runId']:
+        reject()
+    if not isinstance(remote_cwd, str) or not remote_cwd.startswith('/') or os.path.normpath(remote_cwd) != remote_cwd or '\\' in remote_cwd:
+        reject()
+    directory = pathlib.Path(remote_cwd) / '.paperclip-runtime' / 'runs' / owner['runId'] / 'workspace'
+    # Walk from / with O_NOFOLLOW so an ancestor swap cannot redirect the read.
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in directory.parts[1:]:
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        original = os.fstat(fd)
+        if original.st_uid != os.getuid() or original.st_mode & 0o077:
+            reject()
+        limits = {'entries': 0, 'bytes': 0}
+        def unchanged(a, b):
+            return (a.st_dev, a.st_ino, a.st_size, a.st_mtime_ns, a.st_ctime_ns, a.st_nlink) == (b.st_dev, b.st_ino, b.st_size, b.st_mtime_ns, b.st_ctime_ns, b.st_nlink)
+        def visit(archive, current, relative, depth):
+            if depth > 64 or len(relative.encode('utf-8')) > 4096:
+                reject()
+            limits['entries'] += 1
+            if limits['entries'] > 10000:
+                reject()
+            before = os.fstat(current)
+            if before.st_uid != os.getuid() or before.st_mode & 0o7000:
+                reject()
+            info = tarfile.TarInfo(relative)
+            info.mode = stat.S_IMODE(before.st_mode)
+            info.mtime = int(before.st_mtime)
+            info.type = tarfile.DIRTYPE
+            archive.addfile(info)
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    name = entry.name
+                    if name.casefold() == '.git' or name in ('.paperclip-runtime', 'node_modules'):
+                        continue
+                    if name in ('.', '..') or '/' in name or '\\' in name:
+                        reject()
+                    member = relative + '/' + name
+                    if len(member.encode('utf-8')) > 4096:
+                        reject()
+                    observed = os.stat(name, dir_fd=current, follow_symlinks=False)
+                    if observed.st_uid != os.getuid() or observed.st_mode & 0o7000:
+                        reject()
+                    if stat.S_ISDIR(observed.st_mode):
+                        child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=current)
+                        try:
+                            if (os.fstat(child).st_dev, os.fstat(child).st_ino) != (observed.st_dev, observed.st_ino): reject()
+                            visit(archive, child, member, depth + 1)
+                        finally: os.close(child)
+                    elif stat.S_ISREG(observed.st_mode) and observed.st_nlink == 1:
+                        limits['entries'] += 1
+                        limits['bytes'] += observed.st_size
+                        if limits['entries'] > 10000 or observed.st_size > 64 * 1024 * 1024 or limits['bytes'] > 256 * 1024 * 1024:
+                            reject()
+                        child = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=current)
+                        with os.fdopen(child, 'rb') as stream:
+                            opened = os.fstat(stream.fileno())
+                            if not unchanged(observed, opened): reject()
+                            item = tarfile.TarInfo(member)
+                            item.size = opened.st_size
+                            item.mode = stat.S_IMODE(opened.st_mode)
+                            item.mtime = int(opened.st_mtime)
+                            archive.addfile(item, stream)
+                            if not unchanged(opened, os.fstat(stream.fileno())) or not unchanged(opened, os.stat(name, dir_fd=current, follow_symlinks=False)): reject()
+                    else:
+                        reject()
+            after = os.fstat(current)
+            if not unchanged(before, after): reject()
+        with tarfile.open(fileobj=sys.stdout.buffer, mode='w|', format=tarfile.PAX_FORMAT) as archive:
+            visit(archive, fd, '.', 0)
+        current = directory.lstat()
+        if (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino) or directory.resolve() != directory or read_state(folder) != expected:
+            reject()
+    finally:
+        os.close(fd)
+
+
 def main():
     os.umask(0o077)
     mode = sys.argv[1]
@@ -360,7 +451,10 @@ def main():
         print(json.dumps({'schema': PROTOCOL, 'bootId': pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'remoteCwd': os.path.abspath(sys.argv[2])}))
         return
     owner = identity(json.loads(sys.argv[2]))
-    root, folder = paths(owner)
+    root, folder = paths(owner, create=mode != 'snapshot')
+    if mode == 'snapshot':
+        stopped_snapshot(folder, owner, json.loads(sys.argv[3]))
+        return
     if mode == 'prepare':
         try:
             if sum(1 for _ in root.iterdir()) >= MAX_SCOPES:

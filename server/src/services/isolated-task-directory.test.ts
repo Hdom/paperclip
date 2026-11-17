@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { materializeIsolatedTaskDirectory, shouldUseIsolatedTaskDirectory } from "./isolated-task-directory.js";
+import { materializeIsolatedTaskDirectory, shouldUseIsolatedTaskDirectory, shouldUseProtectedSshInitialTaskDirectory } from "./isolated-task-directory.js";
 import { prepareSandboxManagedRuntime, type SandboxManagedRuntimeClient, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 
 const execFile = promisify(execFileCallback);
@@ -156,5 +156,30 @@ describe("isolated task directories", () => {
     const identity = await setup();
     await expect(materializeIsolatedTaskDirectory({ ...identity, issueId: "../outside" }))
       .rejects.toThrow("Invalid isolated task workspace identity");
+  });
+});
+
+describe("protected SSH initial task directory policy", () => {
+  const eligible = {
+    protectedExecution: true, isolatedWorkspacesEnabled: true, environmentDriver: "ssh", mode: "shared_workspace", controllerOnly: false,
+    hasIssue: true, hasBinding: false, hasPersistedInput: false, fresh: false,
+    hasWorkspaceIntent: false, hasTaskSettings: false, hasProjectPolicy: false,
+    hasProjectWorkspace: false, hasSelectedSource: false, workspaceStrategies: [], workspaceConfig: {},
+  };
+  it("selects only an unspecified protected SSH task", () => {
+    expect(shouldUseProtectedSshInitialTaskDirectory(eligible)).toBe(true);
+  });
+  it.each([
+    { protectedExecution: false }, { isolatedWorkspacesEnabled: false }, { environmentDriver: "local" }, { environmentDriver: "sandbox" },
+    { mode: "agent_default" }, { mode: "operator_branch" }, { controllerOnly: true }, { hasIssue: false },
+    { hasBinding: true }, { hasPersistedInput: true }, { fresh: true }, { hasWorkspaceIntent: true },
+    { hasTaskSettings: true }, { hasProjectPolicy: true }, { hasProjectWorkspace: true }, { hasSelectedSource: true },
+    { workspaceStrategies: ["git_worktree"] }, { workspaceStrategies: [[]] },
+    { workspaceStrategies: [{ type: "git_worktree" }] }, { workspaceStrategies: [{ setup: "prepare" }] },
+    { workspaceConfig: { cwd: "/explicit" } }, { workspaceConfig: { repoUrl: "https://example.test/repo" } },
+    { workspaceConfig: { setupCommand: "prepare" } }, { workspaceConfig: { workspaceRuntime: {} } },
+    { workspaceConfig: { workspaceRuntime: "malformed" } }, { workspaceConfig: { workspaceRuntime: { services: [] } } },
+  ])("preserves an explicit or ineligible choice: %j", override => {
+    expect(shouldUseProtectedSshInitialTaskDirectory({ ...eligible, ...override })).toBe(false);
   });
 });

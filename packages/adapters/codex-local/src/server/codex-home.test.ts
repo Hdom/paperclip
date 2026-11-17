@@ -1510,3 +1510,48 @@ process.stdin.on("end", () => {
     }
   });
 });
+
+describe("governed unattended MCP delivery", () => {
+  async function configured(existing = "", endpointPath = "/mcp/runtime-tools") {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-governed-mcp-"));
+    try {
+      await fs.writeFile(path.join(root, "config.toml"), existing);
+      await writeManagedCodexMcpConfig({ codexHome: root, apiBaseUrl: "https://paperclip.example/api",
+        gateways: [{ name: "Paperclip connections", endpointPath, bearerToken: "synthetic-token",
+          unattendedTools: ["connections_search"] }] });
+      return await fs.readFile(path.join(root, "config.toml"), "utf8");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  }
+  it("delivers only explicitly declared governed tools without changing global approvals", async () => {
+    const config = await configured('approval_policy = "never"\n');
+    expect(config).toContain('approval_policy = "never"');
+    expect(config).toContain('[mcp_servers."paperclip-connections".tools."connections_search"]');
+    expect(config).toContain('approval_mode = "approve"');
+    expect(config).not.toContain('default_tools_approval_mode');
+    expect(config).not.toContain('tools."connection_request"');
+  });
+  it("does not grant unattended delivery to a different-origin endpoint", async () => {
+    expect(await configured("", "https://unapproved.example/mcp/runtime-tools")).not.toContain('approval_mode = "approve"');
+  });
+  it.each([
+    '[mcp_servers."paperclip-connections"]\ndefault_tools_approval_mode = "prompt"\n',
+    '[mcp_servers."paperclip-connections".tools."connections_search"]\napproval_mode = "prompt"\n',
+    '[mcp_servers."paperclip-connections"]\ndisabled_tools = ["connections_search"]\n',
+  ])("preserves stricter operator policy: %s", async existing => {
+    const config = await configured(existing);
+    expect(config).not.toContain('approval_mode = "approve"');
+    expect(config).toContain(existing.trim());
+  });
+  it.each(['tools = false', 'tools.connections_search = false'])("refuses malformed existing MCP tool policy %s", async fields => {
+    await expect(configured(`# BEGIN PAPERCLIP MANAGED MCP\n[mcp_servers."paperclip-connections"]\n${fields}\n# END PAPERCLIP MANAGED MCP\n`)).rejects.toThrow(/MCP.*policy/i);
+  });
+  it("does not apply the governed policy extension to unrelated gateways", async () => {
+    const existing = '[profiles.strict.mcp_servers."paperclip-connections"]\nenabled = false\n';
+    const config = await configured(existing, "/unrelated/gateway");
+    expect(config).toContain(existing.trim());
+    expect(config).not.toContain('approval_mode = "approve"');
+  });
+  it("refuses ambiguous profile MCP restrictions before rewriting the file", async () => {
+    await expect(configured('[profiles.strict.mcp_servers."paperclip-connections"]\nenabled = false\n')).rejects.toThrow(/MCP.*policy/i);
+  });
+});

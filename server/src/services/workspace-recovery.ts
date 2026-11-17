@@ -1,3 +1,6 @@
+import { assertNoPendingDeferredBlockerStall } from "../modules/wake-queue/index.js";
+import { hasRetainedSshWorkspaceSource, inspectRetainedSshWorkspaceSource } from "./retained-ssh-workspace-source.js";
+import { preserveRetainedSshWorkspace } from "./retained-ssh-workspace-preservation.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { createHash } from "node:crypto";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -201,6 +204,13 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
   const { db } = input;
   await adoptSystemRecovery(db, input);
   let initial = await loadSystemRecovery(db, input);
+  const [sourceKind] = await db.select({ recovery: sql<unknown>`${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'` })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  const retainedSsh = hasRetainedSshWorkspaceSource(sourceKind?.recovery);
+  if (retainedSsh && initial?.state === "exhausted") {
+    // SSH preservation never abandons unknown output or falls back to a live replay.
+    await handOffExhaustedSystemRecovery(db, input, initial); return;
+  }
   // A hold whose files a sibling saved, or whose source is refused permanently
   // (including holds saved by older releases), settles without a person.
   // An adoptable native source keeps its retention path; only the sibling
@@ -261,7 +271,14 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
     const observer = setInterval(() => { observing = observing.then(observeActive).catch(() => undefined); }, 15_000);
     try {
       await observeActive();
-      const inspected = await inspectWorkspaceRecoverySource(db, input);
+      const ssh = retainedSsh ? await inspectRetainedSshWorkspaceSource(db, input) : null;
+      if (retainedSsh && !ssh) throw new SystemRecoveryFailure("source_binding_invalid", "service_required");
+      const inspected = ssh ? { run: ssh.run, action: ssh.action, sources: [] } : await inspectWorkspaceRecoverySource(db, input);
+      if (ssh) {
+        await progress({ phase: "preserve_files" });
+        const operationId = await preserveRetainedSshWorkspace({ ...input, assertHeld: ownership.assertHeld });
+        await progress({ preservationOperationIds: [...new Set([...current!.preservationOperationIds, operationId])] });
+      }
       let sourceUnavailable = false;
       for (const source of inspected.sources) {
         const { lease, environment, remoteCwd } = source;
@@ -444,6 +461,11 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const next = { ...current!, revision: current!.revision + 1, phase: "reconcile_effects" as const,
         state: "complete" as const, nextAttemptAt: null };
       const activity = await db.transaction(async tx => {
+        if (retainedSsh) {
+          // Serialize with notification creation/admission on the task row.
+          await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
+          await assertNoPendingDeferredBlockerStall(tx as unknown as Db, input.companyId, input.issueId);
+        }
         await notifyNativeResultCommit(tx, input);
         await notifyNativeWorkspaceFinalization(tx, input);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
@@ -472,6 +494,8 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       }
       const classification = classifyNativeWorkspaceFailure(error);
       const failure = error instanceof SystemRecoveryFailure ? error
+        : retainedSsh && ["SSH_STOPPED_SNAPSHOT_REFUSED", "controller_source_protection_refused"].includes((error as { code?: string })?.code ?? "")
+          ? new SystemRecoveryFailure("source_binding_invalid", "service_required")
         : classifyWorkspaceRestoreFailure(error) === "restore_invalid_metadata"
           ? new SystemRecoveryFailure("snapshot_verification_failed", "service_required")
         : classification.code === "workspace_sync_out_unsafe_archive"
@@ -493,7 +517,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const recorded = await updateSystemRecovery(db, input, current!, failed);
       // A permanent refusal of the recorded source repeats on every retry.
       // Continue from the last save in this same pass, under this ownership.
-      if (recorded && failed.state === "exhausted" && isUnverifiableSourceFailure(failed.failure)) {
+      if (!retainedSsh && recorded && failed.state === "exhausted" && isUnverifiableSourceFailure(failed.failure)) {
         const fallback = await continueFromLastSavedWorkspace({ ...input, ownership }).catch(fallbackError => {
           logger.warn({ err: fallbackError, runId: input.runId }, "Continuing from the last save was deferred; the hold remains");
           return { kind: "ineligible" as const, reason: "fallback_failed" };

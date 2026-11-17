@@ -1,3 +1,4 @@
+import { recordTaskWorkspaceReturnDisposition } from "./task-workspace-return-disposition.js";
 import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-mcp/upload-cleanup.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
@@ -12060,6 +12061,9 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        await recordTaskWorkspaceReturnDisposition(tx as unknown as Db, {
+          before: receiptExisting, after: updated, actorAgentId, actorRunId,
+        });
         if (updated.status === "done") {
           await completeTerminalCaseHandoffsForIssue(tx, { companyId: updated.companyId, issueId: updated.id,
             publications: activityPublications });

@@ -1,3 +1,4 @@
+import { governedCodexMcpPolicy } from "./governed-mcp-policy.js";
 import { ControllerSourceProtectionError } from "@paperclipai/adapter-utils/controller-source-error";
 import { CONTROLLER_ASSET_LIMITS, createControllerSourceStagingDirectory, readControllerSourceFile } from "@paperclipai/adapter-utils/controller-source-materialization";
 import { assertControllerSourcePathAllowed, controllerExecutionProtected } from "@paperclipai/adapter-utils/controller-source-protection";
@@ -74,6 +75,8 @@ export type ManagedCodexMcpGateway = {
   name: string;
   endpointPath: string;
   bearerToken: string;
+  /** Server-declared delivery only; upstream/config gateways never receive this field. */
+  unattendedTools?: readonly string[];
 };
 
 export function mergeManagedCodexMcpGateways(
@@ -333,6 +336,7 @@ function buildManagedMcpBlock(input: {
   gateways: ManagedCodexMcpGateway[];
   apiBaseUrl: string;
   existingNames: Set<string>;
+  policy: ReturnType<typeof governedCodexMcpPolicy>;
 }): { block: string; warnings: string[] } {
   const warnings: string[] = [];
   const usedNames = new Set<string>();
@@ -361,6 +365,8 @@ function buildManagedMcpBlock(input: {
       `[mcp_servers.${tomlString(managedName)}]`,
       `url = ${tomlString(url)}`,
       `http_headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
+      ...input.policy.render({ originalName: gateway.name, baseName, managedName, endpointPath: gateway.endpointPath,
+        apiBaseUrl: input.apiBaseUrl, unattendedTools: gateway.unattendedTools }),
     );
   });
   lines.push(MANAGED_MCP_BLOCK_END);
@@ -379,10 +385,12 @@ export async function writeManagedCodexMcpConfig(input: {
     throw error;
   });
   const unmanagedConfig = stripManagedMcpBlock(existing);
+  const policy = governedCodexMcpPolicy(existing, unmanagedConfig);
   const { block, warnings } = buildManagedMcpBlock({
     gateways: input.gateways,
     apiBaseUrl: input.apiBaseUrl,
-    existingNames: readCodexMcpServerNames(unmanagedConfig),
+    existingNames: policy.existingNames,
+    policy,
   });
   const next = input.gateways.length > 0
     ? `${unmanagedConfig}${unmanagedConfig ? "\n\n" : ""}${block}\n`

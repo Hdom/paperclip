@@ -1,3 +1,4 @@
+import { hasRetainedSshWorkspaceSource } from "./retained-ssh-workspace-source.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
@@ -305,8 +306,11 @@ async function confirmSourceAllocationStopped(db: Db, input: Source & { environm
  */
 export async function continueFromLastSavedWorkspace(input: Source & {
   db: Db; environmentRuntime: EnvironmentRuntimeService; ownership: Ownership;
-}): Promise<RetainedSourceFallbackResult> {
+ }): Promise<RetainedSourceFallbackResult> {
   const { db } = input;
+  const [retained] = await db.select({ recovery: sql<unknown>`${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'` })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  if (hasRetainedSshWorkspaceSource(retained?.recovery)) return { kind: "ineligible", reason: "ssh_source_preservation_required" };
   const initial = await inspectFallback(db, input, false);
   if (initial.kind !== "eligible") return initial;
   // An unstopped source in a sandbox another lease holds waits; nothing is read or stopped.

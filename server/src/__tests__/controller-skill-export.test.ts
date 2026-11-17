@@ -201,7 +201,7 @@ const support=await getEmbeddedPostgresTestSupport();
     },entries=>entries));
     return {...f,source,sentinel,selectVersions,prepare};
   }
-  it.each(["outside","hardlink","symlink","missing","verification fast path"])("refuses fresh local %s before byte reads, version writes or pins",async kind=>{
+  it.each(["outside","hardlink","symlink","missing"])("refuses fresh local %s before byte reads, version writes or pins",async kind=>{
     const f=await prepareLocalCapture(kind),before=await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId,f.skillId));
     const watched=kind==="outside"||kind==="verification fast path"?path.join(f.source,"SKILL.md"):f.sentinel;
     const reads=await countSentinelReads(watched);
@@ -211,36 +211,38 @@ const support=await getEmbeddedPostgresTestSupport();
     const [run]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,f.runId));expect(run.contextSnapshot?.skillVersions).toEqual({[f.key]:f.versions[0].id});
     expect(await fs.readdir(assets).catch(()=>[])).toEqual([]);
   });
-  it("refuses a fresh-local parent swap before sentinel bytes and removes partial staging",async()=>{
+  it("refuses a fresh-local parent swap without touching its uncommitted working source",async()=>{
     const f=await prepareLocalCapture("approved"),replacement=path.join(root,"keys/local-replacement");
     await fs.mkdir(replacement);await fs.link(f.sentinel,path.join(replacement,"SKILL.md"));let swapped=false;
     const reads=await countSentinelReads(f.sentinel,async filename=>{
       if(filename===path.join(f.source,"SKILL.md")&&!swapped){swapped=true;await fs.rename(f.source,`${f.source}-old`);await fs.symlink(replacement,f.source);}
     });
-    await expect(f.prepare()).rejects.toMatchObject({code:"controller_source_protection_refused"});expect(swapped).toBe(true);
-    expect(reads()).toBe(0);expect(f.selectVersions).not.toHaveBeenCalled();expect(await fs.readdir(assets)).toEqual([]);
+    await expect(f.prepare()).rejects.toMatchObject({code:"controller_source_protection_refused"});expect(swapped).toBe(false);
+    expect(reads()).toBe(0);expect(f.selectVersions).not.toHaveBeenCalled();expect(await fs.readdir(assets).catch(()=>[])).toEqual([]);
   });
   it("keeps Git and dependency trees out of fresh local snapshots without reading them",async()=>{
     const f=await prepareLocalCapture("approved");
+    await db.update(companySkills).set({currentVersionId:f.versions[0].id}).where(eq(companySkills.id,f.skillId));
     for(const name of [".git","node_modules"]){await fs.mkdir(path.join(f.source,name));await fs.link(f.sentinel,path.join(f.source,name,"private"));}
     const reads=await countSentinelReads(f.sentinel);const entries=await f.prepare();
-    expect(reads()).toBe(0);expect(await fs.readdir(entries[0].source)).toEqual(["SKILL.md"]);
-    await cleanups[0]();expect(await fs.readdir(assets)).toEqual([]);
+    expect(reads()).toBe(0);expect(await fs.readdir(entries[0].source)).toEqual(["SKILL.md", "references"]);
+    await cleanups[0]();expect(await fs.readdir(assets).catch(()=>[])).toEqual([]);
   });
-  it("removes the checked local snapshot when version publication fails",async()=>{
+  it("does not try to publish an uncommitted linked source during execution",async()=>{
     const f=await prepareLocalCapture("approved"),failure=new Error("synthetic package publication failure");
     vi.spyOn(storageModule.getStorageService(),"putFile").mockRejectedValueOnce(failure);
-    await expect(f.prepare()).rejects.toBe(failure);expect(f.selectVersions).not.toHaveBeenCalled();
-    expect(await fs.readdir(assets)).toEqual([]);
+    await expect(f.prepare()).rejects.toMatchObject({code:"controller_source_protection_refused"});expect(f.selectVersions).not.toHaveBeenCalled();
+    expect(await fs.readdir(assets).catch(()=>[])).toEqual([]);
   });
-  it("captures an approved fresh local skill through private staging and removes both temporary trees",async()=>{
-    const f=await prepareLocalCapture("approved");const entries=await f.prepare();expect(entries).toHaveLength(1);
+  it("exports a committed linked-local version through private staging and removes it",async()=>{
+    const f=await prepareLocalCapture("approved");await db.update(companySkills).set({currentVersionId:f.versions[0].id}).where(eq(companySkills.id,f.skillId));const entries=await f.prepare();expect(entries).toHaveLength(1);
     expect(await fs.readFile(path.join(entries[0].source,"SKILL.md"),"utf8")).toContain("Pinned 1");expect(f.selectVersions).toHaveBeenCalledOnce();
-    expect(await fs.readdir(assets)).toHaveLength(1);await cleanups[0]();expect(await fs.readdir(assets)).toEqual([]);
+    expect(await fs.readdir(assets)).toHaveLength(1);await cleanups[0]();expect(await fs.readdir(assets).catch(()=>[])).toEqual([]);
   });
+  describe.each(["managed_local", "local_path"])("protected saved source policy %s", sourceKind => {
   it.each(["latest saved","historical pin"])("uses %s native managed-local content without reading its working copy or reconciling inventory",async kind=>{
     const f=await fixture(),working=path.join(root,"keys/native-working");await fs.mkdir(working);await fs.writeFile(path.join(working,"SKILL.md"),"unpublished protected working content",{mode:0o600});
-    await db.update(companySkills).set({sourceType:"local_path",sourceLocator:working,metadata:{sourceKind:"managed_local"},currentVersionId:f.versions[0].id}).where(eq(companySkills.id,f.skillId));
+    await db.update(companySkills).set({sourceType:"local_path",sourceLocator:working,metadata:{sourceKind},currentVersionId:f.versions[0].id}).where(eq(companySkills.id,f.skillId));
     // Saved native edits publish a new immutable version and advance this pointer.
     await db.update(companySkills).set({currentVersionId:f.versions[1].id}).where(eq(companySkills.id,f.skillId));
     const expected=kind==="historical pin"?f.versions[0]:f.versions[1],reads=await countSentinelReads(path.join(working,"SKILL.md"));
@@ -251,6 +253,7 @@ const support=await getEmbeddedPostgresTestSupport();
     },entries=>entries));
     expect(entries).toHaveLength(1);expect(entries[0].versionId).toBe(expected.id);expect(reads()).toBe(0);
     expect(await fs.readFile(path.join(entries[0].source,"SKILL.md"),"utf8")).toContain(kind==="historical pin"?"Pinned 1":"Pinned 2");
+  });
   });
   it("refuses missing committed native content without reading the working copy",async()=>{
     const f=await fixture(),working=path.join(root,"keys/native-uncommitted");await fs.mkdir(working);await fs.writeFile(path.join(working,"SKILL.md"),"not published",{mode:0o600});
@@ -350,12 +353,12 @@ const support=await getEmbeddedPostgresTestSupport();
       return open(...args);
     });
     await expect(withSkillActor(f.actor,()=>controllerSkillExporter(db,f.companyId,{...f.binding,signal:abort.signal}).exportVersion(f.selection))).rejects.toThrow();
-    expect(await fs.readdir(assets)).toEqual([]);
+    expect(await fs.readdir(assets).catch(()=>[])).toEqual([]);
   });
   it("removes exports if cleanup registration throws and preserves the unexpected error",async()=>{
     const f=await fixture(),error=new Error("registration failed");
     await expect(withSkillActor(f.actor,()=>controllerSkillExporter(db,f.companyId,{...f.binding,onCleanup:()=>{throw error;}}).exportVersion(f.selection))).rejects.toBe(error);
-    expect(await fs.readdir(assets)).toEqual([]);
+    expect(await fs.readdir(assets).catch(()=>[])).toEqual([]);
   });
   it("waits for an active export writer before cleanup and leaves no partial files",async()=>{
     const f=await fixture();let release!:()=>void,entered!:()=>void;
@@ -367,7 +370,7 @@ const support=await getEmbeddedPostgresTestSupport();
     await ready;let settled=false;const cleanup=cleanups[0]().then(()=>{settled=true;});
     await Promise.resolve();expect(settled).toBe(false);
     release();expect(await outcome).toMatchObject({code:"controller_source_protection_refused"});await cleanup;
-    expect(await fs.readdir(assets)).toEqual([]);
+    expect(await fs.readdir(assets).catch(()=>[])).toEqual([]);
   });
   it("holds the native cache lock through publication and releases it after consumption",async()=>{
     const f=await fixture();let release!:()=>void,entered!:()=>void;

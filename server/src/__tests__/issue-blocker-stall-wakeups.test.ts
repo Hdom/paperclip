@@ -89,6 +89,28 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(later[1]!.input.contextSnapshot.blockerStall.recoveryAction.id).toBe(again.id);
   });
 
+  it.each(["ordinary", "forged-marker", "wrong-audit", "audited"])("only an audited exact-incident retirement suppresses later sweep: %s", async mode => {
+    const f = await fixture();
+    const { calls, enqueueWakeup } = wakeRecorder();
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(1);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.parentAgent));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", requestedAt: new Date(Date.now() - 11 * 60_000),
+      error: mode === "ordinary" ? "cancelled" : "operator_retired_stall_after_source_preservation_plan" }).where(eq(agentWakeupRequests.id, wake!.id));
+    if (mode === "audited" || mode === "wrong-audit") await db.insert(activityLog).values({ companyId: f.companyId,
+      actorType: "user", actorId: "operator", action: "issue.deferred_stall_retired", entityType: "issue", entityId: f.parent.id,
+      details: { wakeId: wake!.id, stalledIssueId: f.child.id, stalledActionId: mode === "audited" ? f.action.id : randomUUID() } });
+    await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+    expect(calls).toHaveLength(mode === "audited" ? 1 : 2);
+    if (mode === "audited") {
+      await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date() }).where(eq(issueRecoveryActions.id, f.action.id));
+      await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.child.id, kind: "run_recovery",
+        status: "escalated", ownerType: "board", cause: "execution_recovery_budget_exhausted", fingerprint: "new-incident", nextAction: "Retry" });
+      await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId });
+      expect(calls).toHaveLength(2);
+    }
+  });
+
   it("wakes the assignee of an issue the stalled one blocks", async () => {
     const f = await fixture();
     const dependentAgent = randomUUID();
