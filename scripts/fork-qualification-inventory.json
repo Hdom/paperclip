@@ -4,6 +4,86 @@
     {
       "cwd": "server",
       "files": [
+        "src/__tests__/retained-ssh-workspace-source.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/issue-blocker-stall-wakeups.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/__tests__/heartbeat-runtime-skills.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/workspace-recovery-fallback.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/workspace-recovery-admission.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/workspace-recovery-preparation-proof.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/workspace-recovery-source.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/workspace-recovery-stop-proof.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": "server",
+      "files": [
         "src/services/heartbeat/retries.test.ts"
       ],
       "extra": [
@@ -483,7 +563,8 @@
         "packages/adapter-utils/src/controller-source-protection.test.ts",
         "packages/adapter-utils/src/controller-source-materialization.test.ts",
         "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts",
-        "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"
+        "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts",
+        "packages/adapters/codex-local/src/server/codex-home.test.ts"
       ],
       "extra": []
     },
@@ -521,6 +602,7 @@
     {
       "cwd": ".",
       "files": [
+        "packages/adapter-utils/src/ssh-stopped-workspace-snapshot.test.ts",
         "packages/adapter-utils/src/ssh-run-scope.test.ts",
         "packages/adapter-utils/src/ssh-run-scope-kernel.test.ts",
         "packages/adapter-utils/src/ssh-run-scope-transport.test.ts",
@@ -835,6 +917,24 @@
     "packages/adapter-utils/src/controller-workspace-archive.test.ts",
     "packages/adapter-utils/src/workspace-restore-merge.test.ts",
     "packages/adapter-utils/src/workspace-restore-unchanged.test.ts",
-    "packages/adapter-utils/src/workspace-restore-teardown.test.ts"
-  ]
+    "packages/adapter-utils/src/workspace-restore-teardown.test.ts",
+    "src/__tests__/retained-ssh-workspace-source.test.ts",
+    "src/__tests__/issue-blocker-stall-wakeups.test.ts",
+    "src/__tests__/heartbeat-runtime-skills.test.ts",
+    "src/services/workspace-recovery-fallback.test.ts",
+    "src/services/workspace-recovery-admission.test.ts",
+    "src/services/workspace-recovery-preparation-proof.test.ts",
+    "src/services/workspace-recovery-source.test.ts",
+    "src/services/workspace-recovery-stop-proof.test.ts",
+    "packages/adapters/codex-local/src/server/codex-home.test.ts",
+    "packages/adapter-utils/src/ssh-stopped-workspace-snapshot.test.ts"
+  ],
+  "isolatedQualification": {
+    "script": "scripts/tests/qualify-isolated-ssh.py",
+    "files": [
+      "server/src/__tests__/retained-ssh-workspace-integration.test.ts"
+    ],
+    "workerDefaultRoute": false,
+    "productionTargetGuardUnchanged": true
+  }
 }

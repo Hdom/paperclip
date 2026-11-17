@@ -1,3 +1,4 @@
+import { McpPolicyConflictError, MCP_POLICY_CONFLICT_CODE } from "@paperclipai/adapter-utils/mcp-policy-error";
 import { ControllerSourceProtectionError, CONTROLLER_SOURCE_PROTECTION_FAILURE_CODE } from "@paperclipai/adapter-utils/controller-source-error";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { isContextCompactionRun } from "../context-compaction.js";
@@ -320,6 +321,9 @@ function mergeAdapterRecoveryMetadata(input: {
 
 function readConfigurationIncompleteFailure(error: unknown): ConfigurationIncompleteFailure | null {
   if (error instanceof ConfigurationIncompleteFailure) return error;
+  if (error instanceof McpPolicyConflictError) return new ConfigurationIncompleteFailure(error.message, {
+    configurationIncomplete: { reason: MCP_POLICY_CONFLICT_CODE },
+  });
   if (error instanceof ControllerSourceProtectionError) return new ConfigurationIncompleteFailure(error.message, {
     configurationIncomplete: { reason: CONTROLLER_SOURCE_PROTECTION_FAILURE_CODE },
   });

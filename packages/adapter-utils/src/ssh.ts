@@ -1,6 +1,6 @@
 import { pipeline } from "node:stream/promises";
 import { isDeepStrictEqual } from "node:util";
-import { parseSshRunScope, sshRunScopeControl, sshRunScopeProbe, supervisedSshCommand,
+import { parseSshRunScope, sshRunScopeControl, sshRunScopeProbe, stoppedSshWorkspaceSnapshotCommand, supervisedSshCommand,
   verifiedSshRunScopeStop, type SshRunScope } from "./ssh-run-scope.js";
 import { assertControllerSourcePathAllowed, assertControllerGitWorkspaceSafe, controllerExecutionProtected } from "./controller-source-protection.js";
 import { randomUUID } from "node:crypto";
@@ -2271,10 +2271,28 @@ export async function fileExists(filePath: string): Promise<boolean> {
 export async function downloadControllerWorkspaceArchive(input: {
   spec: SshRemoteExecutionSpec; remoteDir: string; archivePath: string; exclude: string[];
 }): Promise<void> {
-  const auth = await createSshAuthArgs(input.spec);
   const command = `cd ${shellQuote(input.remoteDir)} && tar ${[...tarExcludeArgs(input.exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`;
+  return downloadBoundedControllerArchive({ spec: input.spec, archivePath: input.archivePath,
+    command: supervisedSshCommand(input.spec.runScope, command) });
+}
+
+/** Authenticated, fixed stopped-scope read. No arbitrary command/path or reopened execution. */
+export async function downloadStoppedSshWorkspaceArchive(input: {
+  spec: SshRemoteExecutionSpec; archivePath: string; stop: ReturnType<typeof verifiedSshRunScopeStop>;
+}): Promise<void> {
+  if (!input.spec.runScope || !input.spec.strictHostKeyChecking || !input.spec.knownHosts) throw new Error("ssh_run_scope_unverified");
+  verifiedSshRunScopeStop(input.spec.runScope, input.stop);
+  return downloadBoundedControllerArchive({ spec: input.spec, archivePath: input.archivePath,
+    command: stoppedSshWorkspaceSnapshotCommand(input.spec.runScope, input.spec.remoteCwd), timeoutMs: 300_000, stoppedScope: true });
+}
+
+async function downloadBoundedControllerArchive(input: {
+  spec: SshRemoteExecutionSpec; archivePath: string; command: string; timeoutMs?: number; stoppedScope?: boolean;
+}): Promise<void> {
+  const auth = await createSshAuthArgs(input.spec);
   const child = spawn("ssh", [...auth.args, "-p", String(input.spec.port), `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(supervisedSshCommand(input.spec.runScope, command))}`], { stdio: ["ignore", "pipe", "pipe"] });
+    `sh -c ${shellQuote(input.command)}`], { stdio: ["ignore", "pipe", "pipe"] });
+  const timer = input.timeoutMs ? setTimeout(() => child.kill("SIGKILL"), input.timeoutMs) : null;
   let bytes = 0;
   const limit = 280 * 1024 * 1024; // 256 MiB contents plus bounded tar headers/padding.
   const counter = new Transform({ transform(chunk, _encoding, callback) {
@@ -2286,10 +2304,12 @@ export async function downloadControllerWorkspaceArchive(input: {
   void closed.catch(() => undefined);
   try {
     await pipeline(child.stdout, counter, createWriteStream(input.archivePath, { flags: "wx", mode: 0o600 }));
-    if (await closed !== 0) throw new Error("Protected SSH workspace download failed");
+    const code = await closed;
+    if (code !== 0) throw Object.assign(new Error("Protected SSH workspace download failed"),
+      { code: input.stoppedScope && code === 125 ? "SSH_STOPPED_SNAPSHOT_REFUSED" : "SSH_WORKSPACE_DOWNLOAD_FAILED" });
   } catch (error) {
     child.kill("SIGKILL");
     await closed.catch(() => undefined);
     throw error;
-  } finally { await auth.cleanup(); }
+  } finally { if (timer) clearTimeout(timer); await auth.cleanup(); }
 }

@@ -1,3 +1,4 @@
+import { retainedSshPreservationReceipt } from "./retained-ssh-workspace-preservation.js";
 import { and, desc, eq, inArray, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionBlocker } from "@paperclipai/shared";
@@ -100,6 +101,16 @@ async function verifiedNativeCopybackReceipt(db: Db, input: {
 export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">) {
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
+  if (typeof issueId === "string") {
+    const completed = await db.select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`, completedWorkspaceRecoveryCondition(run.id)));
+    for (const action of completed) {
+      const ids = (action.evidence.systemRecovery as { preservationOperationIds?: string[] } | undefined)?.preservationOperationIds ?? [];
+      const saved = await retainedSshPreservationReceipt(db, { companyId: run.companyId, issueId, runId: run.id, actionId: action.id, operationIds: ids });
+      if (saved) return saved;
+    }
+  }
   const reference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
   const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
   const remote = parsedRemote.success && parsedRemote.data.state === "saved" ? parsedRemote.data : null;

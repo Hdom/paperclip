@@ -212,6 +212,13 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
+  const deliveryReason = readNonEmptyStringField(configurationIncomplete, "reason");
+  if (deliveryReason === "mcp_policy_conflict" || deliveryReason === "controller_source_protection_refused") return {
+    body: deliveryReason === "mcp_policy_conflict"
+      ? "Governed tool delivery conflicts with the agent’s MCP policy. Review that policy while preserving stricter approvals, then explicitly retry after repair."
+      : "Paperclip could not safely prepare or return this run’s files. Review saved skill versions and workspace delivery without expanding source access, then explicitly retry after repair.",
+    title: "Configuration incomplete", tone: "danger",
+  };
   return {
     body:
       "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +

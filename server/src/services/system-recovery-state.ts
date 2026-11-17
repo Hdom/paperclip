@@ -26,7 +26,7 @@ export const recoveryRetryClasses = [
 export type RecoveryRetryClass = typeof recoveryRetryClasses[number];
 
 export class SystemRecoveryFailure extends Error {
-  constructor(readonly code: RecoveryFailureCode, readonly retryClass: RecoveryRetryClass, message = code,
+  constructor(readonly code: RecoveryFailureCode, readonly retryClass: RecoveryRetryClass, message: string = code,
     readonly sourceVerification?: WorkspaceSourceVerificationFailure) {
     super(message);
   }

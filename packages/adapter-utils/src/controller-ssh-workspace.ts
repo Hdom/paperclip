@@ -2,7 +2,7 @@ import path from "node:path";
 import { extractControllerWorkspaceArchive } from "./controller-workspace-archive.js";
 import fs from "node:fs/promises";
 import { createControllerSourceSnapshot, createControllerSourceStagingDirectory } from "./controller-source-materialization.js";
-import { assertControllerWorkspacePublication, hasControllerWorkspaceAuthority, withControllerWorkspaceOperation, recordControllerWorkspaceRestoreFailure } from "./controller-workspace-authority.js";
+import { assertControllerWorkspacePublication, markControllerWorkspaceReturnReady, hasControllerWorkspaceAuthority, withControllerWorkspaceOperation, recordControllerWorkspaceRestoreFailure } from "./controller-workspace-authority.js";
 import { captureDirectorySnapshot, disposeDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 import { prepareWorkspaceForSshExecution, downloadControllerWorkspaceArchive, type SshRemoteExecutionSpec } from "./ssh.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
@@ -31,6 +31,7 @@ export async function prepareControllerSshWorkspace(input: {
     baseline = await captureDirectorySnapshot(snapshot.directory, { exclude });
     await withControllerWorkspaceOperation(input.localDir, target, "read", async () => {});
     await prepareWorkspaceForSshExecution({ ...input, localDir: snapshot.directory, workspaceFileMode: "all", workspaceExclude: exclude });
+    await markControllerWorkspaceReturnReady(input.localDir, target);
   } catch (error) {
     if (baseline) await disposeDirectorySnapshot(baseline);
     throw error;
@@ -52,7 +53,7 @@ export async function prepareControllerSshWorkspace(input: {
         const remote = await createControllerSourceSnapshot(extracted, { excludeNames, rejectLinks: true, preserveFileModes: true });
         try {
           await mergeDirectoryWithBaseline({ baseline: genuineBaseline, sourceDir: remote.directory, targetDir: input.localDir,
-            publicationPreflight: () => withControllerWorkspaceOperation(input.localDir, target, "read", async () => {
+            publicationPreflight: () => withControllerWorkspaceOperation(input.localDir, target, "return_read", async () => {
               const checked = await createControllerSourceSnapshot(input.localDir, { excludeNames, rejectLinks: true, preserveFileModes: true });
               try { return await captureDirectorySnapshot(checked.directory, { exclude }); } finally { await checked.cleanup(); }
             }),

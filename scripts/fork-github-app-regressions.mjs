@@ -21,6 +21,14 @@ function execute({ cwd, files, extra }) {
 }
 
 for (const file of [
+  "src/__tests__/retained-ssh-workspace-source.test.ts",
+  "src/__tests__/issue-blocker-stall-wakeups.test.ts",
+  "src/__tests__/heartbeat-runtime-skills.test.ts",
+  "src/services/workspace-recovery-fallback.test.ts",
+  "src/services/workspace-recovery-admission.test.ts",
+  "src/services/workspace-recovery-preparation-proof.test.ts",
+  "src/services/workspace-recovery-source.test.ts",
+  "src/services/workspace-recovery-stop-proof.test.ts",
   "src/services/heartbeat/retries.test.ts", "src/services/heartbeat/run-completion.test.ts",
   "src/__tests__/heartbeat-task-context.test.ts", "src/__tests__/issue-scheduled-retry-routes.test.ts",
   "src/services/explicit-native-continuation.test.ts", "src/services/ssh-host-stop-receipt.test.ts",
@@ -46,13 +54,13 @@ test(resolve(root, "server"), ["src/__tests__/heartbeat-local-environment.test.t
 test(resolve(root, "server"), ["src/__tests__/heartbeat-plugin-environment.test.ts"], ["--config", "vitest.config.ts", "-t", "protected"]);
 test(root, ["packages/db/src/worker-supervision-upgrade.test.ts"]);
 test(root, ["packages/adapter-utils/src/controller-workspace-archive.test.ts", "packages/adapter-utils/src/workspace-restore-merge.test.ts", "packages/adapter-utils/src/workspace-restore-unchanged.test.ts", "packages/adapter-utils/src/workspace-restore-teardown.test.ts", "packages/adapter-utils/src/controller-workspace-authority.test.ts", "packages/adapter-utils/src/controller-source-protection.test.ts", "packages/adapter-utils/src/controller-source-materialization.test.ts",
-  "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts"]);
+  "packages/adapters/claude-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/controller-key-materialization.test.ts", "packages/adapters/codex-local/src/server/codex-home.test.ts"]);
 test(root, ["ui/src/pages/apps/AppDetail.test.tsx", "ui/src/pages/apps/AppsConnect.test.tsx", "ui/src/pages/apps/app-detail/GitHubAppConnectionPermissions.test.tsx", "ui/src/pages/secrets/GitHubAppKeyLifecycle.test.tsx"]);
 test(root, ["packages/shared/src/app-definitions.test.ts"]);
 test(root, ["ui/src/pages/Secrets.render.test.tsx", "ui/src/pages/secrets/secret-path.test.ts", "ui/src/pages/AgentToolsTab.test.tsx", "ui/src/pages/secrets/SigningKeysTab.test.tsx", "ui/src/components/GitHubProjectAppControls.test.tsx", "ui/src/pages/agent-detail/AgentAllowedConnectors.test.tsx", "ui/src/components/AgentContextualSidebar.test.tsx", "ui/src/pages/agent-detail-navigation.test.ts"]);
 
 
-test(root, ["packages/adapter-utils/src/ssh-run-scope.test.ts", "packages/adapter-utils/src/ssh-run-scope-kernel.test.ts",
+test(root, ["packages/adapter-utils/src/ssh-stopped-workspace-snapshot.test.ts", "packages/adapter-utils/src/ssh-run-scope.test.ts", "packages/adapter-utils/src/ssh-run-scope-kernel.test.ts",
   "packages/adapter-utils/src/ssh-run-scope-transport.test.ts", "packages/adapter-utils/src/ssh-command-managed.test.ts",
   "packages/adapter-utils/src/ssh-fixture.test.ts"]);
 

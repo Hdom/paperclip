@@ -1,3 +1,4 @@
+import { McpPolicyConflictError } from "@paperclipai/adapter-utils/mcp-policy-error";
 import { ControllerSourceProtectionError } from "@paperclipai/adapter-utils/controller-source-error";
 import { promises as fs } from "node:fs";
 import { createDurableRunLogStore } from "../run-log-store.js";
@@ -1683,6 +1684,15 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       error: "Workspace storage provider is not running; retry the same workspace",
       resultJson: { workspaceProviderFailure: { kind: "worker_unavailable", reason: null, retryable: true } } });
     expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+  });
+
+  it.each(["setup", "adapter"])("holds a typed MCP policy conflict during %s without retry", async phase => {
+    const f = await fixture(), error = new McpPolicyConflictError();
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(error));
+    else await f.completion.failRun(f.failure(error));
+    expect(await read(f.run.id)).toMatchObject({status:"failed",errorCode:"configuration_incomplete",
+      resultJson:{configurationIncomplete:{reason:"mcp_policy_conflict"}}});
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
 
   it.each(["setup", "adapter"])("routes a typed controller source refusal during %s to a permanent owner blocker", async phase => {

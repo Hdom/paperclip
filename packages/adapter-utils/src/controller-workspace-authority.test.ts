@@ -2,7 +2,7 @@ import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile }
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { withControllerWorkspaceAuthority, withControllerWorkspaceOperation } from "./controller-workspace-authority.js";
+import { markControllerWorkspaceReturnReady, withControllerWorkspaceAuthority, withControllerWorkspaceOperation } from "./controller-workspace-authority.js";
 import { assertControllerSourcePathAllowed } from "./controller-source-protection.js";
 import { createControllerSourceSnapshot } from "./controller-source-materialization.js";
 
@@ -24,7 +24,7 @@ const grant = (action: () => Promise<void>, overrides = {}) => withControllerWor
   root: attempt, target: "company/run/lease/generation/endpoint/remote", signal: new AbortController().signal,
   validate: async () => {}, publish: async <T>(action: () => Promise<T>) => action(), ...overrides,
 }, action);
-const op = <T>(kind: "read" | "publish", action: () => Promise<T>) => withControllerWorkspaceOperation(attempt, "company/run/lease/generation/endpoint/remote", kind, action);
+const op = <T>(kind: "read" | "return_read" | "publish", action: () => Promise<T>) => withControllerWorkspaceOperation(attempt, "company/run/lease/generation/endpoint/remote", kind, action);
 
 it("reproduces native attempt denial without authority", async () => {
   await expect(assertControllerSourcePathAllowed(attempt)).rejects.toThrow();
@@ -42,6 +42,7 @@ it("does not escalate read to write or authorize a sibling", async () => grant(a
     await expect(assertControllerSourcePathAllowed(attempt, true)).rejects.toThrow();
     await expect(assertControllerSourcePathAllowed(path.join(attempt, "../other"))).rejects.toThrow();
   });
+  await markControllerWorkspaceReturnReady(attempt, "company/run/lease/generation/endpoint/remote");
   await op("publish", () => assertControllerSourcePathAllowed(attempt, true));
 }));
 it("rejects protected aliases and hardlinks before snapshot bytes are read", async () => grant(async () => {
@@ -82,3 +83,13 @@ it("does not leak authority across concurrent invocation contexts", async () => 
       grant(async () => { await expect(op("read", () => assertControllerSourcePathAllowed(attempt))).rejects.toThrow(); }, { root: snapshots })]);
   });
 });
+
+it("denies return operations before genuine preparation marks the invocation ready", async () => grant(async () => {
+  await expect(op("return_read", async () => {})).rejects.toThrow();
+  await expect(op("publish", async () => {})).rejects.toThrow();
+  await expect(markControllerWorkspaceReturnReady(attempt, "wrong-target")).rejects.toThrow();
+  await markControllerWorkspaceReturnReady(attempt, "company/run/lease/generation/endpoint/remote");
+  await op("return_read", () => assertControllerSourcePathAllowed(attempt));
+  await op("publish", () => assertControllerSourcePathAllowed(attempt, true));
+  await expect(markControllerWorkspaceReturnReady(attempt, "company/run/lease/generation/endpoint/remote")).rejects.toThrow();
+}));

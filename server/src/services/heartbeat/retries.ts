@@ -1,3 +1,4 @@
+import { MCP_POLICY_CONFLICT_CODE } from "@paperclipai/adapter-utils/mcp-policy-error";
 import { CONTROLLER_SOURCE_PROTECTION_FAILURE_CODE } from "@paperclipai/adapter-utils/controller-source-error";
 import { supervisedWorkerStopPending } from "../worker-supervision.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
@@ -502,6 +503,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     if (["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
         || ["openai_dot", "muse"].includes(String(parseObject(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput).provider).kind))) {
       return { outcome: "not_scheduled" as const, reason: "Dot external execution must be reconciled before a new assignment; Paperclip cannot confirm its external stop.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
+    if (run.errorCode === "configuration_incomplete"
+        && parseObject(run.resultJson?.configurationIncomplete).reason === MCP_POLICY_CONFLICT_CODE) {
+      return { outcome: "not_scheduled" as const, reason: "Review governed MCP delivery policy before retrying.",
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
     if (run.errorCode === "configuration_incomplete"
         && parseObject(run.resultJson?.configurationIncomplete).reason === CONTROLLER_SOURCE_PROTECTION_FAILURE_CODE) {

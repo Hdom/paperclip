@@ -69,6 +69,16 @@ function deferral() {
 }
 
 describe("heartbeat retry module callbacks", () => {
+  it("withholds MCP policy conflict retries without touching a queue or database", async () => {
+    const database = guardedDatabase(), deps = callbacks();
+    const run = { ...unitRun(), status: "failed", errorCode: "configuration_incomplete",
+      resultJson: { configurationIncomplete: { reason: "mcp_policy_conflict" } } } as Run;
+    expect(await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(run, { adapterType: "codex_local" } as Agent))
+      .toMatchObject({ outcome: "not_scheduled", reason: "Review governed MCP delivery policy before retrying.", issueId: "issue" });
+    expect(database.access).not.toHaveBeenCalled();
+    for (const callback of Object.values(deps.runDispatch)) expect(callback).not.toHaveBeenCalled();
+  });
+
   it("withholds permanent source-policy retries without queue or database effects", async () => {
     const database = guardedDatabase(), deps = callbacks();
     const run = { ...unitRun(), status: "failed", errorCode: "configuration_incomplete",

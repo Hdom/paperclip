@@ -808,6 +808,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       name: server.name,
       endpointPath: server.url,
       bearerToken: server.token,
+      // Only server-created internal gateway bindings declare provider delivery.
+      // Paperclip still enforces run identity, grants and human decisions on calls.
+      unattendedTools: server.connectionId === "paperclip-runtime-tools" ? ["connections_search"]
+        : server.connectionId === "paperclip-project-tools" ? ["create_project", "list_projects", "list_project_repositories"] : undefined,
     }));
     const managedMcpGateways = mergeManagedCodexMcpGateways(
       runtimeMcpGateways,

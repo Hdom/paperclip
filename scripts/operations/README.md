@@ -206,3 +206,94 @@ read-only and its query schema to match the fixed call, validates the exact
 repository result, and keeps the same metadata-only token scope and revocation
 budget. It cannot verify contents or PR operations and never grants installation
 access or creates repositories. Catalog-only approval does not authorize this mode.
+
+
+## Retained stopped SSH output
+
+`recover-retained-ssh-workspace.mjs` is a compatibility operator tool for an
+already-terminal legacy SSH run with a required return-files recovery hold. It
+never runs an agent, opens a stopped SSH execution scope, merges without a
+durable baseline, creates a project, or changes GitHub access.
+
+Use an exact reviewed deployed release and non-secret options JSON. Every
+command requires `confirm: true`, `sourceCommit`, `payload`, the fixed instance
+`config` path, `companyId`, `issueId`, `runId`, `actionId`, operator attribution
+`actorId`, and a fresh `receipt` under
+`/var/lib/paperclip/operator-receipts/<uuid>.json`. The dedicated root entry
+captures only the running service's named protection settings, then drops to
+the Paperclip service identity. Signing keys and desktop API tokens are never
+inputs. A started receipt is written before mutation; on uncertainty inspect
+that receipt and the exact recorded database state before attempting anything
+again. There is no automatic cleanup/drop/reuse fallback.
+
+Commands, in order when applicable:
+
+1. `attest`: needed only for old source receipts lacking a public host-policy
+   digest. Supply a new `cloneDatabase` matching
+   `paperclip_qualify_<12 lower hex>`, `historicalBackup` under
+   `/var/backups/paperclip/`, its independently verified `expectedRestoreSha256`,
+   and `expectedHostKeyPolicySha256`. The root-owned private physical dump is
+   opened once, bounded to 256 MiB, and hashed before and after the same open FD
+   is passed to `pg_restore`. An exclusive new clone is made; existing or
+   uncertain clone names are refused. The read-only clone must show the same
+   environment before this run started and match the current strict host key
+   policy. The attestation records the actual dump SHA. An old receipt for a
+   reused qualification database is insufficient. Preserve the clone on an
+   uncertain outcome; remove it later through a verified separate operation.
+2. `preserve`: under the original finalization ownership, copy only that run's
+   deterministic stopped worker directory into the existing immutable snapshot
+   ledger/storage. Source company, task, run, lease, generation, boot, endpoint,
+   canonical stop and filesystem identity must match. Another SSH lease for the
+   same run is ambiguous even with a different hostname. Historical different
+   runs sharing a host URI do not themselves confer access or invalidate this
+   per-run source. The archive/manifest are read back and verified. The original
+   worker output and required repair hold remain intact; preservation is not a
+   successful copy-back or provider result.
+3. `retire-wake`: only when an exact pending old system blocker-stall wake would
+   otherwise conflict with continuation. Supply `wakeId`, `stalledIssueId`, and
+   `stalledActionId`. It requires a genuine source-bound saved snapshot, the
+   existing repair hold, unchanged incident/assignee, and no active task run.
+   The queue owner records cancellation plus an exact operator audit. A magic
+   error string alone is never a receipt. The audit suppresses only that exact
+   notification; a later incident still wakes. No turn is dispatched.
+4. Request **Recover workspace** through the existing task recovery flow.
+   Normal system recovery reuses the verified snapshot and writes its existing
+   finalization/completion proof. A still-pending stall notification fails
+   closed as `effect_unresolved / user_action_required`, retaining the source
+   rather than consuming automatic provider retries. Only genuine completion
+   releases the hold. The `verify` operator command is read-only and reports the
+   existing execution blocker without dispatching anything.
+
+After completion, retry only the intended existing task through normal
+Paperclip controls and observe dependency continuation. Do not additionally
+launch its parent or duplicate a queued wake. These rare legacy provenance and
+incident dispositions stay in the reviewed operator tool; normal agent
+environment, Secrets, skill version and task recovery controls retain their
+existing UI. A rollback during this operation must remain operationally paused
+until the previous release's understanding of the saved recovery proof has been
+verified. Keep the original worker output and one verified release/data rollback.
+
+Protected linked local skills use their latest **committed** saved version at
+execution. External edits require the existing explicit import/save action;
+execution never implicitly broadens filesystem access to recapture a link.
+Explicit version pins retain precedence. Governed MCP delivery approves only
+the server-declared same-origin project tools and `connections_search`; backend
+authority and stricter operator per-server/tool/profile restrictions remain
+enforced. Ambiguous or malformed MCP policy is a permanent configuration error.
+
+### Qualification
+
+The release workflow retains all prior qualification suites and adds source,
+historical attestation, deferred-wake and affected generic recovery regressions.
+`scripts/tests/qualify-isolated-ssh.py` additionally exercises real SSH transport
+with a temporary worker network namespace and no default route. Run as root
+with an unprivileged `--user` and supported `--node-bin`. Only synthetic SSH
+credentials and temporary databases/output are used; the production protected
+target guard is unchanged. Cleanup pins processes with pidfds and verifies the
+exact namespace before signalling. This is network separation, not strong
+filesystem or shared-UID isolation. Docker remains deferred.
+
+The provider executable in assembled fresh-role tests is deterministic test
+code, not an external model. Distinguish this admission/return/recovery evidence
+from a real connector run and actual GitHub tool/provider acceptance. Live
+continuation remains a separate verified step after deployment and source repair.

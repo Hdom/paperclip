@@ -1,3 +1,6 @@
+import { nativeSha256 } from "./native-runtime/canonical.js";
+import { controllerExecutionProtected } from "@paperclipai/adapter-utils/controller-source-protection";
+import { createControllerSourceStagingDirectory } from "@paperclipai/adapter-utils/controller-source-materialization";
 import { z } from "zod";
 import { createReadStream, createWriteStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -77,10 +80,14 @@ export async function verifyStoredRecoveryFile(storage: StorageService, companyI
  * DB commit is reconciled against that same object identity on the next pass. */
 export async function preserveWorkspaceSnapshot(input: {
   db: Db; companyId: string; issueId: string; runId: string; actionId: string;
-  leaseId: string; providerLeaseId: string; target: AdapterSandboxExecutionTarget;
+  leaseId: string; providerLeaseId: string; target?: AdapterSandboxExecutionTarget;
+  /** Server-owned verified source transport; never deserialized from a request. */
+  materializeDirectory?: (directory: string) => Promise<void>;
+  sourceProof?: Record<string, unknown>;
   assertHeld(): Promise<void>;
 }) {
-  if (!input.target.runner) throw new SystemRecoveryFailure("source_unavailable", "service_required");
+  if ((!input.materializeDirectory && !input.target?.runner) || (input.materializeDirectory && input.target))
+    throw new SystemRecoveryFailure("source_unavailable", "service_required");
   const storage = getStorageService();
   const scope = and(eq(workspaceOperations.companyId, input.companyId),
     eq(workspaceOperations.heartbeatRunId, input.runId), eq(workspaceOperations.phase, "workspace_recovery_snapshot"),
@@ -90,6 +97,8 @@ export async function preserveWorkspaceSnapshot(input: {
   const [existing] = await input.db.select().from(workspaceOperations).where(scope)
     .orderBy(desc(workspaceOperations.createdAt)).limit(1);
   if (existing?.metadata?.schema === "paperclip.workspace-recovery-snapshot.v1") {
+    if (input.sourceProof && (!existing.metadata.sourceProof || nativeSha256(existing.metadata.sourceProof) !== nativeSha256(input.sourceProof)))
+      throw new SystemRecoveryFailure("snapshot_verification_failed", "service_required");
     const saved = readSnapshot(existing.metadata, input.companyId, input.runId);
     const heads = await Promise.all([storage.headObject(input.companyId, saved.archive.objectKey),
       storage.headObject(input.companyId, saved.manifest.objectKey)]);
@@ -103,18 +112,23 @@ export async function preserveWorkspaceSnapshot(input: {
     }
     if (existing.status === "succeeded") throw new SystemRecoveryFailure("snapshot_verification_failed", "service_required");
   }
-  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-preserve-"));
+  const root = controllerExecutionProtected() ? await createControllerSourceStagingDirectory()
+    : await mkdtemp(path.join(os.tmpdir(), "paperclip-preserve-"));
   try {
     await input.assertHeld();
-    const client = createCommandManagedRuntimeClient({ runner: input.target.runner,
-      commandCwd: input.target.remoteCwd, timeoutMs: input.target.timeoutMs ?? 120_000 });
     const directory = path.join(root, "files");
-    await exportSandboxWorkspaceSnapshot({ client, remoteDir: input.target.remoteCwd,
-      stagingDir: directory, operationId: `preserve:${input.actionId}:${input.leaseId}` }).catch(error => {
-        if (error?.code === "WORKSPACE_SNAPSHOT_EXPORT_UNSUPPORTED")
-          throw new SystemRecoveryFailure("source_unavailable", "use_alternative_strategy");
-        throw error;
-      });
+    if (input.materializeDirectory) await input.materializeDirectory(directory);
+    else {
+      const target = input.target!;
+      const client = createCommandManagedRuntimeClient({ runner: target.runner!,
+        commandCwd: target.remoteCwd, timeoutMs: target.timeoutMs ?? 120_000 });
+      await exportSandboxWorkspaceSnapshot({ client, remoteDir: target.remoteCwd,
+        stagingDir: directory, operationId: `preserve:${input.actionId}:${input.leaseId}` }).catch(error => {
+          if (error?.code === "WORKSPACE_SNAPSHOT_EXPORT_UNSUPPORTED")
+            throw new SystemRecoveryFailure("source_unavailable", "use_alternative_strategy");
+          throw error;
+        });
+    }
     await input.assertHeld();
     const manifestPath = path.join(root, "manifest.jsonl");
     const snapshot = await captureDirectorySnapshotOffThread(directory, { exclude: [], diskBacked: true });
@@ -132,9 +146,9 @@ export async function preserveWorkspaceSnapshot(input: {
     const prefix = `${input.companyId}/workspace-recovery/${input.runId}/${input.leaseId}`;
     const stored = files.map((file, index) => ({ objectKey: `${prefix}/${file.sha256}.${index === 0 ? "tar" : "jsonl"}`,
       sha256: file.sha256, byteSize: file.byteSize }));
-    const metadata: PreservedWorkspaceSnapshot = { schema: "paperclip.workspace-recovery-snapshot.v1",
+    const metadata: PreservedWorkspaceSnapshot & { sourceProof?: Record<string, unknown> } = { schema: "paperclip.workspace-recovery-snapshot.v1",
       recoveryActionId: input.actionId, leaseId: input.leaseId, providerLeaseId: input.providerLeaseId,
-      archive: stored[0], manifest: stored[1] };
+      archive: stored[0], manifest: stored[1], ...(input.sourceProof ? { sourceProof: input.sourceProof } : {}) };
     await input.assertHeld();
     const [operation] = existing
       ? await input.db.update(workspaceOperations).set({ metadata, status: "running", updatedAt: new Date() })

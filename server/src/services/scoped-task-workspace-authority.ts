@@ -1,3 +1,5 @@
+import { retainedSshHostKeyPolicySha256 } from "./retained-ssh-workspace-source.js";
+import { TASK_WORKSPACE_RETURN_DISPOSITION } from "./task-workspace-return-disposition.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { parseEnvironmentDriverConfig } from "./environment-config.js";
 import { readRunCancellation } from "./run-cancellation.js";
@@ -7,7 +9,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gte, ne, or, sql } from "drizzle-orm";
 import { agents, companies, environments, environmentLeases, executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { controllerExecutionProtected } from "@paperclipai/adapter-utils/controller-source-protection";
@@ -35,7 +37,9 @@ export async function withScopedTaskWorkspaceAuthority<T>(db: Db, input: {
   const [initialLease] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.id, scope.leaseId), eq(environmentLeases.companyId, input.companyId)));
   if (!initialLease?.providerLeaseId) throw refused();
   const transaction = new AsyncLocalStorage<Db>();
-  const validate = async (lock = false) => {
+  let admittedStatusVersion: number | undefined;
+  let admittedBindingRevision: number | undefined;
+  const validate = async (phase: "upload" | "return", lock = false) => {
     const selected = transaction.getStore() ?? db;
     const agentQuery = selected.select().from(agents).where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)));
     const [agent] = await (lock ? agentQuery.for("share", { noWait: true }) : agentQuery);
@@ -57,6 +61,22 @@ export async function withScopedTaskWorkspaceAuthority<T>(db: Db, input: {
     const config = parsed?.driver === "ssh" ? parsed.config : null;
     const endpoint = { host: target.spec.host, port: target.spec.port, username: target.spec.username,
       remoteWorkspacePath: target.spec.remoteWorkspacePath, remoteCwd: target.spec.remoteCwd };
+    const disposition = run?.runnerProfileJson?.taskWorkspaceReturnDisposition as Record<string, unknown> | undefined;
+    const ownsCurrentClaim = task?.executionRunId === input.runId &&
+      (admittedStatusVersion === undefined || task.statusVersion === admittedStatusVersion);
+    const ownsReturnDisposition = phase === "return" && admittedStatusVersion !== undefined && task &&
+      task.executionRunId === null && task.checkoutRunId === null && disposition?.schema === TASK_WORKSPACE_RETURN_DISPOSITION &&
+      disposition.companyId === input.companyId && disposition.issueId === input.issueId && disposition.agentId === input.agentId &&
+      disposition.runId === input.runId && disposition.workspaceId === workspace.id &&
+      disposition.workspaceBindingRevision === task.workspaceBindingRevision && disposition.fromStatusVersion === admittedStatusVersion &&
+      disposition.toStatusVersion === task.statusVersion && disposition.status === task.status && ["blocked", "done", "in_review"].includes(task.status);
+    if (phase === "return" && run) {
+      const [successor] = await selected.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId), gte(heartbeatRuns.createdAt, run.createdAt),
+        or(eq(heartbeatRuns.issueId, input.issueId!), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`),
+      )).limit(1);
+      if (successor) throw refused();
+    }
     if (!agent || !company || company.status !== "active" || agent.lifecycleState !== "ready" || ["paused", "terminated"].includes(agent.status) || agent.lifecycleHolds?.length ||
         !environment || environment.driver !== "ssh" || !config || !task || !run || !current || !lease ||
         Object.entries(endpoint).some(([key, value]) => lease.metadata?.[key] !== value) ||
@@ -64,7 +84,8 @@ export async function withScopedTaskWorkspaceAuthority<T>(db: Db, input: {
         Number(config.port ?? 22) !== endpoint.port || config.knownHosts !== target.spec.knownHosts ||
         config.strictHostKeyChecking !== target.spec.strictHostKeyChecking || lease.expiresAt && lease.expiresAt.getTime() <= Date.now() ||
         run.resultJson?.startupCancellation || run.resultJson?.nativeCancellation || run.resultJson?.executionCancellation || readRunCancellation(run.resultJson) ||
-        task.assigneeAgentId !== input.agentId || task.executionRunId !== input.runId ||
+        task.assigneeAgentId !== input.agentId || (!ownsCurrentClaim && !ownsReturnDisposition) ||
+        (admittedBindingRevision !== undefined && task.workspaceBindingRevision !== admittedBindingRevision) ||
         task.executionWorkspaceId !== current.id || run.agentId !== input.agentId || run.status !== "running" || run.finishedAt ||
         (run.issueId ?? run.contextSnapshot?.issueId) !== input.issueId || run.contextSnapshot?.executionWorkspaceId !== current.id ||
         current.cwd !== root || lease.status !== "active" || lease.releasedAt || lease.provider !== "ssh" ||
@@ -73,6 +94,7 @@ export async function withScopedTaskWorkspaceAuthority<T>(db: Db, input: {
         lease.providerLeaseId !== `ssh://${target.spec.username}@${target.spec.host}:${target.spec.port}${target.spec.remoteCwd}` ||
         lease.metadata?.remoteExecutionScopeRequired !== true || !isDeepStrictEqual(lease.metadata.remoteExecutionScope, scope) ||
         !await isBoundIsolatedTaskDirectory({ companyId: input.companyId, issueId: input.issueId!, workspaceId: current.id, workspace: current as Parameters<typeof isBoundIsolatedTaskDirectory>[0]["workspace"] })) throw refused();
+    if (admittedStatusVersion === undefined) { admittedStatusVersion = task.statusVersion; admittedBindingRevision = task.workspaceBindingRevision; }
     // Native namespace ancestors must also remain controller-owned private directories.
     const base = await realpath(resolvePaperclipInstanceRoot());
     const relative = path.relative(base, root).split(path.sep);
@@ -88,7 +110,7 @@ export async function withScopedTaskWorkspaceAuthority<T>(db: Db, input: {
   };
   const remoteDir = path.posix.join(target.spec.remoteCwd, ".paperclip-runtime", "runs", input.runId, "workspace");
   return withControllerWorkspaceAuthority({ root, target: controllerSshWorkspaceTarget(target.spec, input.runId, remoteDir), signal: input.signal,
-    validate: () => validate(),
+    validate: phase => validate(phase),
     restoreFailed: async () => {
       const [sourceRun] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId)));
       if (!sourceRun) throw refused();
@@ -98,7 +120,8 @@ export async function withScopedTaskWorkspaceAuthority<T>(db: Db, input: {
           source: { provider: "ssh", runId: input.runId, executionWorkspaceId: workspace.id, leaseId: initialLease.id,
             environmentId: target.environmentId, providerLeaseId: initialLease.providerLeaseId, remoteDir,
             endpoint: { host: target.spec.host, port: target.spec.port, username: target.spec.username, remoteCwd: target.spec.remoteCwd },
-            generation: scope.generation, bootId: scope.bootId } },
+            generation: scope.generation, bootId: scope.bootId,
+            hostKeyPolicySha256: retainedSshHostKeyPolicySha256(target.environmentId!, target.spec as unknown as Record<string, unknown>, target.spec.remoteCwd) } },
       });
     },
     assertPublication: async () => {
@@ -118,7 +141,7 @@ export async function withScopedTaskWorkspaceAuthority<T>(db: Db, input: {
             const value = await db.transaction(tx => {
               filesystemWork = transaction.run(tx as unknown as Db, async () => {
                 await tx.execute(sql`set local idle_in_transaction_session_timeout = 0`);
-                await validate(true);
+                await validate("return", true);
                 return action();
               });
               return filesystemWork;

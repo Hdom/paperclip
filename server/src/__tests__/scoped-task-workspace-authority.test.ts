@@ -1,3 +1,5 @@
+import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { issueService } from "../services/issues.js";
 import { controllerSkillExporter } from "../services/controller-skill-export.js";
 import { withSkillActor } from "../services/skill-access.js";
 import { skillPackageStore } from "../services/skill-package-store.js";
@@ -15,7 +17,7 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { withScopedTaskWorkspaceAuthority } from "../services/scoped-task-workspace-authority.js";
 import { materializeIsolatedTaskDirectory } from "../services/isolated-task-directory.js";
 import { hasPendingRunCleanup } from "../services/execution-blocker.js";
-import { assertControllerWorkspacePublication, withControllerWorkspaceOperation } from "@paperclipai/adapter-utils/controller-workspace-authority";
+import { assertControllerWorkspacePublication, markControllerWorkspaceReturnReady, withControllerWorkspaceOperation } from "@paperclipai/adapter-utils/controller-workspace-authority";
 import { controllerSshWorkspaceTarget } from "@paperclipai/adapter-utils/controller-ssh-workspace";
 import { assertControllerSourcePathAllowed } from "@paperclipai/adapter-utils/controller-source-protection";
 import { prepareRemoteManagedRuntime } from "@paperclipai/adapter-utils/remote-managed-runtime";
@@ -76,7 +78,7 @@ it("revokes admission when generation or task owner changes",async()=>{
   });
 });
 
-it.each(["normal", "cancelled", "stale_generation"])("protected native real SSH transfer, scoped publication and physical stop: %s",async mode=>{
+it.each(["normal", "blocked", "done", "cancelled", "stale_generation"])("protected native real SSH transfer, scoped publication and physical stop: %s",async mode=>{
   const f=await seed(); let fixture:SshEnvLabFixtureState|undefined; let spec:SshRemoteExecutionSpec=f.input.target.spec;
   const cleanups:Array<()=>Promise<void>>=[];
   try {
@@ -109,7 +111,12 @@ it.each(["normal", "cancelled", "stale_generation"])("protected native real SSH 
       const command=`cd ${shellQuote(runtime.workspaceRemoteDir)} && test ! -e .git && test "$(cat input.txt)" = 'synthetic input' && rm delete.txt executable.sh && chmod 755 chmod.txt && printf 'synthetic output' > output.txt`;
       await runSshCommand(spec,command);
       expect((await runSshCommand(spec,`cat ${shellQuote(path.posix.join(runtime.assetDirs["assigned-skill"],"SKILL.md"))}`)).stdout).toContain("Synthetic pinned skill");
-      if (mode !== "normal") {
+      if (mode === "blocked" || mode === "done") {
+        await issueService(db).update(f.input.issueId!, { status: mode, actorAgentId: f.input.agentId, actorRunId: f.input.runId });
+        const [task] = await db.select().from(issues).where(eq(issues.id, f.input.issueId!));
+        expect(task.executionRunId).toBeNull();
+      }
+      if (mode === "cancelled" || mode === "stale_generation") {
         if (mode === "cancelled") {
           await db.update(heartbeatRuns).set({status:"cancelled",finishedAt:new Date()}).where(eq(heartbeatRuns.id,scope.runId));
           await stopSshRunScope(spec,scope);
@@ -169,11 +176,15 @@ it("keeps durable ownership after publication connection loss until filesystem w
   const f=await seed(); let entered!:()=>void, release!:()=>void;
   const started=new Promise<void>(resolve=>{entered=resolve;}); const gate=new Promise<void>(resolve=>{release=resolve;});
   const target=controllerSshWorkspaceTarget(f.input.target.spec,f.input.runId,f.remoteDir);
-  const pending=withScopedTaskWorkspaceAuthority(db,f.input,()=>withControllerWorkspaceOperation(f.cwd,target,"publish",async()=>{
+  // This seam test starts at the post-preparation publication boundary;
+  // the real-transfer matrix above establishes the baseline through SSH.
+  const pending=withScopedTaskWorkspaceAuthority(db,f.input,async()=>{
+    await markControllerWorkspaceReturnReady(f.cwd,target);
+    return withControllerWorkspaceOperation(f.cwd,target,"publish",async()=>{
     await assertControllerWorkspacePublication(); await writeFile(path.join(f.cwd,"first.txt"),"first");
     entered(); await gate;
     await assertControllerWorkspacePublication(); await writeFile(path.join(f.cwd,"must-not-write.txt"),"stale");
-  }));
+  }); });
   const outcome=pending.then(()=>null,error=>error);
   try {
     await started;
@@ -199,11 +210,13 @@ it("publishes with a single ordinary connection and a small database idle timeou
   const single=createDb(database.connectionString,{maxConnections:1,applicationName:"scoped-workspace-max-one"});
   try {
     const target=controllerSshWorkspaceTarget(f.input.target.spec,f.input.runId,f.remoteDir);
-    await withScopedTaskWorkspaceAuthority(single,f.input,()=>withControllerWorkspaceOperation(f.cwd,target,"publish",async()=>{
+    await withScopedTaskWorkspaceAuthority(single,f.input,async()=>{
+      await markControllerWorkspaceReturnReady(f.cwd,target);
+      return withControllerWorkspaceOperation(f.cwd,target,"publish",async()=>{
       await new Promise(resolve=>setTimeout(resolve,500));
       await assertControllerWorkspacePublication();
       await writeFile(path.join(f.cwd,"single-pool.txt"),"published");
-    }));
+    }); });
     expect(await readFile(path.join(f.cwd,"single-pool.txt"),"utf8")).toBe("published");
   } finally {
     await single.$client.end({timeout:1});
@@ -222,4 +235,39 @@ it("resolves a trusted configured home alias while refusing descendant workspace
 it("denies a finished run even if its status still says running", async () => {
   const f=await seed(); await db.update(heartbeatRuns).set({finishedAt:new Date()}).where(eq(heartbeatRuns.id,f.input.runId));
   await expect(withScopedTaskWorkspaceAuthority(db,f.input,f.read)).rejects.toThrow();
+});
+
+it.each(["board status", "wrong run", "workspace ABA", "assignment ABA", "status ABA"])("refuses return after %s without an unchanged source disposition",async mode=>{
+  const f=await seed(), target=controllerSshWorkspaceTarget(f.input.target.spec,f.input.runId,f.remoteDir);
+  await withScopedTaskWorkspaceAuthority(db,f.input,async()=>{
+    // Domain-authority seam: real SSH baseline/transfer is covered separately.
+    await markControllerWorkspaceReturnReady(f.cwd,target);
+    await issueService(db).update(f.input.issueId!,{status:"blocked",...(mode==="board status"?{}:{actorAgentId:f.input.agentId,actorRunId:mode==="wrong run"?randomUUID():f.input.runId})});
+    const [receiptRun]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,f.input.runId));
+    const staleReceipt=receiptRun.runnerProfileJson?.taskWorkspaceReturnDisposition;
+    if(mode==="workspace ABA"){
+      const [other]=await db.insert(executionWorkspaces).values({companyId:f.input.companyId,sourceIssueId:f.input.issueId,name:"Other attempt",mode:"isolated_workspace",strategyType:"project_primary",cwd:f.cwd+"-other",providerType:"local_fs"}).returning();
+      const changed=await executionWorkspaceService(db).bindTaskWorkspace(f.input.companyId,f.input.issueId!,other.id);
+      expect(changed.executionWorkspaceId).toBe(other.id);
+      const restored=await executionWorkspaceService(db).bindTaskWorkspace(f.input.companyId,f.input.issueId!,f.input.workspaceId);
+      expect(restored.executionWorkspaceId).toBe(f.input.workspaceId);expect(restored.workspaceBindingRevision).toBeGreaterThan(changed.workspaceBindingRevision);
+    }
+    if(mode==="assignment ABA"){
+      const other=randomUUID();await db.insert(agents).values({id:other,companyId:f.input.companyId,name:"Replacement",role:"engineer",adapterType:"codex_local"});
+      const changed=await issueService(db).update(f.input.issueId!,{assigneeAgentId:other});expect(changed!.assigneeAgentId).toBe(other);
+      const restored=await issueService(db).update(f.input.issueId!,{assigneeAgentId:f.input.agentId});expect(restored!.assigneeAgentId).toBe(f.input.agentId);
+    }
+    if(mode==="status ABA"){
+      await issueService(db).update(f.input.issueId!,{status:"todo"});
+      await issueService(db).update(f.input.issueId!,{status:"blocked"});
+    }
+    if(mode==="assignment ABA"||mode==="workspace ABA"){
+      expect(staleReceipt).toBeTruthy();
+      // Even a stale backend profile writer restoring the old JSON cannot
+      // defeat the authoritative monotonic issue/binding revision checks.
+      await db.update(heartbeatRuns).set({runnerProfileJson:sql`jsonb_set(coalesce(${heartbeatRuns.runnerProfileJson},'{}'::jsonb),'{taskWorkspaceReturnDisposition}',${JSON.stringify(staleReceipt)}::jsonb)`}).where(eq(heartbeatRuns.id,f.input.runId));
+    }
+    await expect(withControllerWorkspaceOperation(f.cwd,target,"return_read",async()=>{})).rejects.toThrow();
+    await expect(withControllerWorkspaceOperation(f.cwd,target,"publish",async()=>{throw Error("Must never publish");})).rejects.not.toThrow("Must never publish");
+  });
 });

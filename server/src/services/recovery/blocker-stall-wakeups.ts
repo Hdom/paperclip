@@ -30,7 +30,7 @@
  * its run could only fail the same way. It is woken once the hold settles.
  */
 import { and, desc, eq, gt, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { agents, agentWakeupRequests, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON, readRemoteWorkspaceAuthority, type IssueBlockerStalledWakeContext,
   type IssueBlockerStallRelation } from "@paperclipai/shared";
 import { logActivity } from "../activity-log.js";
@@ -46,6 +46,23 @@ const MAX_STALLS_PER_PASS = 200;
 /** A wake row with one of these statuses was delivered or is still pending. */
 const DELIVERED_OR_PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed", "coalesced", "completed"];
 /** Waiters of one stall read per page, and scanned per pass before a cursor resumes the rest. */
+/** An explicit, audited operator disposition is final for this exact stall.
+ * Ordinary cancellation/refusal still retries; a payload/error string alone
+ * cannot suppress a notification. A later recovery action has a new key.
+ */
+function deliveredOrRetiredStallWake() {
+  return or(inArray(agentWakeupRequests.status, DELIVERED_OR_PENDING_WAKE_STATUSES), and(
+    eq(agentWakeupRequests.status, "cancelled"),
+    eq(agentWakeupRequests.error, "operator_retired_stall_after_source_preservation_plan"),
+    sql`exists (select 1 from ${activityLog} disposition
+      where disposition.company_id = ${agentWakeupRequests.companyId}
+        and disposition.actor_type = 'user' and disposition.action = 'issue.deferred_stall_retired'
+        and disposition.entity_type = 'issue' and disposition.entity_id = ${agentWakeupRequests.payload}->>'issueId'
+        and disposition.details->>'wakeId' = ${agentWakeupRequests.id}::text
+        and disposition.details->>'stalledIssueId' = ${agentWakeupRequests.payload}->>'stalledIssueId'
+        and disposition.details->>'stalledActionId' = ${agentWakeupRequests.payload}#>>'{recoveryAction,id}')`,
+  ));
+}
 const MAX_WAITERS_PER_STALL = 100;
 const MAX_WAITERS_SCANNED_PER_STALL = 500;
 const waiterCursors = new Map<string, string>();
@@ -259,7 +276,14 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
           after ? gt(issues.id, after) : undefined,
           sql`not exists (select 1 from ${agentWakeupRequests} w where w.company_id = ${stall.companyId}
             and w.idempotency_key = 'issue_blocker_stalled:' || ${issues.id}::text || ${`:${stall.issueId}:${stall.actionId}`}
-            and w.status in (${sql.join(DELIVERED_OR_PENDING_WAKE_STATUSES.map(status => sql`${status}`), sql`, `)}))`,
+            and (w.status in (${sql.join(DELIVERED_OR_PENDING_WAKE_STATUSES.map(status => sql`${status}`), sql`, `)})
+              or (w.status = 'cancelled' and w.error = 'operator_retired_stall_after_source_preservation_plan'
+                and exists (select 1 from ${activityLog} disposition where disposition.company_id = w.company_id
+                  and disposition.actor_type = 'user' and disposition.action = 'issue.deferred_stall_retired'
+                  and disposition.entity_type = 'issue' and disposition.entity_id = w.payload->>'issueId'
+                  and disposition.details->>'wakeId' = w.id::text
+                  and disposition.details->>'stalledIssueId' = w.payload->>'stalledIssueId'
+                  and disposition.details->>'stalledActionId' = w.payload#>>'{recoveryAction,id}'))))`,
           or(
             stall.parentId ? eq(issues.id, stall.parentId) : sql`false`,
             sql`exists (select 1 from ${issueRelations} r where r.company_id = ${stall.companyId}
@@ -275,7 +299,7 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
         // wake's run, or a resource-wait retry that keeps its context) are
         // retried after a doubling wait, and not after MAX_FAILED_STALL_DELIVERIES.
         const [prior] = await db.select({
-          delivered: sql<boolean>`coalesce(bool_or(${inArray(agentWakeupRequests.status, DELIVERED_OR_PENDING_WAKE_STATUSES)}), false)`,
+          delivered: sql<boolean>`coalesce(bool_or(${deliveredOrRetiredStallWake()}), false)`,
           lastRequestedAt: sql<string | null>`max(${agentWakeupRequests.requestedAt})`,
         }).from(agentWakeupRequests)
           .where(and(eq(agentWakeupRequests.companyId, stall.companyId),
