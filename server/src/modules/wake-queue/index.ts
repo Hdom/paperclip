@@ -130,4 +130,6 @@ export function createQueuedCommentQueue(db: Db, deps: QueuedCommentQueuePostgre
 
 export type QueuedCommentQueue = ReturnType<typeof createQueuedCommentQueue>;
 
+export { reconcileCancelledBlockerStallWake } from "./adapters/reconcile-cancelled-stall.js";
+export { isReconciledBlockerStall, stallWakeSha256 } from "./adapters/stall-disposition.js";
 export { retireDeferredBlockerStallWake, assertNoPendingDeferredBlockerStall } from "./adapters/retire-deferred-stall.js";

@@ -464,7 +464,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         if (retainedSsh) {
           // Serialize with notification creation/admission on the task row.
           await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
-          await assertNoPendingDeferredBlockerStall(tx as unknown as Db, input.companyId, input.issueId);
+          await assertNoPendingDeferredBlockerStall(tx as unknown as Db, input.companyId, input.issueId, input.runId);
         }
         await notifyNativeResultCommit(tx, input);
         await notifyNativeWorkspaceFinalization(tx, input);

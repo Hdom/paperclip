@@ -29,6 +29,7 @@
  * reservation would still refuse that hold (remoteWorkspaceHoldRefusesStart):
  * its run could only fail the same way. It is woken once the hold settles.
  */
+import { reconciledStallCancellation } from "../../modules/wake-queue/adapters/stall-disposition.js";
 import { and, desc, eq, gt, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { activityLog, agents, agentWakeupRequests, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON, readRemoteWorkspaceAuthority, type IssueBlockerStalledWakeContext,
@@ -51,7 +52,7 @@ const DELIVERED_OR_PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution"
  * cannot suppress a notification. A later recovery action has a new key.
  */
 function deliveredOrRetiredStallWake() {
-  return or(inArray(agentWakeupRequests.status, DELIVERED_OR_PENDING_WAKE_STATUSES), and(
+  return or(inArray(agentWakeupRequests.status, DELIVERED_OR_PENDING_WAKE_STATUSES), reconciledStallCancellation(), and(
     eq(agentWakeupRequests.status, "cancelled"),
     eq(agentWakeupRequests.error, "operator_retired_stall_after_source_preservation_plan"),
     sql`exists (select 1 from ${activityLog} disposition
@@ -276,7 +277,7 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
           after ? gt(issues.id, after) : undefined,
           sql`not exists (select 1 from ${agentWakeupRequests} w where w.company_id = ${stall.companyId}
             and w.idempotency_key = 'issue_blocker_stalled:' || ${issues.id}::text || ${`:${stall.issueId}:${stall.actionId}`}
-            and (w.status in (${sql.join(DELIVERED_OR_PENDING_WAKE_STATUSES.map(status => sql`${status}`), sql`, `)})
+            and (${reconciledStallCancellation(sql`w`)} or w.status in (${sql.join(DELIVERED_OR_PENDING_WAKE_STATUSES.map(status => sql`${status}`), sql`, `)})
               or (w.status = 'cancelled' and w.error = 'operator_retired_stall_after_source_preservation_plan'
                 and exists (select 1 from ${activityLog} disposition where disposition.company_id = w.company_id
                   and disposition.actor_type = 'user' and disposition.action = 'issue.deferred_stall_retired'

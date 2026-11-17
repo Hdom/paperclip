@@ -33,3 +33,13 @@ test('selects only effective named protection settings, never credentials or unr
  assert.equal(Object.hasOwn(profile,'PAPERCLIP_SECRETS_MASTER_KEY'),false);
  assert.throws(()=>selectedProtectionProfile(Buffer.from('PAPERCLIP_HOME=/opt/paperclip-data\0')));
 });
+
+test('cancelled stall reconciliation requires exact pause, source snapshot and digest',()=>{
+ const identity={...options,command:'reconcile-cancelled-wake',wakeId:id,stalledIssueId:id,stalledActionId:id,
+  pauseActivityId:id,snapshotOperationId:id,cancellationSha256:'c'.repeat(64)};
+ assert.doesNotThrow(()=>validateRetainedSshOptions(identity));
+ assert.doesNotThrow(()=>validateRetainedSshOptions({...identity,command:'inspect-cancelled-wake',pauseActivityId:undefined,snapshotOperationId:undefined,cancellationSha256:undefined}));
+ for(const changed of [{wakeId:undefined},{stalledIssueId:undefined},{stalledActionId:undefined},
+  {pauseActivityId:undefined},{snapshotOperationId:undefined},{cancellationSha256:undefined},{cancellationSha256:'unverified'}])
+  assert.throws(()=>validateRetainedSshOptions({...identity,...changed}));
+});

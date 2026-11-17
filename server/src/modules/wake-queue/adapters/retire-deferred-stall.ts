@@ -1,3 +1,4 @@
+import { reconciledStallCancellation } from "./stall-disposition.js";
 import { SystemRecoveryFailure } from "../../../services/system-recovery-state.js";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { activityLog, agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issues, workspaceOperations, type Db } from "@paperclipai/db";
@@ -70,11 +71,29 @@ export async function retireDeferredBlockerStallWake(db: Db, input: {
 }
 
 /** A preservation receipt cannot silently promote an old system stall notification. */
-export async function assertNoPendingDeferredBlockerStall(tx: Db, companyId: string, issueId: string) {
+export async function assertNoPendingDeferredBlockerStall(tx: Db, companyId: string, issueId: string, sourceRunId?: string) {
   const [pending] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.requestedByActorType, "system"),
     eq(agentWakeupRequests.requestedByActorId, "issue-blocker-stall"),
     inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
     sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`)).limit(1);
-  if (pending) throw new SystemRecoveryFailure("effect_unresolved", "user_action_required", "Preserved output remains held until the pending stall notification is explicitly reconciled.");
+  const [source] = sourceRunId ? await tx.select({ finishedAt: heartbeatRuns.finishedAt, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, sourceRunId),
+    sql`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`)) : [];
+  if (sourceRunId && (!source?.finishedAt || !["failed", "cancelled", "timed_out", "succeeded"].includes(source.status)))
+    throw new SystemRecoveryFailure("effect_unresolved", "user_action_required", "The exact terminal recovery source is unavailable; notification disposition remains unresolved.");
+  const cancelled = await tx.select().from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.requestedByActorType, "system"),
+    eq(agentWakeupRequests.requestedByActorId, "issue-blocker-stall"), eq(agentWakeupRequests.status, "cancelled"),
+    eq(agentWakeupRequests.error, "Agent lifecycle stop requested"),
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+    sourceRunId ? sql`${agentWakeupRequests.finishedAt} >= (select r.finished_at from heartbeat_runs r where r.id = ${sourceRunId})` : undefined,
+    sql`not ${reconciledStallCancellation()}`));
+  let unreconciled = false;
+  for (const wake of cancelled) {
+    if (await verifyBlockerStallWake(tx, { companyId, issueId,
+      contextSnapshot: wake.payload?._paperclipWakeContext as Record<string, unknown> | undefined,
+      requestedByActorType: "system" })) { unreconciled = true; break; }
+  }
+  if (pending || unreconciled) throw new SystemRecoveryFailure("effect_unresolved", "user_action_required", "Preserved output remains held until the pending stall notification is explicitly reconciled.");
 }
