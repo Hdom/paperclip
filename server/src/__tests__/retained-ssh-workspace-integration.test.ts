@@ -199,9 +199,10 @@ it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer","Research
   }finally{registerServerAdapter(original);await heartbeat.drainActiveRunExecutions();}
 },90000);
 
-it.each(["retry_first","notification_first","pause_retry_first","pause_notification_first"])("preserves immutable output before exact audited wake retirement, recovery and public Retry: %s",async order=>{
-  const paused=order.startsWith("pause_"),deliveryOrder=order.replace(/^pause_/,"");
+it.each(["retry_first","notification_first","pause_retry_first","pause_interrupted_notification_first"])("preserves immutable output before exact audited wake retirement, recovery and public Retry: %s",async order=>{
+  const paused=order.startsWith("pause_"),deliveryOrder=order.replace(/^pause_/,"").replace(/^interrupted_/,"");
   const f=await seed(), spec={...connection,remoteCwd:connection.remoteWorkspacePath!,runScope:f.scope};
+  if(order.includes("interrupted"))await db.update(heartbeatRuns).set({status:"interrupted"}).where(eq(heartbeatRuns.id,f.input.runId));
   await prepareSshRunScope(connection,f.scope);
   await runSshCommand(spec,`mkdir -p ${shellQuote(f.source.remoteDir)} && chmod 700 ${shellQuote(f.source.remoteDir)} && printf 'retained synthetic output' > ${shellQuote(f.source.remoteDir+'/saved.txt')}`);
   await stopSshRunScope(spec,f.scope);

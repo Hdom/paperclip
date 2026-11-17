@@ -80,7 +80,7 @@ export async function assertNoPendingDeferredBlockerStall(tx: Db, companyId: str
   const [source] = sourceRunId ? await tx.select({ finishedAt: heartbeatRuns.finishedAt, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, sourceRunId),
     sql`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`)) : [];
-  if (sourceRunId && (!source?.finishedAt || !["failed", "cancelled", "timed_out", "succeeded"].includes(source.status)))
+  if (sourceRunId && (!source?.finishedAt || !["failed", "interrupted", "cancelled", "timed_out", "succeeded"].includes(source.status)))
     throw new SystemRecoveryFailure("effect_unresolved", "user_action_required", "The exact terminal recovery source is unavailable; notification disposition remains unresolved.");
   const cancelled = await tx.select().from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.requestedByActorType, "system"),

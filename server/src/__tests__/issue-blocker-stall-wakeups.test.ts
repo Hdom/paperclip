@@ -90,6 +90,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         _paperclipWakeContext:{wakeReason:"issue_blocker_stalled",blockerStall:{stalledIssueId:f.child.id,recoveryAction:{id:f.action.id}}}}});
     await expect(assertNoPendingDeferredBlockerStall(db,f.companyId,f.parent.id,source.id)).resolves.toBeUndefined();
     await expect(assertNoPendingDeferredBlockerStall(db,f.companyId,f.parent.id,randomUUID())).rejects.toThrow(/terminal recovery source/);
+    await db.update(heartbeatRuns).set({status:"interrupted"}).where(eq(heartbeatRuns.id,source.id));
+    await expect(assertNoPendingDeferredBlockerStall(db,f.companyId,f.parent.id,source.id)).resolves.toBeUndefined();
     await db.update(heartbeatRuns).set({status:"running",finishedAt:null}).where(eq(heartbeatRuns.id,source.id));
     await expect(assertNoPendingDeferredBlockerStall(db,f.companyId,f.parent.id,source.id)).rejects.toThrow(/terminal recovery source/);
   });
