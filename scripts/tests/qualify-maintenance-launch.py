@@ -1,6 +1,6 @@
 """Actual root verification -> unprivileged fixed entry exec, synthetic only.
 Must run in the owned loopback namespace; fixture tree is a new root-owned
-/opt directory with exact identity-bound cleanup. No service or DB access.
+/var/lib directory with exact identity-bound cleanup. No service or DB access.
 """
 import argparse, importlib.util, json, os, pathlib, pwd, shutil, stat, subprocess, sys, uuid
 sys.dont_write_bytecode=True
@@ -10,7 +10,13 @@ def main():
     routes=json.loads(subprocess.check_output(['/usr/sbin/ip','-j','route','show','table','all']))
     if any(r.get('dst')=='default' for r in routes):raise ValueError('Owned loopback-only namespace required')
     script=pathlib.Path(__file__).resolve().parents[1]/'operations/maintenance-host.py'
-    fixture=pathlib.Path('/opt')/('paperclip-maintenance-qualification-'+uuid.uuid4().hex);fixture.mkdir(mode=0o755);identity=fixture.stat()
+    base=pathlib.Path('/var/lib')
+    if base.resolve()!=base:raise ValueError('Physical protected fixture base required')
+    for ancestor in (base,*base.parents):
+        info=ancestor.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:
+            raise ValueError('Fixture base and ancestors must already be root-protected')
+    fixture=base/('paperclip-maintenance-qualification-'+uuid.uuid4().hex);fixture.mkdir(mode=0o755);identity=fixture.stat()
     try:
         capsule=fixture/'capsule';capsule.mkdir(mode=0o755)
         shutil.copyfile(a.node,capsule/'node');(capsule/'node').chmod(0o755)
