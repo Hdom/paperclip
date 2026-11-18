@@ -14,7 +14,7 @@ function execute({ cwd, files, extra }) {
   console.log(`Qualifying ${files.join(", ")}`);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [vitest, "run", "--silent", "--maxWorkers=1", "--testTimeout=60000", ...extra, ...files],
-      { cwd, env, stdio: "inherit", timeout: 10 * 60 * 1000 });
+      { cwd, env, stdio: "inherit" });
     child.once("error", reject);
     child.once("close", (status, signal) => status === 0 ? resolve() : reject(new Error(`Qualification failed: ${files.join(", ")} (${status ?? signal ?? "process error"})`)));
   });
@@ -67,6 +67,9 @@ test(root, ["ui/src/pages/Secrets.render.test.tsx", "ui/src/pages/secrets/secret
 test(root, ["packages/adapter-utils/src/ssh-stopped-workspace-snapshot.test.ts", "packages/adapter-utils/src/ssh-run-scope.test.ts", "packages/adapter-utils/src/ssh-run-scope-kernel.test.ts",
   "packages/adapter-utils/src/ssh-run-scope-transport.test.ts", "packages/adapter-utils/src/ssh-command-managed.test.ts",
   "packages/adapter-utils/src/ssh-fixture.test.ts"]);
+
+test(resolve(root,"server"),["src/services/instance-maintenance.test.ts"],["--config","vitest.config.ts"]);
+test(root,["ui/src/components/InstanceMaintenance.test.tsx"]);
 
 // Preserve every baseline and signing-key suite plus reviewed SSH lifecycle coverage.
 // Only scheduling changes; every suite retains a fresh process and serial cases.

@@ -1,3 +1,4 @@
+import { assertMaintenanceAdmission, maintenanceClosed } from "./instance-maintenance.js";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issueWorkflowHandoffs, issues, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -20,6 +21,7 @@ export function registerTaskWorkflowHandoffWork(db: Db, coordinator: ReturnType<
   let cursor: string | undefined, more = false, stopped = false;
   let requested = 1, reconciled = 0, scanning = false, restart = false;
   const settleRow = async (row: typeof issueWorkflowHandoffs.$inferSelect) => {
+    if (await maintenanceClosed(db)) return;
     if (row.state === "pending") await commitTaskWorkflowHandoff(db, row.companyId, row.sourceRunId);
     const [current] = await db.select().from(issueWorkflowHandoffs).where(and(
       eq(issueWorkflowHandoffs.companyId, row.companyId), eq(issueWorkflowHandoffs.id, row.id)));
@@ -39,6 +41,7 @@ export function registerTaskWorkflowHandoffWork(db: Db, coordinator: ReturnType<
     // failure and recovered archive remain auditable.
     const activity = await db.transaction(async raw => {
       const tx = raw as unknown as Db;
+      await assertMaintenanceAdmission(tx);
       const [task] = await tx.select().from(issues).where(and(eq(issues.companyId, row.companyId), eq(issues.id, row.issueId))).for("update");
       const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, row.companyId), eq(heartbeatRuns.id, row.sourceRunId))).for("share", { noWait: true });
       const [intent] = await tx.select().from(issueWorkflowHandoffs).where(and(eq(issueWorkflowHandoffs.companyId, row.companyId), eq(issueWorkflowHandoffs.id, row.id))).for("update");

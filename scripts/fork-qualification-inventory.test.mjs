@@ -8,7 +8,7 @@ test('retains the qualified baseline inventory, working directories and known-ga
   const actual = JSON.parse(execFileSync(process.execPath, [fileURLToPath(new URL('./fork-github-app-regressions.mjs', import.meta.url)), '--list'], { encoding: 'utf8' }));
   assert.equal(expected.baseline, '37767b35e5a142c957c8eeda55da163527443c58');
   assert.deepEqual(actual, expected.tasks);
-  assert.equal(actual.length, 64);
+  assert.equal(actual.length, 66);
   assert.equal(expected.baselineTasks.length, 26);
   for (const baseline of expected.baselineTasks) assert.ok(actual.some(task => task.cwd === baseline.cwd
     && JSON.stringify(task.extra) === JSON.stringify(baseline.extra)
@@ -34,4 +34,12 @@ test('retains actual adapter workflow roles, failures, recovery races and one-co
  const workflow=fs.readFileSync(new URL('../.github/workflows/fork-linux-release.yml',import.meta.url),'utf8');
  assert.ok(workflow.includes('--case chain --handoff-pool-max 1'));
  assert.match(workflow,/name: Qualify single-connection handoff boundaries\n\s+working-directory: source/);
+});
+
+test('retains actual maintenance startup and component-browser coverage',()=>{
+ const workflow=fs.readFileSync(new URL('../.github/workflows/fork-linux-release.yml',import.meta.url),'utf8');
+ assert.ok(workflow.includes('sudo -n python3 scripts/tests/qualify-maintenance-startup.py --user'));
+ assert.ok(workflow.includes('node scripts/tests/qualify-maintenance-ui.mjs'));
+ const fixture=fs.readFileSync(new URL('../server/src/__tests__/retained-ssh-workspace-integration.test.ts',import.meta.url),'utf8');
+ assert.ok(fixture.includes('maintenance exact source recovery preserves real SSH bytes'));
 });

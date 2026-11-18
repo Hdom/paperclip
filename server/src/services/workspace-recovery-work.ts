@@ -7,17 +7,19 @@ import { reconcileRetainedWorkspaces, type PassiveSweep } from "./workspace-reco
 
 export function registerWorkspaceRecoveryWork(db: Db, coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   runtime: EnvironmentRuntimeService, onRecovered: Parameters<typeof reconcileRetainedWorkspaces>[2],
-  canRun: () => boolean = () => true) {
+  canRun: () => boolean = () => true, observePass?: (hints: ReadonlySet<string>) => void) {
   const pending = new Set<Promise<void>>();
   let stopped = false;
   let scan: Promise<void> | undefined;
   let wakeWhileBusy = false;
   const passiveSweep: PassiveSweep = {};
+  const queuedHints = new Set<string>();
   const schedule = executionControlSchedule(db);
   const worker = registerExecutionControlWork(coordinator, [{
     queue: DELIVERY_QUEUES.workspaceRecovery,
-    onSettled: () => { passiveSweep.restart = true; if (pending.size >= 2) wakeWhileBusy = true; },
+    onSettled: hints => { for (const hint of hints ?? []) queuedHints.add(hint); passiveSweep.restart = true; if (pending.size >= 2) wakeWhileBusy = true; },
     run: () => scan = (async () => {
+      const hints = new Set(queuedHints); queuedHints.clear();
       const sweep = passiveSweep, cursor = sweep.cursor;
       const work = await reconcileRetainedWorkspaces(db, runtime, onRecovered, true, continueSweep => {
         if (!stopped && (continueSweep || wakeWhileBusy)) { wakeWhileBusy = false; worker.wake(); }
@@ -28,6 +30,8 @@ export function registerWorkspaceRecoveryWork(db: Db, coordinator: ReturnType<ty
         const settled = () => { pending.delete(job); };
         void job.then(settled, settled);
       }
+      // Optional internal observation cannot alter authority or work settlement.
+      try { observePass?.(hints); } catch { /* diagnostic callback only */ }
     })(),
     next: () => pending.size >= 2 ? Promise.resolve(null) : schedule.workspaceRecovery(),
   }], () => !stopped && canRun());

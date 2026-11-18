@@ -1,3 +1,5 @@
+import { withMaintenanceRecovery, assertMaintenanceRecovery } from "./instance-maintenance.js";
+import { conflict } from "../errors.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
@@ -14,11 +16,17 @@ import { SystemRecoveryFailure } from "./system-recovery-state.js";
 export async function preserveRetainedSshWorkspace(input: RetainedSshSourceIdentity & {
   db: Db; assertHeld(): Promise<void>;
 }) {
+  const result = await withMaintenanceRecovery(input.db, input, () => preserveRetainedSshWorkspaceOwned(input));
+  if (!result.admitted) throw conflict("Maintenance temporarily holds workspace preservation.");
+  return result.value;
+}
+async function preserveRetainedSshWorkspaceOwned(input: RetainedSshSourceIdentity & { db: Db; assertHeld(): Promise<void> }) {
   const initial = await inspectRetainedSshWorkspaceSource(input.db, input);
   if (!initial) throw new SystemRecoveryFailure("source_binding_invalid", "service_required");
   const sourceReceiptSha256 = nativeSha256(initial.run.resultJson!.workspaceRestoreRecovery);
   const assertSource = async () => {
     await input.assertHeld();
+    await assertMaintenanceRecovery(input.db, input);
     const current = await inspectRetainedSshWorkspaceSource(input.db, input);
     if (!current || nativeSha256(current.run.resultJson!.workspaceRestoreRecovery) !== sourceReceiptSha256 ||
         current.hostKeyPolicySha256 !== initial.hostKeyPolicySha256) throw new SystemRecoveryFailure("source_binding_invalid", "service_required");

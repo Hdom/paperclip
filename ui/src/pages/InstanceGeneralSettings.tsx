@@ -1,3 +1,4 @@
+import { InstanceMaintenance } from "@/components/InstanceMaintenance";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@paperclipai/shared";
@@ -155,6 +156,8 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
         </div>
       </section>
       )}
+
+      <InstanceMaintenance />
 
       {showCensorUsernameInLogs && (
       <section>

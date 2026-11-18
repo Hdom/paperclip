@@ -651,6 +651,23 @@
         "packages/adapter-utils/src/ssh-fixture.test.ts"
       ],
       "extra": []
+    },
+    {
+      "cwd": "server",
+      "files": [
+        "src/services/instance-maintenance.test.ts"
+      ],
+      "extra": [
+        "--config",
+        "vitest.config.ts"
+      ]
+    },
+    {
+      "cwd": ".",
+      "files": [
+        "ui/src/components/InstanceMaintenance.test.tsx"
+      ],
+      "extra": []
     }
   ],
   "baselineTasks": [
@@ -973,7 +990,9 @@
     "src/services/heartbeat/environment-selection.test.ts",
     "src/services/heartbeat/workspace-preparation.test.ts",
     "src/__tests__/issue-execution-policy.test.ts",
-    "packages/db/src/task-workflow-handoff-migration.test.ts"
+    "packages/db/src/task-workflow-handoff-migration.test.ts",
+    "src/services/instance-maintenance.test.ts",
+    "ui/src/components/InstanceMaintenance.test.tsx"
   ],
   "isolatedQualification": {
     "script": "scripts/tests/qualify-isolated-ssh.py",

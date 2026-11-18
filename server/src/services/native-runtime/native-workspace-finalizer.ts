@@ -1,3 +1,4 @@
+import { withMaintenanceSettlement } from "../instance-maintenance.js";
 import { classifyNativeWorkspaceFailure } from "./native-workspace-failure.js";
 import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
 import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
@@ -57,7 +58,12 @@ function workspaceSyncFailure(
  * older runs retain the local workspace validation path. The caller owns the
  * durable retry and failure policy.
  */
-export async function attemptNativeWorkspaceFinalization(input: {
+export async function attemptNativeWorkspaceFinalization(input: Parameters<typeof attemptNativeWorkspaceFinalizationOwned>[0]) {
+  const result = await withMaintenanceSettlement(input.db, "workspace_finalization", input.runId, () => attemptNativeWorkspaceFinalizationOwned(input));
+  return result.admitted ? result.value : { kind: "waiting", reason: "maintenance" } as const;
+}
+
+async function attemptNativeWorkspaceFinalizationOwned(input: {
   db: Db;
   runId: string;
   environmentRuntime?: EnvironmentRuntimeService;

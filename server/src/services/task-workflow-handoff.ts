@@ -1,3 +1,4 @@
+import { assertMaintenanceAdmission, maintenanceClosed } from "./instance-maintenance.js";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { lstat, realpath } from "node:fs/promises";
@@ -240,6 +241,7 @@ export async function recordTaskWorkflowReturn(db: Db, input: { companyId: strin
 
 /** Owner-only commit after provider return and exact physical cleanup. No agent JWT is replayed. */
 export async function commitTaskWorkflowHandoff(db: Db, companyId: string, runId: string) {
+  if (await maintenanceClosed(db)) return false;
   const publications: Parameters<typeof publishActivity>[0][] = [];
   const actions: IssuePostCommitAction[] = [];
   const transact = async () => {
@@ -249,6 +251,7 @@ export async function commitTaskWorkflowHandoff(db: Db, companyId: string, runId
       // Keep the directory fence until every checked read/staging cleanup ends.
       transactionWork = (async () => {
     const tx = raw as unknown as Db;
+    await assertMaintenanceAdmission(tx);
     const [candidate] = await tx.select().from(issueWorkflowHandoffs).where(and(eq(issueWorkflowHandoffs.companyId, companyId), eq(issueWorkflowHandoffs.sourceRunId, runId))).limit(1);
     if (!candidate || candidate.state !== "pending") return false;
     const [task] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, candidate.issueId))).for("update");

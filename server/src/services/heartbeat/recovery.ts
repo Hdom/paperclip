@@ -1,3 +1,4 @@
+import { withMaintenanceOperation } from "../instance-maintenance.js";
 import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
 import { markRunHandedOffForShutdown } from "./shutdown-handoff.js";
 import { ORPHANED_RUN_LEASE_FAILURE_REASON } from "../environment-run-lease-settlement.js";
@@ -1696,6 +1697,26 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     destroyed: number;
     capped: number;
   }> {
+    const admitted = await withMaintenanceOperation(db, "environment_cleanup", () => sweepPendingCleanupLeasesOwned(opts));
+    return admitted.admitted ? admitted.value : sweepPendingCleanupLeasesOwned(opts, true);
+  }
+
+async function sweepPendingCleanupLeasesOwned(opts?: {
+    backoffMs?: number;
+    /** One cleanup attempt per explicit user Retry, for this failed run only.
+     * A later user Retry may bypass the cooldown after a provider failure,
+     * but cannot take over an in-flight cleanup attempt.
+     */
+    explicitRetry?: { companyId: string; runId: string; actorId: string; reason?: "retry_failed_run" | "queued_comment_interrupt" };
+    /** One cleanup attempt per lease of this environment, for an operator who
+     * asked to delete it with its sandboxes. It bypasses the cooldown in the
+     * same way as `explicitRetry`, and never takes over an in-flight attempt. */
+    environmentRetry?: { environmentId: string; actorId: string };
+  }, maintenanceStopOnly = false): Promise<{
+    swept: number;
+    destroyed: number;
+    capped: number;
+  }> {
     const backoffMs = opts?.backoffMs ?? 0;
     const now = new Date();
     const cutoff = new Date(now.getTime() - backoffMs);
@@ -1750,6 +1771,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     let destroyed = 0;
     let capped = 0;
     for (const row of rows) {
+      if (maintenanceStopOnly && !hasStopOnlyCleanup(row)) continue;
       if (pendingCleanupAttemptsInFlight.has(row.id)) continue;
       if (!hasStopOnlyCleanup(row) && await nativeWorkspaceExportPendingForLease(db, row)) {
         await deferPendingCleanupLease(row.id);

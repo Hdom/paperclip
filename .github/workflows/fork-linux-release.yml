@@ -116,6 +116,9 @@ jobs:
       - name: Protected SSH assembled handoff and retained-output recovery
         working-directory: source
         run: sudo -n python3 scripts/tests/qualify-isolated-ssh.py --user "$(id -un)" --node-bin "$(dirname "$(command -v node)")"
+      - name: Persistent maintenance startup and restart qualification
+        working-directory: source
+        run: sudo -n python3 scripts/tests/qualify-maintenance-startup.py --user "$(id -un)" --node-bin "$(dirname "$(command -v node)")"
       - name: Qualify single-connection handoff boundaries
         working-directory: source
         run: sudo -n python3 scripts/tests/qualify-isolated-ssh.py --user "$(id -un)" --node-bin "$(dirname "$(command -v node)")" --case chain --handoff-pool-max 1
@@ -138,6 +141,9 @@ jobs:
       - name: Install browser acceptance dependency
         working-directory: source
         run: pnpm exec playwright install --with-deps chromium
+      - name: Maintenance component desktop and phone acceptance
+        working-directory: source
+        run: node scripts/tests/qualify-maintenance-ui.mjs tests/e2e/artifacts/maintenance
       - name: Desktop and phone guarded approval acceptance
         working-directory: source
         run: pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/human-stage-decision.spec.ts tests/e2e/github-app-identities.spec.ts

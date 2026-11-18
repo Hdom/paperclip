@@ -1,3 +1,4 @@
+import { assertMaintenanceAdmission } from "../instance-maintenance.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
@@ -592,6 +593,7 @@ export async function reconcileSafeNativeReplacements(
         continue;
       }
       const created = await db.transaction(async (tx) => {
+        await assertMaintenanceAdmission(tx as unknown as Db);
         await tx.execute(
           sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
         );

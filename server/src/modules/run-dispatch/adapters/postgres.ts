@@ -1,3 +1,4 @@
+import { assertMaintenanceAdmission } from "../../../services/instance-maintenance.js";
 import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
@@ -740,6 +741,7 @@ export function createPostgresRunDispatchAdapter(
     | { applied: true; run: HeartbeatRun; postCommitEffects: PostCommitEffect[] }
     | { applied: false }
   > {
+    await assertMaintenanceAdmission(tx);
     await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.companyId, runId: input.runId });

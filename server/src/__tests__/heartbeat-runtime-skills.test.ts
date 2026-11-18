@@ -43,14 +43,10 @@ if (!embeddedPostgresSupport.supported) {
 async function waitForRunToFinish(
   heartbeat: ReturnType<typeof heartbeatService>,
   runId: string,
-  timeoutMs = 5_000,
 ) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const run = await heartbeat.getRun(runId);
-    if (run && !["queued", "running"].includes(run.status)) return run;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  // Join actual owned execution rather than mistake a loaded host exceeding a
+  // five-second polling window for terminal status. Success is still asserted.
+  await heartbeat.drainActiveRunExecutions();
   return await heartbeat.getRun(runId);
 }
 

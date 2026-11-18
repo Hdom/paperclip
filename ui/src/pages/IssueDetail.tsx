@@ -1,3 +1,4 @@
+import { InstanceMaintenance } from "@/components/InstanceMaintenance";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
@@ -8248,11 +8249,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               action={issue.activeRecoveryAction ?? null} />
           )}
           {resolvedDetailTab === "chat" && (
+            <><div className={shellSectionClass}><InstanceMaintenance task /></div>
             <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption} blockers={issue.blockedBy}
               issueId={issue.id} companyId={issue.companyId} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
               canRetry={canResolveBoardRecoveryAction && !(issue.executionBlocker?.workspaceRepairRequired
                 && isRetainedWorkspaceExportCause(issue.executionBlocker.cause) && retainedRecoveryOwnsRetry)} onRetry={taskRetry.retry}
-              optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
+              optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} /></>
           )}
 
           {issue.status === "in_review" && issue.externalConversationState === "waiting" && (
