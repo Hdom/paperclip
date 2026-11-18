@@ -2,7 +2,8 @@ import type { heartbeatRuns } from "@paperclipai/db";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 
 export const LEGACY_WORKSPACE_RECOVERY_KEY = "workspaceRestoreRecovery";
-export const LEGACY_WORKSPACE_RECOVERY_SCHEMA = "paperclip.workspace-restore-recovery.v1";
+import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-constants.js";
+export { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-constants.js";
 /** Lease metadata that replaces the hold marker once recovery saved the files
  * and returned the warm sandbox to reuse. It grants no recovery authority. */
 export const SETTLED_WORKSPACE_RESTORE_HOLD_KEY = "workspaceRestoreRecoverySettled";

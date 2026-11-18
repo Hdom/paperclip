@@ -128,6 +128,8 @@ jobs:
           node --test scripts/fork-qualification-pool.test.mjs scripts/fork-qualification-inventory.test.mjs scripts/fork-package-cache.test.mjs
           node --test scripts/operations/*.test.mjs
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/operations -p '*_test.py'
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/qualify-maintenance-host.py
+          pnpm exec tsc -p scripts/operations/tsconfig.maintenance.json
           python3 scripts/operations/verify-utility-provenance.py --root .
       - name: Guarded approval UI regressions
         working-directory: source

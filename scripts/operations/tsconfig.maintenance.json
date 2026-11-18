@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "../..", "noEmit": true, "typeRoots": ["../../server/node_modules/@types"] },
+  "files": ["maintenance-offline-runtime.ts"],
+  "include": []
+}

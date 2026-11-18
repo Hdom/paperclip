@@ -43,3 +43,14 @@ test('retains actual maintenance startup and component-browser coverage',()=>{
  const fixture=fs.readFileSync(new URL('../server/src/__tests__/retained-ssh-workspace-integration.test.ts',import.meta.url),'utf8');
  assert.ok(fixture.includes('maintenance exact source recovery preserves real SSH bytes'));
 });
+
+test('retains protected offline initializer, exact launch and populated-clone qualification',()=>{
+ const workflow=fs.readFileSync(new URL('../.github/workflows/fork-linux-release.yml',import.meta.url),'utf8');
+ assert.ok(workflow.includes('python3 scripts/tests/qualify-maintenance-host.py'));
+ assert.ok(workflow.includes('pnpm exec tsc -p scripts/operations/tsconfig.maintenance.json'));
+ const harness=fs.readFileSync(new URL('./tests/qualify-maintenance-startup.py',import.meta.url),'utf8');
+ assert.ok(harness.includes('maintenance-offline-cutover.test.ts'));
+ assert.ok(harness.includes('qualify-maintenance-launch.py'));
+ const builder=fs.readFileSync(new URL('./operations/build-tools.mjs',import.meta.url),'utf8');
+ assert.ok(builder.includes("await buildRuntime(path.join(output,'maintenance-runtime'))"));
+});

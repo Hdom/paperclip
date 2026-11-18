@@ -348,3 +348,30 @@ canonical task continuations under pause, recheck dependencies/ownership,
 resume through the public company control and monitor the actual specialist
 handoff and return-file finalization. Never infer live acceptance from an
 immutable archive or deterministic qualification alone.
+
+
+### Persistent maintenance cutover preparation
+
+See `doc/plans/2026-11-18-maintenance-cutover.md` for reviewed boundaries,
+prerequisites, exact host command families and fail-closed rollback. This is
+preparation only; it does not authorize a stop, config/security change, live
+migration, fence, recovery or continuation.
+
+The versioned operator package now includes an independently bundled
+`maintenance-runtime/` (canonical DB/state code, Node, SQL and launcher), plus
+external `maintenance-runtime.manifest.json`. Keep it root-protected outside
+managed install pruning. Qualification-only bundles cannot operate production.
+The app capsule needs separately verified GitHub asset provenance, a complete
+immutable dependency closure, its external reviewed manifest and Node executable.
+The host CLI accepts only inspect/initialize/guard/launch; its fixed root policy
+derives instance and DB authority from trusted fixed config, never caller flags.
+Initialization preserves all prior domains plus reviewed empty additions,
+sets the strict readiness policy and saves a protected epoch. Old-binary rollback
+stays stopped; it never removes maintenance state to restore uptime.
+
+Local checks: `python3 scripts/tests/qualify-maintenance-host.py`,
+`pnpm exec tsc -p scripts/operations/tsconfig.maintenance.json`, and the existing
+root-owned `qualify-maintenance-startup.py --user <nonroot> --node-bin <cached-bin>`
+network namespace harness. The latter includes actual privilege-drop exec,
+populated synthetic old-schema clones, partial upgrade replay and actual server
+startup/restart. These checks never access production secrets or run a project.

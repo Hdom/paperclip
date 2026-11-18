@@ -23,8 +23,11 @@ def main():
         env={'HOME':owner.pw_dir,'USER':args.user,'LOGNAME':args.user,'PATH':str(node)+':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
              'COREPACK_ENABLE_NETWORK':'0','PAPERCLIP_TEST_MAINTENANCE_STARTUP_ISOLATED':'1','PAPERCLIP_TELEMETRY_DISABLED':'1','DO_NOT_TRACK':'1'}
         repo=pathlib.Path(__file__).resolve().parents[2]
+        launch=subprocess.run(['ip','netns','exec',namespace,'/usr/bin/python3','-I','-S',str(repo/'scripts/tests/qualify-maintenance-launch.py'),
+            '--node',str(node/'node'),'--user',args.user],cwd=repo,env=env)
+        if launch.returncode:return launch.returncode
         result=subprocess.run(['ip','netns','exec',namespace,'runuser','-u',args.user,'--',str(node/'corepack'),'pnpm','exec','vitest','run',
-            'server/src/__tests__/maintenance-startup-integration.test.ts','--maxWorkers=1'],cwd=repo,env=env)
+            'server/src/__tests__/maintenance-startup-integration.test.ts','server/src/__tests__/maintenance-offline-cutover.test.ts','--maxWorkers=1'],cwd=repo,env=env)
         return result.returncode
     finally:
         if created:
