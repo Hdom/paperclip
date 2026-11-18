@@ -19,7 +19,7 @@ def main():
         # A different mutable current selector is intentionally never used.
         current=fixture/'current';current.symlink_to(capsule);current.unlink();current.symlink_to('/not-the-verified-capsule')
         bridge="import importlib.util,pathlib,sys,json;spec=importlib.util.spec_from_file_location('host',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);root=pathlib.Path(sys.argv[2]);manifest={'node':'node','entry':'entry.mjs','files':{p.name:m.digest(p.read_bytes()) for p in root.iterdir()},'links':{}};m.verified_tree(root,manifest);m.drop_and_exec(root,manifest,{},service_name=sys.argv[3],working_directory=str(root))"
-        result=subprocess.run(['/usr/bin/python3','-I','-S','-c',bridge,str(script),str(capsule),a.user],capture_output=True,text=True)
+        result=subprocess.run(['/usr/bin/python3','-I','-S','-B','-c',bridge,str(script),str(capsule),a.user],capture_output=True,text=True)
         if result.returncode:raise ValueError('Actual privilege-drop child refused: '+result.stderr[-1000:])
         observed=json.loads(result.stdout)
         # Node reports the effective gid in getgroups; the host primitive also
