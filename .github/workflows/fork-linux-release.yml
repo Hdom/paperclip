@@ -145,7 +145,7 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Maintenance component desktop and phone acceptance
         working-directory: source
-        run: node scripts/tests/qualify-maintenance-ui.mjs tests/e2e/artifacts/maintenance
+        run: node scripts/tests/qualify-maintenance-ui.mjs tmp/maintenance-ui-evidence
       - name: Desktop and phone guarded approval acceptance
         working-directory: source
         run: pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/human-stage-decision.spec.ts tests/e2e/github-app-identities.spec.ts
@@ -154,7 +154,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: paperclip-browser-acceptance-${{ inputs.source_sha }}
-          path: source/tests/e2e/test-results
+          path: |
+            source/tests/e2e/test-results
+            source/tmp/maintenance-ui-evidence
           if-no-files-found: ignore
           retention-days: 7
       - name: Assemble and relocate native Linux payload
