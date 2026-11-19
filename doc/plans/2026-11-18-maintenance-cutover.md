@@ -61,8 +61,16 @@ This service/security change requires explicit live approval.
 5. Root-owned ancestors for policy, capsule, runtime and trusted config files;
    read-only app access to capsule/necessary config. Existing app `.env` is data,
    never evaluated by a root shell. Unsupported/ambiguous quoting is a refusal.
-   Root protection of existing config directories/ownership is a proposed change,
-   not something the tooling has already done; review app write requirements.
+   Trusted launch config is copied within the controller into
+   `/etc/paperclip/instance/config.json` and `/etc/paperclip/instance/.env`,
+   root:paperclip0750 directory and0640 files, selected by the fixed protected
+   launcher. These copies never leave the controller. Keep
+   `/opt/paperclip-data` and its existing instance/data/runtime directories
+   writable by the service; do not root-protect those directories. In particular,
+   the actual CLI atomically creates/removes `runtime-info.json` there.
+   Review config-relative paths before copying: database, logs, storage and
+   native key paths must keep their exact effective targets. No native signing
+   or master key is copied, rotated or resolved by this change.
 6. An exact private `/etc/paperclip/maintenance/host-policy.json` containing:
    `schema=paperclip.maintenance-host-policy.v1`, physical `operatorRoot`, external
    `operatorManifest` and SHA, physical `capsule`, external `capsuleManifest` and
@@ -172,3 +180,72 @@ stop, persistent interlock, protected config/capsule/operator ownership, unit
 root-launch/drop-privilege security settings, offline migration/fence/epoch and
 guarded restart above. Live recovery and real connector continuation are **not**
 included; the distinct unsupported project/Git preparation decision remains open.
+
+## Protected launch configuration correction (local preparation only)
+
+`maintenance-host.py` now fixes trusted CONFIG/DOTENV under
+`/etc/paperclip/instance/`, while DATA_HOME remains `/opt/paperclip-data`.
+The service identity can read, but cannot replace, trusted config. The old
+instance config and data are preserved; a mutable old config cannot select
+startup authority because the guard sets exact PAPERCLIP_CONFIG. This is
+operational host policy, not an agent-visible or UI-editable security setting.
+Company settings and Secrets continue to use their existing UI and lifecycle.
+
+The four existing source/write/SSH/protected-path settings can be serialized
+with the pure `canonical_policy_assignments` helper. It accepts only those
+four names, round-trips exact string values through the unchanged strict
+parser, never evaluates shell content and writes nothing. A later approved
+operator operation must bind its inputs to the current effective service
+values and compare approved hashes; this helper itself supplies no authority.
+No production setting value is included in code or fixtures. Do not remove
+policy settings, widen roots or relax parsing to make the launcher start.
+
+Qualification additionally runs the actual checksum-pinned native CLI, its
+complete packaged dependency closure and reviewed Node, with a populated
+synthetic TEMPLATE clone. It reproduces failure with the old protected data
+root, then checks protected config plus writable data, actual UID/GID/group/NNP
+drop, runtime-info creation/removal, strict held state, original-source/wake/
+ciphertext preservation, restart, stale epoch and unaware rollback refusal.
+The owned network namespace has loopback only, and all credentials/settings
+are synthetic. No production files, settings, backup, unit or host policy are
+read or changed by that suite. Network namespaces share the host filesystem;
+this is not strong isolation. Real systemd manager cutover remains unverified.
+
+A proposed release gate would run this acceptance after native payload assembly
+and before candidate upload. The gate now requires both exact generated app/operator archives, their
+checksums and matching source identities. All existing qualifications remain. Local testing
+may use a previously qualified native application when no application source
+has changed, recording application and operator revisions separately. Such a
+pass is not final-source hosted CI or a new release qualification. Publication,
+release staging and exact live cutover each remain separately gated.
+
+### Full native-capsule metadata bound (local candidate correction)
+
+The checksum-pinned 7426 native application contains79,133 ordinary file
+entries (including independently materialized transport hardlinks) and52
+contained symlinks. Its complete JSON capsule manifest is about12.2MB.
+The former production guard used the generic4MiB protected-file bound and
+refused this complete manifest before app/CLI execution. The local candidate
+now uses a separate16MiB bound only for the authenticated capsule manifest;
+the generic4MiB protected-file bound and every integrity/authority check remain
+unchanged. This local correction has not been published or deployed.
+
+Before accepting this cutover, complete below/at/over-bound and actual-artifact
+qualification and independent exact-head review, keeping all ownership, inode,
+hash, stable-read, path and complete-closure checks unchanged. Do not omit manifest entries, remove dependencies,
+relax the guard or treat the failed CLI test as startup acceptance. Publication
+and live cutover are still blocked.
+
+Local acceptance records the exact application archive SHA/source, a locally
+built clean-source operator archive SHA/source (explicitly not a hosted
+release), extracted operator manifest/Node hashes, and complete protected
+capsule manifest hash/size. The real capsule inventory and host verifier act
+on the extracted checksum-pinned application bytes. Only authenticated
+contained transport hardlinks are materialized as independent copies and
+the exact extracted operator Node is added as `operator-node`; no application
+file bytes or relative symlink targets are removed or rewritten. Root-owned
+prepared closure remains subject to single-link/contained-link verification.
+The post-assembly/pre-upload gate additionally runs the protected full CLI
+against the exact generated app and operator archives, with no source-built
+operator fallback on that path. Packaging version/import smoke checks alone
+do not establish protected-capsule CLI acceptance.

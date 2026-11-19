@@ -11,8 +11,10 @@ import ctypes, fcntl, hashlib, json, os, pathlib, pwd, re, stat, subprocess, sys
 POLICY=pathlib.Path('/etc/paperclip/maintenance/host-policy.json')
 EPOCH=POLICY.parent/'epoch.json'
 ENVIRONMENT=pathlib.Path('/etc/paperclip/paperclip.env')
-CONFIG=pathlib.Path('/opt/paperclip-data/instances/default/config.json')
+CONFIG=pathlib.Path('/etc/paperclip/instance/config.json')
+DATA_HOME=pathlib.Path('/opt/paperclip-data')
 DOTENV=CONFIG.parent/'.env'
+CAPSULE_MANIFEST_LIMIT=16*1024*1024
 UNIT='paperclip.service'
 SAFE_ENV={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C.UTF-8','HOME':'/root'}
 class Refusal(Exception):pass
@@ -61,6 +63,15 @@ def parse_environment(data):
         values[key]=value
     return values
 
+POLICY_SETTINGS=frozenset(('PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS','PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS',
+    'PAPERCLIP_CONTROLLER_AGENT_SSH_TARGETS','PAPERCLIP_CONTROLLER_PROTECTED_PATHS'))
+def canonical_policy_assignments(values):
+    require(isinstance(values,dict) and set(values)==POLICY_SETTINGS,'Exact policy settings required')
+    require(all(isinstance(value,str) and "'" not in value for value in values.values()),'Unsupported canonical policy value')
+    raw=''.join(key+"='"+values[key]+"'\n" for key in sorted(values)).encode('utf-8')
+    require(parse_environment(raw)==values,'Policy serialization changed effective values')
+    return raw
+
 def verified_tree(root,manifest, *, uid=0):
     """Complete immutable dependency closure; internal symlinks are recorded."""
     root=pathlib.Path(root)
@@ -91,7 +102,7 @@ def verified_tree(root,manifest, *, uid=0):
     first=next(iter(expected));protected_read(root/first,uid=uid,limit=512*1024*1024)
 
 def verify_candidate(policy,*,uid=0):
-    raw,_=protected_read(policy['capsuleManifest'],uid=uid);require(digest(raw)==policy['capsuleManifestSha256'],'Release manifest identity changed')
+    raw,_=protected_read(policy['capsuleManifest'],uid=uid,limit=CAPSULE_MANIFEST_LIMIT);require(digest(raw)==policy['capsuleManifestSha256'],'Release manifest identity changed')
     manifest=json.loads(raw)
     require(manifest.get('schema')=='paperclip.protected-release.v1' and manifest.get('sourceCommit')==policy['sourceCommit'],'Unrecognized candidate provenance')
     root=pathlib.Path(policy['capsule']);verified_tree(root,manifest,uid=uid)
@@ -184,7 +195,7 @@ def load_authority(policy):
     require(not any(k.startswith('PAPERCLIP_CLOUD_') or k=='PAPERCLIP_MANAGED' for k in env),'Managed-cloud authority is outside this cutover')
     url=env.get('DATABASE_URL',config['database'].get('connectionString'))
     require(isinstance(url,str) and url and env.get('DATABASE_MIGRATION_URL',url)==url,'Distinct migration database authority refused')
-    for key,value in {'PAPERCLIP_CONFIG':str(CONFIG),'PAPERCLIP_HOME':'/opt/paperclip-data','PAPERCLIP_INSTANCE_ID':'default'}.items():
+    for key,value in {'PAPERCLIP_CONFIG':str(CONFIG),'PAPERCLIP_HOME':str(DATA_HOME),'PAPERCLIP_INSTANCE_ID':'default'}.items():
         require(key not in env or env[key]==value,'Unexpected instance configuration authority');env[key]=value
     env['DATABASE_URL']=url;env['DISABLE_AUTOUPDATER']='1'
     return url,env
@@ -240,13 +251,14 @@ def install_epoch(policy,result):
         os.close(parent)
     return receipt
 
-def drop_and_exec(root,manifest,env,*,service_name='paperclip',working_directory='/opt/paperclip-data'):
+def drop_and_exec(root,manifest,env,*,service_name='paperclip',working_directory='/opt/paperclip-data',home_directory=None):
     # Alternate identities/directories are only an importable fixture seam;
     # the production CLI always calls the fixed defaults and accepts no flags.
     service=pwd.getpwnam(service_name)
     require(service.pw_uid!=0 and service.pw_gid!=0,'Unprivileged service identity required')
-    env={**env,'HOME':service.pw_dir,'USER':service.pw_name,'LOGNAME':service.pw_name,
-        'PATH':'/home/paperclip/.local/bin:/usr/local/bin:/usr/bin:/bin','CODEX_HOME':'/home/paperclip/.codex'}
+    home=service.pw_dir if home_directory is None else home_directory
+    env={**env,'HOME':home,'USER':service.pw_name,'LOGNAME':service.pw_name,
+        'PATH':'/home/paperclip/.local/bin:/usr/local/bin:/usr/bin:/bin','CODEX_HOME':'/home/paperclip/.codex' if home_directory is None else str(pathlib.Path(home)/'.codex')}
     require(not any(re.match(r'^(NODE_|LD_|DYLD_|PYTHON)',key) for key in env),'Unsafe app environment')
     # Root executes only this protected operator mechanism. App/CLI/provider
     # imports occur after all real/effective/saved IDs and groups are dropped.
