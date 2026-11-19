@@ -108,7 +108,7 @@ def launch_fixture(options):
 
 def exercise(root,args,namespace):
  owner=pwd.getpwnam(args.user);node=pathlib.Path(args.node_bin)/'node'
- for folder in ['data','data/home','data/cwd','data/logs','data/storage','data/secrets','data/instances','data/instances/default','data/build','data/tmp']:
+ for folder in ['data','data/home','data/cwd','data/logs','data/storage','data/secrets','data/instances','data/instances/default','data/instances/default/secrets','data/build','data/tmp']:
   p=root/folder;p.mkdir(mode=0o700);os.chown(p,owner.pw_uid,owner.pw_gid)
  trusted=root/'trusted';trusted.mkdir(mode=0o750);os.chown(trusted,0,owner.pw_gid)
  private=root/'private';private.mkdir(mode=0o700)
