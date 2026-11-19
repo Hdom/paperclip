@@ -20,11 +20,14 @@ def digest_file(file):
 class Child:
  def __init__(self,args,**options):
   self.process=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,start_new_session=True,**options)
-  self.lines=queue.Queue();self.tail=''
+  self.lines=queue.Queue(maxsize=64);self.tail='';self.reader_errors=[]
   def read(stream):
-   for line in iter(stream.readline,''):
-    self.tail=(self.tail+line)[-12000:]
-    if line.startswith('MAINTENANCE_CLI_FIXTURE:'):self.lines.put(json.loads(line.split(':',1)[1]))
+   try:
+    for line in iter(lambda:stream.readline(1024*1024+1),''):
+     if len(line)>1024*1024:raise ValueError('Fixture output line bound exceeded')
+     self.tail=(self.tail+line)[-12000:]
+     if line.startswith('MAINTENANCE_CLI_FIXTURE:'):self.lines.put_nowait(json.loads(line.split(':',1)[1]))
+   except Exception as error:self.reader_errors.append(type(error).__name__)
   self.threads=[threading.Thread(target=read,args=(s,),daemon=True) for s in (self.process.stdout,self.process.stderr)]
   for t in self.threads:t.start()
  def result(self,kind,timeout=100):
@@ -35,12 +38,15 @@ class Child:
     if value.get('kind')!=kind:raise AssertionError('Unexpected fixture response')
     return value
    except queue.Empty:
-    if self.process.poll() is not None:raise AssertionError('Fixture exited: '+self.tail[-4000:])
+    if self.process.poll() is not None and not any(t.is_alive() for t in self.threads):raise AssertionError('Fixture exited: '+self.tail[-4000:])
   raise AssertionError('Fixture response deadline: '+self.tail[-4000:])
  def send(self,value):self.process.stdin.write(json.dumps(value)+'\n');self.process.stdin.flush()
  def settled(self):
   code=self.process.wait(timeout=60)
   for t in self.threads:t.join(timeout=2)
+  if any(t.is_alive() for t in self.threads) or self.reader_errors:raise AssertionError('Fixture output readers did not settle')
+  for stream in (self.process.stdin,self.process.stdout,self.process.stderr):
+   if stream:stream.close()
   if code!=0:raise AssertionError('Fixture did not settle successfully: '+self.tail[-4000:])
 
 # Only imported by the fixture's root child. Production entry has no overrides.
@@ -146,10 +152,24 @@ def exercise(root,args,namespace):
   # Old pre-capability candidate and config tampering stay refused; no launch.
   capfile=(capsule/'node_modules/@paperclipai/server/dist/runtime-capabilities.json').resolve();old=capfile.read_bytes();capfile.write_text('{"schema":"paperclip.runtime-capabilities.v1","instanceMaintenance":0}')
   try:
-   try:host.verify_candidate(policy)
-   except host.Refusal:pass
-   else:raise AssertionError('Unaware old candidate admitted')
+   # Bind the changed capability to a self-consistent alternate manifest.
+   # A stale original digest would only test generic tamper rejection.
+   incompatible=json.loads(json.dumps(manifest));relative=capfile.relative_to(capsule).as_posix()
+   incompatible['files'][relative]=host.digest(capfile.read_bytes())
+   external=private/'incompatible-candidate.json';external.write_text(json.dumps(incompatible));external.chmod(0o600)
+   alternate={**policy,'capsuleManifest':str(external),'capsuleManifestSha256':host.digest(external.read_bytes())}
+   try:host.verify_candidate(alternate)
+   except host.Refusal as error:
+    if str(error)!='Candidate cannot honor persisted maintenance':raise
+   else:raise AssertionError('Self-consistent unaware candidate admitted')
   finally:capfile.write_bytes(old)
+  original_config=host.CONFIG.read_bytes();host.CONFIG.write_bytes(original_config+b'\n')
+  try:
+   try:host.load_authority(policy)
+   except host.Refusal as error:
+    if str(error)!='Service configuration changed':raise
+   else:raise AssertionError('Changed trusted configuration admitted')
+  finally:host.CONFIG.write_bytes(original_config)
   bridge.send({'mode':'stop'});bridge.result('stopped');bridge.settled()
   return {'legacyProtectedDataRootFailureReproduced':True,'actualPackagedCliStartupRestart':True,'runtimeInfoCreatedAndRemoved':True,'actualPrivilegeDropAndNnp':True,'strictHoldAcrossRestart':True,'populatedCloneDomainsRetained':9,'effectivePolicyValuesUnchanged':True,'staleEpochAndUnawareRollbackRefused':True,'applicationSource':args.source,'operatorSource':json.loads(operatorManifest.read_text())['sourceCommit'],'systemdManagerInstalled':False,'productionAccess':False}
  finally:
@@ -167,7 +187,7 @@ def main():
  for x in (base,*base.parents):
   st=x.lstat()
   if x.resolve()!=x or st.st_uid!=0 or st.st_mode&0o022:raise ValueError('Already protected fixture base required')
- root=base/('paperclip-cli-qualification-'+uuid.uuid4().hex);root.mkdir(mode=0o755);identity=root.stat();namespace='pccli'+uuid.uuid4().hex[:8];created=False;ns_identity=None;settled=False
+ root=base/('paperclip-cli-qualification-'+uuid.uuid4().hex);root.mkdir(mode=0o755);identity=root.stat();namespace='pccli'+uuid.uuid4().hex[:8];created=False;ns_identity=None;settled=False;success=False;forced_cleanup=False
  run=lambda *a:subprocess.check_output(a,stderr=subprocess.PIPE)
  try:
   with tarfile.open(archive) as tar:
@@ -175,9 +195,23 @@ def main():
    if len(members)>300000 or sum(m.size for m in members)>8*1024**3:raise ValueError('Archive fixture bound exceeded')
    for m in members:
     n=pathlib.PurePosixPath(m.name)
-    if n.is_absolute() or '..' in n.parts or not n.parts or n.parts[0]!='payload' or m.islnk() or not (m.isdir() or m.isfile() or m.issym()) or (not m.issym() and m.mode&0o6022):raise ValueError('Unsafe native fixture member')
+    if n.is_absolute() or '..' in n.parts or not n.parts or n.parts[0]!='payload' or not (m.isdir() or m.isfile() or m.issym() or m.islnk()) or (not m.issym() and m.mode&0o6022):raise ValueError('Unsafe native fixture member')
    if not hasattr(tarfile,'data_filter'):raise ValueError('Safe archive data filter required')
-   tar.extractall(root,members=members,filter='data')
+   indexed={m.name:m for m in members}
+   if len(indexed)!=len(members):raise ValueError('Duplicate native archive member')
+   links=[m for m in members if m.islnk()]
+   for m in links:
+    target=indexed.get(m.linkname)
+    if not target or not target.isfile() or target.islnk():raise ValueError('Hardlink target must be an authenticated ordinary member')
+   # Native transport may deduplicate identical files. Materialize only
+   # authenticated contained link targets as independent physical files;
+   # the final capsule/guard still refuses every hardlinked file.
+   tar.extractall(root,members=[m for m in members if not m.islnk()],filter='data')
+   for m in links:
+    target=(root/m.linkname).resolve(strict=True);destination=root/m.name
+    if not target.is_relative_to(root) or not target.is_file() or not destination.parent.resolve(strict=True).is_relative_to(root):raise ValueError('Unsafe hardlink materialization')
+    with target.open('rb') as source,destination.open('xb') as output:shutil.copyfileobj(source,output,1024*1024)
+    destination.chmod(m.mode&0o777)
   run('ip','netns','add',namespace);created=True;st=os.stat('/var/run/netns/'+namespace);ns_identity=(st.st_dev,st.st_ino)
   run('ip','netns','exec',namespace,'ip','link','set','lo','up')
   routes=json.loads(run('ip','netns','exec',namespace,'ip','-j','route','show','table','all'))
@@ -185,11 +219,14 @@ def main():
   options={'root':str(root),'args':vars(args),'namespace':namespace}
   result=subprocess.run(['ip','netns','exec',namespace,'/usr/bin/python3','-I','-S','-B',str(pathlib.Path(__file__).resolve()),'--fixture-exercise',json.dumps(options)],env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root'},check=False)
   if result.returncode:raise AssertionError('Actual packaged CLI qualification failed')
+  success=True
  finally:
   if created:
    st=os.stat('/var/run/netns/'+namespace)
    if (st.st_dev,st.st_ino)!=ns_identity:raise RuntimeError('Owned namespace changed; retained for inspection')
-   for sig in (signal.SIGTERM,signal.SIGKILL):
+   initial_members=run('ip','netns','pids',namespace).strip()
+   forced_cleanup=bool(initial_members)
+   for sig in (() if not initial_members else (signal.SIGTERM,signal.SIGKILL)):
     pids=[int(v) for v in run('ip','netns','pids',namespace).split()]
     if len(pids)>1000:raise RuntimeError('Fixture process bound exceeded')
     for pid in pids:
@@ -209,7 +246,8 @@ def main():
   actual=root.lstat()
   if not settled or (actual.st_dev,actual.st_ino)!=(identity.st_dev,identity.st_ino) or not stat.S_ISDIR(actual.st_mode):raise RuntimeError('Owned fixture changed; no recursive cleanup')
   shutil.rmtree(root)
-  print(json.dumps({'actualCliNamespaceRemoved':True,'fixtureFilesRemoved':True,'productionAccess':False}))
+  print(json.dumps({'actualCliNamespaceRemoved':True,'fixtureFilesRemoved':True,'forcedFixtureCleanupRequired':forced_cleanup,'productionAccess':False}))
+  if success and forced_cleanup:raise RuntimeError('Successful qualification leaked namespace processes')
 
 if __name__=='__main__':
  if len(sys.argv)==3 and sys.argv[1]=='--fixture-launch':launch_fixture(json.loads(sys.argv[2]))
