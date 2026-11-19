@@ -58,6 +58,31 @@ class HostContract(unittest.TestCase):
         self.assertEqual(host.parse_environment(b"A='$(no shell)'\nB=https://example.test/#value\n"),{'A':'$(no shell)','B':'https://example.test/#value'})
         for raw in (b'A=x\nA=y',b'NODE_OPTIONS=--import=evil',b'LD_PRELOAD=x',b'PYTHONPATH=x',b'export A=x',b'A="unterminated',b'A=x\\ny'):
             with self.assertRaises(host.Refusal):host.parse_environment(raw)
+    def test_trusted_configuration_is_outside_writable_instance_data(self):
+        self.assertEqual(host.CONFIG,pathlib.Path('/etc/paperclip/instance/config.json'))
+        self.assertEqual(host.DOTENV,pathlib.Path('/etc/paperclip/instance/.env'))
+        self.assertEqual(host.DATA_HOME,pathlib.Path('/opt/paperclip-data'))
+        self.assertFalse(host.CONFIG.is_relative_to(host.DATA_HOME))
+    def test_canonical_policy_serialization_preserves_exact_synthetic_values(self):
+        values={
+            'PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS':json.dumps(['/synthetic/source','/synthetic/$(literal)'],separators=(',',':')),
+            'PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS':json.dumps(['/synthetic/work'],separators=(',',':')),
+            'PAPERCLIP_CONTROLLER_AGENT_SSH_TARGETS':json.dumps([{'host':'fixture.invalid','port':2222,'user':'synthetic-worker'}],separators=(',',':')),
+            'PAPERCLIP_CONTROLLER_PROTECTED_PATHS':json.dumps(['/synthetic/private'],separators=(',',':')),
+        }
+        expected=''.join(key+"='"+values[key]+"'\n" for key in sorted(values)).encode()
+        encoded=host.canonical_policy_assignments(values)
+        self.assertEqual(encoded,expected)
+        self.assertEqual(host.parse_environment(encoded),values)
+        self.assertEqual(host.canonical_policy_assignments(dict(reversed(list(values.items())))),encoded)
+        # A formerly systemd-quoted JSON representation remains unsupported;
+        # the serializer produces canonical data, never a relaxed parser.
+        legacy='PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS='+json.dumps(values['PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS'])+'\n'
+        with self.assertRaises(host.Refusal):host.parse_environment(legacy.encode())
+        for changed in ({**values,'UNREVIEWED_ROOT':'/synthetic'}, {k:v for k,v in values.items() if k!=next(iter(values))},
+                        {**values,next(iter(values)):'bad\nvalue'}, {**values,next(iter(values)):r'bad\value'},
+                        {**values,next(iter(values)):"contains'apostrophe"}, {**values,next(iter(values)):None}):
+            with self.assertRaises(host.Refusal):host.canonical_policy_assignments(changed)
     def test_effective_interlock_not_file_presence(self):
         p={'ActiveState':'inactive','SubState':'dead','MainPID':'0','Restart':'no','ExecStartPath':'/usr/bin/false'}
         host.verify_interlock(p,[],[])

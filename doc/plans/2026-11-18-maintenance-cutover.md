@@ -61,8 +61,16 @@ This service/security change requires explicit live approval.
 5. Root-owned ancestors for policy, capsule, runtime and trusted config files;
    read-only app access to capsule/necessary config. Existing app `.env` is data,
    never evaluated by a root shell. Unsupported/ambiguous quoting is a refusal.
-   Root protection of existing config directories/ownership is a proposed change,
-   not something the tooling has already done; review app write requirements.
+   Trusted launch config is copied within the controller into
+   `/etc/paperclip/instance/config.json` and `/etc/paperclip/instance/.env`,
+   root:paperclip0750 directory and0640 files, selected by the fixed protected
+   launcher. These copies never leave the controller. Keep
+   `/opt/paperclip-data` and its existing instance/data/runtime directories
+   writable by the service; do not root-protect those directories. In particular,
+   the actual CLI atomically creates/removes `runtime-info.json` there.
+   Review config-relative paths before copying: database, logs, storage and
+   native key paths must keep their exact effective targets. No native signing
+   or master key is copied, rotated or resolved by this change.
 6. An exact private `/etc/paperclip/maintenance/host-policy.json` containing:
    `schema=paperclip.maintenance-host-policy.v1`, physical `operatorRoot`, external
    `operatorManifest` and SHA, physical `capsule`, external `capsuleManifest` and
@@ -172,3 +180,40 @@ stop, persistent interlock, protected config/capsule/operator ownership, unit
 root-launch/drop-privilege security settings, offline migration/fence/epoch and
 guarded restart above. Live recovery and real connector continuation are **not**
 included; the distinct unsupported project/Git preparation decision remains open.
+
+## Protected launch configuration correction (local preparation only)
+
+`maintenance-host.py` now fixes trusted CONFIG/DOTENV under
+`/etc/paperclip/instance/`, while DATA_HOME remains `/opt/paperclip-data`.
+The service identity can read, but cannot replace, trusted config. The old
+instance config and data are preserved; a mutable old config cannot select
+startup authority because the guard sets exact PAPERCLIP_CONFIG. This is
+operational host policy, not an agent-visible or UI-editable security setting.
+Company settings and Secrets continue to use their existing UI and lifecycle.
+
+The four existing source/write/SSH/protected-path settings can be serialized
+with the pure `canonical_policy_assignments` helper. It accepts only those
+four names, round-trips exact string values through the unchanged strict
+parser, never evaluates shell content and writes nothing. A later approved
+operator operation must bind its inputs to the current effective service
+values and compare approved hashes; this helper itself supplies no authority.
+No production setting value is included in code or fixtures. Do not remove
+policy settings, widen roots or relax parsing to make the launcher start.
+
+Qualification additionally runs the actual checksum-pinned native CLI, its
+complete packaged dependency closure and reviewed Node, with a populated
+synthetic TEMPLATE clone. It reproduces failure with the old protected data
+root, then checks protected config plus writable data, actual UID/GID/group/NNP
+drop, runtime-info creation/removal, strict held state, original-source/wake/
+ciphertext preservation, restart, stale epoch and unaware rollback refusal.
+The owned network namespace has loopback only, and all credentials/settings
+are synthetic. No production files, settings, backup, unit or host policy are
+read or changed by that suite. Network namespaces share the host filesystem;
+this is not strong isolation. Real systemd manager cutover remains unverified.
+
+The future release workflow runs this acceptance after native payload assembly
+and before candidate upload; all existing qualifications remain. Local testing
+may use a previously qualified native application when no application source
+has changed, recording application and operator revisions separately. Such a
+pass is not final-source hosted CI or a new release qualification. Publication,
+release staging and exact live cutover each remain separately gated.
