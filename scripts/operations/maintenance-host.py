@@ -15,6 +15,9 @@ ENVIRONMENT=pathlib.Path('/etc/paperclip/paperclip.env')
 CONFIG=pathlib.Path('/etc/paperclip/instance/config.json')
 DATA_HOME=pathlib.Path('/opt/paperclip-data')
 DOTENV=CONFIG.parent/'.env'
+# Only the authenticated complete capsule inventory needs a larger envelope.
+# Policy/config/epoch/operator metadata keep protected_read default4MiB.
+CAPSULE_MANIFEST_LIMIT=16*1024*1024
 UNIT='paperclip.service'
 SAFE_ENV={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C.UTF-8','HOME':'/root'}
 class Refusal(Exception):pass
@@ -108,7 +111,7 @@ def verified_tree(root,manifest, *, uid=0):
     first=next(iter(expected));protected_read(root/first,uid=uid,limit=512*1024*1024)
 
 def verify_candidate(policy,*,uid=0):
-    raw,_=protected_read(policy['capsuleManifest'],uid=uid);require(digest(raw)==policy['capsuleManifestSha256'],'Release manifest identity changed')
+    raw,_=protected_read(policy['capsuleManifest'],uid=uid,limit=CAPSULE_MANIFEST_LIMIT);require(digest(raw)==policy['capsuleManifestSha256'],'Release manifest identity changed')
     manifest=json.loads(raw)
     require(manifest.get('schema')=='paperclip.protected-release.v1' and manifest.get('sourceCommit')==policy['sourceCommit'],'Unrecognized candidate provenance')
     root=pathlib.Path(policy['capsule']);verified_tree(root,manifest,uid=uid)

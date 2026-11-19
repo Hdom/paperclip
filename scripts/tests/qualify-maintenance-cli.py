@@ -94,7 +94,7 @@ class Child:
 def launch_fixture(options):
  root=pathlib.Path(options['root'])
  if os.geteuid()!=0 or root.parent!=pathlib.Path('/var/lib') or not root.name.startswith('paperclip-cli-qualification-'):raise ValueError('Owned root fixture required')
- m=load(REPO/'scripts/operations/maintenance-host.py','host_cli_fixture')
+ m=load(root/'operator-transport/runtime/maintenance-host.py','host_cli_fixture')
  m.CONFIG=root/'trusted/config.json';m.DOTENV=root/'trusted/.env';m.ENVIRONMENT=root/'trusted/service.env';m.DATA_HOME=root/'data';m.POLICY=root/'private/policy.json';m.EPOCH=root/'private/epoch.json'
  policy=json.loads(m.protected_read(m.POLICY)[0])
  capsule,manifest=m.verify_candidate(policy)
@@ -115,11 +115,24 @@ def exercise(root,args,namespace):
  env={'HOME':str(root/'data/home'),'USER':args.user,'LOGNAME':args.user,'PATH':args.node_bin+':/usr/sbin:/usr/bin:/sbin:/bin','TMPDIR':str(root/'data/tmp'),'COREPACK_ENABLE_NETWORK':'0','PAPERCLIP_TELEMETRY_DISABLED':'1','DO_NOT_TRACK':'1'}
  operatorBuild=root/'data/build/runtime'
  subprocess.run(['runuser','-u',args.user,'--',str(node),str(REPO/'scripts/operations/build-maintenance-runtime.mjs'),str(operatorBuild)],cwd=REPO,env=env,check=True,capture_output=True)
- operator=root/'operator';shutil.copytree(operatorBuild,operator)
+ # Bind qualification to an actual local operator archive, then use its
+ # extracted runtime/host/Node bytes. This is not a hosted release archive.
+ operatorArchive=root/'local-operator-runtime.tar.gz'
+ with tarfile.open(operatorArchive,'w:gz') as tar:
+  tar.add(operatorBuild,arcname='runtime');tar.add(pathlib.Path(str(operatorBuild)+'.manifest.json'),arcname='runtime.manifest.json')
+ operatorDigest=digest_file(operatorArchive);operatorExtract=root/'operator-transport';operatorExtract.mkdir(mode=0o755)
+ with tarfile.open(operatorArchive) as tar:
+  members=tar.getmembers()
+  if len(members)>1000 or sum(m.size for m in members)>512*1024*1024:raise ValueError('Bounded independent operator archive required')
+  for m in members:
+   n=pathlib.PurePosixPath(m.name)
+   if n.is_absolute() or '..' in n.parts or not (n.parts[0]=='runtime' or str(n)=='runtime.manifest.json') or not (m.isdir() or m.isfile()):raise ValueError('Unsafe independent operator member')
+  tar.extractall(operatorExtract,members=members,filter='data')
+ operator=operatorExtract/'runtime';operatorManifest=operatorExtract/'runtime.manifest.json'
  for p in [operator,*operator.rglob('*')]:p.chmod(0o755 if p.is_dir() or p.name=='node' else 0o644)
- operatorManifest=private/'operator.json';shutil.copyfile(str(operatorBuild)+'.manifest.json',operatorManifest);operatorManifest.chmod(0o600)
- capsule=root/'payload';shutil.copyfile(node,capsule/'operator-node');(capsule/'operator-node').chmod(0o755)
- host=load(REPO/'scripts/operations/maintenance-host.py','host_cli_parent');creator=load(REPO/'scripts/operations/manifest-maintenance-capsule.py','cli_manifest')
+ operatorManifest.chmod(0o600)
+ capsule=root/'payload';shutil.copyfile(operator/'node',capsule/'operator-node');(capsule/'operator-node').chmod(0o755)
+ host=load(operator/'maintenance-host.py','host_cli_parent');creator=load(REPO/'scripts/operations/manifest-maintenance-capsule.py','cli_manifest')
  manifest=creator.inventory(capsule,args.source)
  capsuleManifest=private/'capsule.json';capsuleManifest.write_text(json.dumps(manifest));capsuleManifest.chmod(0o600)
  meta=capsuleManifest.stat();print(json.dumps({'actualCapsuleManifestMetadata':{'bytes':meta.st_size,'uid':meta.st_uid,'mode':oct(stat.S_IMODE(meta.st_mode)),'links':meta.st_nlink,'files':len(manifest['files']),'symlinks':len(manifest['links'])}}),flush=True)
@@ -213,7 +226,7 @@ def exercise(root,args,namespace):
    else:raise AssertionError('Changed trusted configuration admitted')
   finally:host.CONFIG.write_bytes(original_config)
   bridge.send({'mode':'stop'});bridge.result('stopped');bridge.settled()
-  return {'legacyProtectedDataRootFailureReproduced':True,'actualPackagedCliStartupRestart':True,'runtimeInfoCreatedAndRemoved':True,'actualPrivilegeDropAndNnp':True,'strictHoldAcrossRestart':True,'populatedCloneDomainsRetained':9,'effectivePolicyValuesUnchanged':True,'staleEpochAndUnawareRollbackRefused':True,'applicationSource':args.source,'operatorSource':json.loads(operatorManifest.read_text())['sourceCommit'],'systemdManagerInstalled':False,'productionAccess':False}
+  return {'legacyProtectedDataRootFailureReproduced':True,'actualPackagedCliStartupRestart':True,'runtimeInfoCreatedAndRemoved':True,'actualPrivilegeDropAndNnp':True,'strictHoldAcrossRestart':True,'populatedCloneDomainsRetained':9,'effectivePolicyValuesUnchanged':True,'staleEpochAndUnawareRollbackRefused':True,'applicationSource':args.source,'applicationArchiveSha256':args.sha256,'applicationArchiveBytes':pathlib.Path(args.archive).stat().st_size,'operatorSource':json.loads(operatorManifest.read_text())['sourceCommit'],'operatorArchiveProvenance':'locally built from clean exact source; not a GitHub release','operatorArchiveSha256':operatorDigest,'operatorArchiveBytes':operatorArchive.stat().st_size,'operatorManifestSha256':host.digest(operatorManifest.read_bytes()),'operatorNodeSha256':digest_file(operator/'node'),'protectedCapsuleManifestBytes':capsuleManifest.stat().st_size,'protectedCapsuleManifestSha256':host.digest(capsuleManifest.read_bytes()),'realCapsuleInventoryAndVerifier':True,'exactApplicationArchivePayloadPreserved':True,'preparedPayloadChanges':['independent physical copies of contained transport hardlinks','operator-node added from extracted pinned operator archive'],'systemdManagerInstalled':False,'productionAccess':False}
  finally:
   if cli and cli.process.poll() is None:cli.process.send_signal(signal.SIGTERM);cli.process.wait(timeout=60)
   if bridge.process.poll() is None:

@@ -83,6 +83,38 @@ class HostContract(unittest.TestCase):
                         {**values,next(iter(values)):'bad\nvalue'}, {**values,next(iter(values)):r'bad\value'},
                         {**values,next(iter(values)):"contains'apostrophe"}, {**values,next(iter(values)):None}):
             with self.assertRaises(host.Refusal):host.canonical_policy_assignments(changed)
+    def candidate_manifest(self):
+        cli=self.capsule/'node_modules/paperclipai/dist';cli.mkdir(parents=True,mode=0o700)
+        server=self.capsule/'node_modules/@paperclipai/server/dist';server.mkdir(parents=True,mode=0o700)
+        for file,data in [(cli/'index.js',b'synthetic CLI'),(self.capsule/'operator-node',b'synthetic Node'),
+                          (server/'build-info.json',json.dumps({'commit':'a'*40}).encode()),
+                          (server/'runtime-capabilities.json',json.dumps({'schema':'paperclip.runtime-capabilities.v1','instanceMaintenance':1}).encode())]:
+            file.write_bytes(data);file.chmod(0o600)
+        creator_path=module.parent/'manifest-maintenance-capsule.py';spec=importlib.util.spec_from_file_location('large_capsule_manifest',creator_path);creator=importlib.util.module_from_spec(spec);spec.loader.exec_module(creator)
+        return creator.inventory(self.capsule,'a'*40)
+    def test_capsule_manifest_specific_bound_and_generic_reader_unchanged(self):
+        manifest=self.candidate_manifest();manifest['syntheticPadding']='';external=self.root/'large-manifest.json'
+        empty=json.dumps(manifest,separators=(',',':')).encode()
+        for size,accepted in ((4*1024*1024,True),(4*1024*1024+1,True),(16*1024*1024-1,True),(16*1024*1024,True),(16*1024*1024+1,False)):
+            manifest['syntheticPadding']='x'*(size-len(empty));raw=json.dumps(manifest,separators=(',',':')).encode();self.assertEqual(len(raw),size)
+            external.write_bytes(raw);external.chmod(0o600)
+            policy={'capsule':str(self.capsule),'capsuleManifest':str(external),'capsuleManifestSha256':host.digest(raw),'sourceCommit':'a'*40}
+            if accepted:host.verify_candidate(policy,uid=os.getuid())
+            else:
+                with self.assertRaises(host.Refusal):host.verify_candidate(policy,uid=os.getuid())
+            if size>4*1024*1024:
+                with self.assertRaises(host.Refusal):host.protected_read(external,uid=os.getuid())
+        # A larger authenticated envelope never bypasses ownership/link/hash,
+        # stable read, capability or complete dependency-closure verification.
+        manifest['syntheticPadding']='x'*(4*1024*1024+1-len(empty));raw=json.dumps(manifest,separators=(',',':')).encode();external.write_bytes(raw)
+        policy={'capsule':str(self.capsule),'capsuleManifest':str(external),'capsuleManifestSha256':host.digest(raw),'sourceCommit':'a'*40}
+        with self.assertRaisesRegex(host.Refusal,'identity changed'):host.verify_candidate({**policy,'capsuleManifestSha256':'0'*64},uid=os.getuid())
+        external.chmod(0o666)
+        with self.assertRaises(host.Refusal):host.verify_candidate(policy,uid=os.getuid())
+        external.chmod(0o600);os.link(external,self.root/'manifest-alias')
+        with self.assertRaises(host.Refusal):host.verify_candidate(policy,uid=os.getuid())
+        (self.root/'manifest-alias').unlink();self.a.write_bytes(b'changed dependency')
+        with self.assertRaisesRegex(host.Refusal,'content differs'):host.verify_candidate(policy,uid=os.getuid())
     def test_effective_interlock_not_file_presence(self):
         p={'ActiveState':'inactive','SubState':'dead','MainPID':'0','Restart':'no','ExecStartPath':'/usr/bin/false'}
         host.verify_interlock(p,[],[])

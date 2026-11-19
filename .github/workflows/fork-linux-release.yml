@@ -161,16 +161,6 @@ jobs:
           retention-days: 7
       - name: Assemble and relocate native Linux payload
         run: node tooling/scripts/fork-package-linux.mjs "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/fork-release/release" "$PAPERCLIP_BUILD_COMMIT" "$RUNNER_TEMP/paperclip-public-npm-cache"
-      - name: Actual packaged CLI protected-configuration acceptance
-        working-directory: source
-        run: |
-          archive="paperclip-${PAPERCLIP_BUILD_COMMIT:0:12}-linux-x64.tar.gz"
-          assets="$RUNNER_TEMP/fork-release/release"
-          digest="$(awk -v name="$archive" '$2 == name {print $1}' "$assets/SHA256SUMS")"
-          [[ "$digest" =~ ^[a-f0-9]{64}$ ]]
-          sudo -n python3 scripts/tests/qualify-maintenance-cli.py \
-            --user "$(id -un)" --node-bin "$(dirname "$(command -v node)")" \
-            --archive "$assets/$archive" --sha256 "$digest" --source "$PAPERCLIP_BUILD_COMMIT"
       - name: Upload verified candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

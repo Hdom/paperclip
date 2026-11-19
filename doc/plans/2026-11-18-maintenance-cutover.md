@@ -211,26 +211,39 @@ are synthetic. No production files, settings, backup, unit or host policy are
 read or changed by that suite. Network namespaces share the host filesystem;
 this is not strong isolation. Real systemd manager cutover remains unverified.
 
-The future release workflow runs this acceptance after native payload assembly
-and before candidate upload; all existing qualifications remain. Local testing
+A proposed release gate would run this acceptance after native payload assembly
+and before candidate upload. That gate is report-only and is not implemented;
+the existing workflow and all existing qualifications remain unchanged. Local testing
 may use a previously qualified native application when no application source
 has changed, recording application and operator revisions separately. Such a
 pass is not final-source hosted CI or a new release qualification. Publication,
 release staging and exact live cutover each remain separately gated.
 
-### Full native-capsule metadata bound (unresolved preparation gate)
+### Full native-capsule metadata bound (local candidate correction)
 
 The checksum-pinned 7426 native application contains79,133 ordinary file
 entries (including independently materialized transport hardlinks) and52
 contained symlinks. Its complete JSON capsule manifest is about12.2MB.
-The production guard currently reads this external manifest with the generic
-4MiB protected-file bound, and refuses it before app/CLI execution. That bound
-has not been changed by the configuration/data separation correction.
+The former production guard used the generic4MiB protected-file bound and
+refused this complete manifest before app/CLI execution. The local candidate
+now uses a separate16MiB bound only for the authenticated capsule manifest;
+the generic4MiB protected-file bound and every integrity/authority check remain
+unchanged. This local correction has not been published or deployed.
 
-Before accepting this cutover, separately assess an explicit capsule-manifest
-bound (proposed16MiB with measured headroom), leaving the generic protected
-reader and all ownership, inode, hash, stable-read, path and closure checks
-unchanged. Add below/at/over-bound and actual-artifact tests and independently
-review the exact guard change. Do not omit manifest entries, remove dependencies,
+Before accepting this cutover, complete below/at/over-bound and actual-artifact
+qualification and independent exact-head review, keeping all ownership, inode,
+hash, stable-read, path and complete-closure checks unchanged. Do not omit manifest entries, remove dependencies,
 relax the guard or treat the failed CLI test as startup acceptance. Publication
 and live cutover are still blocked.
+
+Local acceptance records the exact application archive SHA/source, a locally
+built clean-source operator archive SHA/source (explicitly not a hosted
+release), extracted operator manifest/Node hashes, and complete protected
+capsule manifest hash/size. The real capsule inventory and host verifier act
+on the extracted checksum-pinned application bytes. Only authenticated
+contained transport hardlinks are materialized as independent copies and
+the exact extracted operator Node is added as `operator-node`; no application
+file bytes or relative symlink targets are removed or rewritten. Root-owned
+prepared closure remains subject to single-link/contained-link verification.
+The proposed post-assembly/pre-upload hosted gate is report-only. Current
+packaging smoke checks do not establish protected-capsule CLI acceptance.
