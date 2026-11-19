@@ -78,7 +78,10 @@ class Child:
    except queue.Empty:
     if self.process.poll() is not None and not any(t.is_alive() for t in self.threads):raise AssertionError('Fixture exited: '+self.tail[-4000:])
   raise AssertionError('Fixture response deadline: '+self.tail[-4000:])
- def send(self,value):self.process.stdin.write(json.dumps(value)+'\n');self.process.stdin.flush()
+ def send(self,value):
+  if self.process.stdin.closed:raise ValueError('Fixture input already closed')
+  self.process.stdin.write(json.dumps(value)+'\n');self.process.stdin.flush()
+  if value.get('mode')=='stop':self.process.stdin.close()
  def settled(self):
   code=self.process.wait(timeout=60)
   for t in self.threads:t.join(timeout=2)
@@ -119,6 +122,7 @@ def exercise(root,args,namespace):
  host=load(REPO/'scripts/operations/maintenance-host.py','host_cli_parent');creator=load(REPO/'scripts/operations/manifest-maintenance-capsule.py','cli_manifest')
  manifest=creator.inventory(capsule,args.source)
  capsuleManifest=private/'capsule.json';capsuleManifest.write_text(json.dumps(manifest));capsuleManifest.chmod(0o600)
+ meta=capsuleManifest.stat();print(json.dumps({'actualCapsuleManifestMetadata':{'bytes':meta.st_size,'uid':meta.st_uid,'mode':oct(stat.S_IMODE(meta.st_mode)),'links':meta.st_nlink,'files':len(manifest['files']),'symlinks':len(manifest['links'])}}),flush=True)
  host.CONFIG=trusted/'config.json';host.DOTENV=trusted/'.env';host.ENVIRONMENT=trusted/'service.env';host.DATA_HOME=root/'data';host.POLICY=private/'policy.json';host.EPOCH=private/'epoch.json'
  bridge=Child(['runuser','-u',args.user,'--',str(node),str(REPO/'scripts/tests/fixtures/maintenance-cli-database.mjs'),str(capsule)],cwd=root/'data/cwd',env=env,stdin=subprocess.PIPE)
  ready=bridge.result('ready')
@@ -213,7 +217,9 @@ def exercise(root,args,namespace):
  finally:
   if cli and cli.process.poll() is None:cli.process.send_signal(signal.SIGTERM);cli.process.wait(timeout=60)
   if bridge.process.poll() is None:
-   try:bridge.send({'mode':'stop'});bridge.settled()
+   try:
+    if not bridge.process.stdin.closed:bridge.send({'mode':'stop'})
+    bridge.settled()
    except Exception:raise RuntimeError('Synthetic DB owner did not settle; preserve fixture')
 
 def main():

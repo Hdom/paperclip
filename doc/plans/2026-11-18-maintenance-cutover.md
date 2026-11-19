@@ -217,3 +217,20 @@ may use a previously qualified native application when no application source
 has changed, recording application and operator revisions separately. Such a
 pass is not final-source hosted CI or a new release qualification. Publication,
 release staging and exact live cutover each remain separately gated.
+
+### Full native-capsule metadata bound (unresolved preparation gate)
+
+The checksum-pinned 7426 native application contains79,133 ordinary file
+entries (including independently materialized transport hardlinks) and52
+contained symlinks. Its complete JSON capsule manifest is about12.2MB.
+The production guard currently reads this external manifest with the generic
+4MiB protected-file bound, and refuses it before app/CLI execution. That bound
+has not been changed by the configuration/data separation correction.
+
+Before accepting this cutover, separately assess an explicit capsule-manifest
+bound (proposed16MiB with measured headroom), leaving the generic protected
+reader and all ownership, inode, hash, stable-read, path and closure checks
+unchanged. Add below/at/over-bound and actual-artifact tests and independently
+review the exact guard change. Do not omit manifest entries, remove dependencies,
+relax the guard or treat the failed CLI test as startup acceptance. Publication
+and live cutover are still blocked.

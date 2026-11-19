@@ -152,6 +152,15 @@ class CapsuleTransport(unittest.TestCase):
         for target in ('outside','payload/missing'):
             self.create([('payload','dir',''),('payload/link','hardlink',target)])
             with self.assertRaises(ValueError):self.extract()
+    def test_stop_protocol_delivers_eof_and_joins_readers(self):
+        child=self.driver.Child([sys.executable,'-B','-c',"import sys,json;lines=sys.stdin.read().splitlines();assert json.loads(lines[0])=={'mode':'stop'};print('MAINTENANCE_CLI_FIXTURE:'+json.dumps({'kind':'stopped'}))"],stdin=self.driver.subprocess.PIPE)
+        child.send({'mode':'stop'});self.assertTrue(child.process.stdin.closed);self.assertEqual(child.result('stopped'),{'kind':'stopped'});child.settled()
+        self.assertTrue(all(not t.is_alive() for t in child.threads));self.assertEqual(child.reader_errors,[])
+        with self.assertRaises(ValueError):child.send({'mode':'stop'})
+    def test_failed_owner_exit_is_not_clean_success(self):
+        child=self.driver.Child([sys.executable,'-B','-c',"import sys;sys.stdin.read();sys.exit(7)"],stdin=self.driver.subprocess.PIPE)
+        child.send({'mode':'stop'})
+        with self.assertRaises(AssertionError):child.settled()
     def test_duplicate_member_refused(self):
         self.create([('payload/a','file',b'a'),('payload/a','file',b'b')])
         with self.assertRaises(ValueError):self.extract()
