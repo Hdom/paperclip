@@ -75,8 +75,6 @@ class HostContract(unittest.TestCase):
         self.assertEqual(encoded,expected)
         self.assertEqual(host.parse_environment(encoded),values)
         self.assertEqual(host.canonical_policy_assignments(dict(reversed(list(values.items())))),encoded)
-        # A formerly systemd-quoted JSON representation remains unsupported;
-        # the serializer produces canonical data, never a relaxed parser.
         legacy='PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS='+json.dumps(values['PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS'])+'\n'
         with self.assertRaises(host.Refusal):host.parse_environment(legacy.encode())
         for changed in ({**values,'UNREVIEWED_ROOT':'/synthetic'}, {k:v for k,v in values.items() if k!=next(iter(values))},
@@ -104,8 +102,6 @@ class HostContract(unittest.TestCase):
                 with self.assertRaises(host.Refusal):host.verify_candidate(policy,uid=os.getuid())
             if size>4*1024*1024:
                 with self.assertRaises(host.Refusal):host.protected_read(external,uid=os.getuid())
-        # A larger authenticated envelope never bypasses ownership/link/hash,
-        # stable read, capability or complete dependency-closure verification.
         manifest['syntheticPadding']='x'*(4*1024*1024+1-len(empty));raw=json.dumps(manifest,separators=(',',':')).encode();external.write_bytes(raw)
         policy={'capsule':str(self.capsule),'capsuleManifest':str(external),'capsuleManifestSha256':host.digest(raw),'sourceCommit':'a'*40}
         with self.assertRaisesRegex(host.Refusal,'identity changed'):host.verify_candidate({**policy,'capsuleManifestSha256':'0'*64},uid=os.getuid())
@@ -193,6 +189,22 @@ class CapsuleTransport(unittest.TestCase):
         child=self.driver.Child([sys.executable,'-B','-c',"import sys;sys.stdin.read();sys.exit(7)"],stdin=self.driver.subprocess.PIPE)
         child.send({'mode':'stop'})
         with self.assertRaises(AssertionError):child.settled()
+    def test_pinned_transport_refuses_alias_wrong_digest_and_changes(self):
+        file=self.root/'transport';file.write_bytes(b'synthetic exact archive');good=host.digest(file.read_bytes())
+        with self.driver.pinned_transport(file,good,1024) as (stream,observed):self.assertEqual(stream.read(),b'synthetic exact archive');self.assertEqual(observed,good)
+        with self.assertRaises(ValueError):
+            with self.driver.pinned_transport(file,'0'*64,1024):pass
+        with self.assertRaises(ValueError):
+            with self.driver.pinned_transport(file,good,1):pass
+        alias=self.root/'transport-alias';alias.symlink_to(file)
+        with self.assertRaises(OSError):
+            with self.driver.pinned_transport(alias,good,1024):pass
+        alias.unlink();os.link(file,alias)
+        with self.assertRaises(ValueError):
+            with self.driver.pinned_transport(file,good,1024):pass
+        alias.unlink()
+        with self.assertRaisesRegex(ValueError,'changed while reading'):
+            with self.driver.pinned_transport(file,good,1024):file.write_bytes(b'changed but still in same protected descriptor')
     def test_duplicate_member_refused(self):
         self.create([('payload/a','file',b'a'),('payload/a','file',b'b')])
         with self.assertRaises(ValueError):self.extract()

@@ -11,12 +11,9 @@ import ctypes, fcntl, hashlib, json, os, pathlib, pwd, re, stat, subprocess, sys
 POLICY=pathlib.Path('/etc/paperclip/maintenance/host-policy.json')
 EPOCH=POLICY.parent/'epoch.json'
 ENVIRONMENT=pathlib.Path('/etc/paperclip/paperclip.env')
-# Launch authority is immutable; ordinary instance data remains writable.
 CONFIG=pathlib.Path('/etc/paperclip/instance/config.json')
 DATA_HOME=pathlib.Path('/opt/paperclip-data')
 DOTENV=CONFIG.parent/'.env'
-# Only the authenticated complete capsule inventory needs a larger envelope.
-# Policy/config/epoch/operator metadata keep protected_read default4MiB.
 CAPSULE_MANIFEST_LIMIT=16*1024*1024
 UNIT='paperclip.service'
 SAFE_ENV={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C.UTF-8','HOME':'/root'}
@@ -69,12 +66,6 @@ def parse_environment(data):
 POLICY_SETTINGS=frozenset(('PAPERCLIP_CONTROLLER_AGENT_SOURCE_ROOTS','PAPERCLIP_CONTROLLER_AGENT_WRITE_ROOTS',
     'PAPERCLIP_CONTROLLER_AGENT_SSH_TARGETS','PAPERCLIP_CONTROLLER_PROTECTED_PATHS'))
 def canonical_policy_assignments(values):
-    """Pure serialization, not an authority source or a file mutation.
-
-    The operator must separately bind these values to the reviewed effective
-    service environment. No agent/API/host CLI accepts them as a grant.
-    Unrepresentable values remain refused by the unchanged strict parser.
-    """
     require(isinstance(values,dict) and set(values)==POLICY_SETTINGS,'Exact policy settings required')
     require(all(isinstance(value,str) and "'" not in value for value in values.values()),'Unsupported canonical policy value')
     raw=''.join(key+"='"+values[key]+"'\n" for key in sorted(values)).encode('utf-8')

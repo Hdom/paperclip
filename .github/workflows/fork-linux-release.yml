@@ -161,6 +161,20 @@ jobs:
           retention-days: 7
       - name: Assemble and relocate native Linux payload
         run: node tooling/scripts/fork-package-linux.mjs "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/fork-release/release" "$PAPERCLIP_BUILD_COMMIT" "$RUNNER_TEMP/paperclip-public-npm-cache"
+      - name: Qualify exact protected application and operator archives
+        working-directory: source
+        run: |
+          assets="$RUNNER_TEMP/fork-release/release"
+          app="paperclip-${PAPERCLIP_BUILD_COMMIT:0:12}-linux-x64.tar.gz"
+          operator="paperclip-${PAPERCLIP_BUILD_COMMIT:0:12}-operator-tools.tar.gz"
+          (cd "$assets" && sha256sum -c SHA256SUMS)
+          app_digest="$(awk -v name="$app" '$2 == name {print $1}' "$assets/SHA256SUMS")"
+          operator_digest="$(awk -v name="$operator" '$2 == name {print $1}' "$assets/SHA256SUMS")"
+          [[ "$app_digest" =~ ^[a-f0-9]{64}$ && "$operator_digest" =~ ^[a-f0-9]{64}$ ]]
+          sudo -n python3 scripts/tests/qualify-maintenance-cli.py \
+            --user "$(id -un)" --node-bin "$(dirname "$(command -v node)")" \
+            --archive "$assets/$app" --sha256 "$app_digest" --source "$PAPERCLIP_BUILD_COMMIT" \
+            --operator-archive "$assets/$operator" --operator-sha256 "$operator_digest"
       - name: Upload verified candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

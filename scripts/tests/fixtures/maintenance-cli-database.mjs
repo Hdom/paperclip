@@ -1,4 +1,3 @@
-/** Synthetic DB owner for actual packaged-CLI qualification. No server import. */
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';

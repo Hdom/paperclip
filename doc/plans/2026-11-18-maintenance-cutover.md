@@ -212,8 +212,8 @@ read or changed by that suite. Network namespaces share the host filesystem;
 this is not strong isolation. Real systemd manager cutover remains unverified.
 
 A proposed release gate would run this acceptance after native payload assembly
-and before candidate upload. That gate is report-only and is not implemented;
-the existing workflow and all existing qualifications remain unchanged. Local testing
+and before candidate upload. The gate now requires both exact generated app/operator archives, their
+checksums and matching source identities. All existing qualifications remain. Local testing
 may use a previously qualified native application when no application source
 has changed, recording application and operator revisions separately. Such a
 pass is not final-source hosted CI or a new release qualification. Publication,
@@ -245,5 +245,7 @@ contained transport hardlinks are materialized as independent copies and
 the exact extracted operator Node is added as `operator-node`; no application
 file bytes or relative symlink targets are removed or rewritten. Root-owned
 prepared closure remains subject to single-link/contained-link verification.
-The proposed post-assembly/pre-upload hosted gate is report-only. Current
-packaging smoke checks do not establish protected-capsule CLI acceptance.
+The post-assembly/pre-upload gate additionally runs the protected full CLI
+against the exact generated app and operator archives, with no source-built
+operator fallback on that path. Packaging version/import smoke checks alone
+do not establish protected-capsule CLI acceptance.
