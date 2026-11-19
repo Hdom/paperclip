@@ -1,3 +1,4 @@
+import { assertMaintenanceAdmission } from "../instance-maintenance.js";
 import { pendingTaskWorkflowHandoff, committedTaskWorkflowWakeMatches } from "../task-workflow-handoff-state.js";
 import { issueWorkflowHandoffs } from "@paperclipai/db";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
@@ -1183,6 +1184,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // All ordinary and comment claims use the same company-scoped issue
     // lock. A batch may claim several runs before executeRun tracks any owner.
     async function lockIssueExecutionClaim(tx: Db) {
+      await assertMaintenanceAdmission(tx);
       const [owner] = issueId ? await tx.select({
         assigneeAgentId: issues.assigneeAgentId,
         statusVersion: issues.statusVersion,
@@ -1603,6 +1605,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
       : await withChatControlRecoveryGate(run, "claim", async (tx) => {
+          await assertMaintenanceAdmission(tx);
           const claimValues = {
             status: "running",
             runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,

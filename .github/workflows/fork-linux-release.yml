@@ -116,6 +116,9 @@ jobs:
       - name: Protected SSH assembled handoff and retained-output recovery
         working-directory: source
         run: sudo -n python3 scripts/tests/qualify-isolated-ssh.py --user "$(id -un)" --node-bin "$(dirname "$(command -v node)")"
+      - name: Persistent maintenance startup and restart qualification
+        working-directory: source
+        run: sudo -n python3 scripts/tests/qualify-maintenance-startup.py --user "$(id -un)" --node-bin "$(dirname "$(command -v node)")"
       - name: Qualify single-connection handoff boundaries
         working-directory: source
         run: sudo -n python3 scripts/tests/qualify-isolated-ssh.py --user "$(id -un)" --node-bin "$(dirname "$(command -v node)")" --case chain --handoff-pool-max 1
@@ -125,6 +128,8 @@ jobs:
           node --test scripts/fork-qualification-pool.test.mjs scripts/fork-qualification-inventory.test.mjs scripts/fork-package-cache.test.mjs
           node --test scripts/operations/*.test.mjs
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/operations -p '*_test.py'
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/qualify-maintenance-host.py
+          pnpm exec tsc -p scripts/operations/tsconfig.maintenance.json
           python3 scripts/operations/verify-utility-provenance.py --root .
       - name: Guarded approval UI regressions
         working-directory: source
@@ -138,6 +143,9 @@ jobs:
       - name: Install browser acceptance dependency
         working-directory: source
         run: pnpm exec playwright install --with-deps chromium
+      - name: Maintenance component desktop and phone acceptance
+        working-directory: source
+        run: node scripts/tests/qualify-maintenance-ui.mjs tmp/maintenance-ui-evidence
       - name: Desktop and phone guarded approval acceptance
         working-directory: source
         run: pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/human-stage-decision.spec.ts tests/e2e/github-app-identities.spec.ts
@@ -146,7 +154,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: paperclip-browser-acceptance-${{ inputs.source_sha }}
-          path: source/tests/e2e/test-results
+          path: |
+            source/tests/e2e/test-results
+            source/tmp/maintenance-ui-evidence
           if-no-files-found: ignore
           retention-days: 7
       - name: Assemble and relocate native Linux payload

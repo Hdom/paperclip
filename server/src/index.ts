@@ -1,3 +1,5 @@
+import { registerMaintenanceWork } from "./services/instance-maintenance-work.js";
+import { readMaintenance } from "./services/instance-maintenance.js";
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { closeProcessRunAdmission } from "./services/heartbeat/run-admission.js";
 import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
@@ -59,7 +61,7 @@ import {
 } from "./services/native-runtime/native-workspace-sync-retention.js";
 import { markGitRestorePointExpired } from "./services/git-restore-point-storage.js";
 import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
-import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./services/delivery-work-notifications.js";
 import { registerBudgetEnforcementWork, registerCostAccountingWork } from "./services/budget-enforcement-worker.js";
 import { caseHandoffDeliveryService } from "./services/case-handoff-delivery.js";
 import { registerScheduledWork } from "./services/scheduled-work.js";
@@ -292,10 +294,10 @@ function initializeRuntimeConfigConsumers(config: ReturnType<typeof loadConfig>)
   }
 }
 
-export async function startServer(): Promise<StartedServer> {
+export async function startServer(observers: { workspaceRecoveryPass?: (hints: ReadonlySet<string>) => void; workspaceRecoveryOwnerReady?: (notify: (hint: string) => Promise<void>) => void } = {}): Promise<StartedServer> {
   const startupDatabase: StartupDatabaseTeardown = { close: null };
   try {
-    return await startServerWithDatabaseTeardown(startupDatabase);
+    return await startServerWithDatabaseTeardown(startupDatabase, observers);
   } catch (error) {
     if (startupDatabase.close) {
       await startupDatabase.close().catch((closeError) => {
@@ -308,6 +310,7 @@ export async function startServer(): Promise<StartedServer> {
 
 async function startServerWithDatabaseTeardown(
   startupDatabase: StartupDatabaseTeardown,
+  observers: { workspaceRecoveryPass?: (hints: ReadonlySet<string>) => void; workspaceRecoveryOwnerReady?: (notify: (hint: string) => Promise<void>) => void },
 ): Promise<StartedServer> {
   setStartupRecoveryPhase("starting");
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
@@ -935,6 +938,8 @@ async function startServerWithDatabaseTeardown(
     getRetention: async () => (await backupSettingsSvc.getGeneral()).backupRetention,
     logger,
   });
+  // Authoritative state must be readable before any execution/recovery workers exist.
+  await readMaintenance(db);
   const pluginWorkerManager = createPluginWorkerManager();
   const heartbeat = config.heartbeatSchedulerEnabled
     ? heartbeatService(db as any, { pluginWorkerManager })
@@ -1341,6 +1346,9 @@ async function startServerWithDatabaseTeardown(
     trackHeartbeatSchedulerWork(backupExpirationWork.ready);
     server.on("close", backupExpirationWork.stop);
   }
+  const maintenanceWork = registerMaintenanceWork(db, deliveryWork);
+  trackHeartbeatSchedulerWork(maintenanceWork.ready);
+  server.on("close", () => { void maintenanceWork.stop(); });
   const taskDrainExpiryWork = registerTaskDrainExpiryWork(deliveryWork, () => {
     if (heartbeatSchedulerStopped || isWarmStandby()) return;
     trackHeartbeatSchedulerWork(accountingHeartbeat.resumeQueuedRunsAfterDrain().catch(err => {
@@ -1377,7 +1385,12 @@ async function startServerWithDatabaseTeardown(
   trackHeartbeatSchedulerWork(taskWorkflowHandoffWork.ready);
   server.on("close", taskWorkflowHandoffWork.stop);
   const workspaceRecoveryWork = registerWorkspaceRecoveryWork(db, deliveryWork, workspaceRecoveryRuntime,
-    accountingHeartbeat.resumeRemoteStopComments, () => !heartbeatSchedulerStopped);
+    accountingHeartbeat.resumeRemoteStopComments, () => !heartbeatSchedulerStopped, observers.workspaceRecoveryPass);
+  if (observers.workspaceRecoveryOwnerReady) {
+    await workspaceRecoveryWork.ready;
+    // Trusted embedded-host qualification driver, never an HTTP/agent capability.
+    observers.workspaceRecoveryOwnerReady(hint => db.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery, hint)));
+  }
   // Each native cleanup quarantine is logged with its cause when created. The
   // subscription lives with the process: closes that fail during shutdown,
   // after HTTP closes, still need their cause logged.

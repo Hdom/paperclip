@@ -1440,7 +1440,7 @@ describe("IssueDetail", () => {
       userId: null,
     });
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
-    mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
+    mockAuthApi.getSession.mockResolvedValue(null);
     mockProjectsApi.list.mockResolvedValue([]);
     mockDecisionsApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({

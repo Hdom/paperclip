@@ -16,7 +16,7 @@
 // no stamp and exit 0.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -76,6 +76,10 @@ function main() {
   }
 
   mkdirSync(distDir, { recursive: true });
+  const capabilities=JSON.parse(readFileSync(join(serverDir,"runtime-capabilities.json"),"utf8"));
+  if(capabilities.schema!=="paperclip.runtime-capabilities.v1" || capabilities.instanceMaintenance!==1)
+    throw new Error("Runtime maintenance capability metadata is invalid");
+  writeFileSync(join(distDir,"runtime-capabilities.json"),`${JSON.stringify(capabilities)}\n`);
   writeFileSync(outFile, `${JSON.stringify({ commit }, null, 2)}\n`);
   console.log(`[build-stamp] wrote ${outFile} commit=${commit}`);
 }

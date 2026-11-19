@@ -18,7 +18,7 @@ import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/id
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { decisionService, decisionRetentionService, toolAccessService, githubConnectionEventService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
 
-import { companies, runDatabaseBackup, type Db } from "@paperclipai/db";
+import { companies, instanceMaintenance, runDatabaseBackup, type Db } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { onNativeWorkspaceFinalizationRelease, releaseNativeWorkspaceFinalization } from "../services/native-workspace-finalization-notifications.js";
@@ -68,6 +68,7 @@ const {
   createAppMock,
   createBetterAuthInstanceMock,
   createDbMock,
+  maintenanceFixture,
   detectPortMock,
   deriveAuthTrustedOriginsMock,
   deliveryWorkRegisterMock,
@@ -130,11 +131,22 @@ const {
     },
   }) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
-  const createDbMock = vi.fn(() => ({
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({ where: vi.fn(async () => []) })),
-    })),
-  }) as never);
+  const maintenanceFixture = { row: null as typeof instanceMaintenance.$inferSelect | null };
+  const createDbMock = vi.fn(() => {
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn((table: unknown) => ({ where: vi.fn(() => {
+          // Only maintenance has a row. Keep unrelated startup queries empty.
+          // The real canonical read/reconcile functions still validate it.
+          const rows = Promise.resolve(table === instanceMaintenance && maintenanceFixture.row
+            ? [maintenanceFixture.row] : []);
+          return Object.assign(rows, { for: vi.fn(() => rows) });
+        }) })),
+      })),
+      transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback(db)),
+    };
+    return db;
+  });
   const detectPortMock = vi.fn(async ({ port }: { port: number; hostname: string }) => port);
   const deriveAuthTrustedOriginsMock = vi.fn((_config: { port: number; authPublicBaseUrl?: string }, _opts?: { listenPort?: number }): string[] => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn((): { suppressed: boolean; reason: string | null } => ({
@@ -294,6 +306,7 @@ const {
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
+    maintenanceFixture,
     detectPortMock,
     deriveAuthTrustedOriginsMock,
     deliveryWorkRegisterMock,
@@ -683,6 +696,11 @@ async function settleStartupHousekeeping() {
 }
 
 beforeEach(() => {
+  maintenanceFixture.row = {
+    singletonKey: "default", protocolVersion: 1, generation: 0, state: "released",
+    ownerId: null, operatorNote: null, actorId: null, requestId: null,
+    startedAt: null, updatedAt: new Date(0), continuationPolicy: "review_all",
+  };
   fakeServer.resetFixture();
   fakeServer = createFakeServer();
 });
@@ -705,6 +723,25 @@ describe("startServer feedback export wiring", () => {
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
 
+
+  it.each(["missing", "protocol", "state", "policy"])("refuses %s maintenance authority before workers or listening", async (invalid) => {
+    if (invalid === "missing") maintenanceFixture.row = null;
+    else if (invalid === "protocol") maintenanceFixture.row!.protocolVersion = 999;
+    else if (invalid === "state") maintenanceFixture.row!.state = "unknown";
+    else maintenanceFixture.row!.continuationPolicy = "unknown";
+    await expect(startServer()).rejects.toMatchObject({ details: { code: "maintenance_state_unavailable" } });
+    expect(heartbeatServiceFactoryMock).not.toHaveBeenCalled();
+    expect(deliveryWorkRegisterMock).not.toHaveBeenCalled();
+    expect(fakeServer.listen).not.toHaveBeenCalled();
+  });
+
+  it("starts the management server under held maintenance without restarting agent execution", async () => {
+    maintenanceFixture.row = { ...maintenanceFixture.row!, state: "held", generation: 1,
+      ownerId: "8d0d4ec6-1271-4238-bb67-a4251b709539", continuationPolicy: "requires_readiness_decision" };
+    await startServer();
+    expect(fakeServer.listening).toBe(true);
+    expect(heartbeatServiceMock.recoverNativeRunsAfterRestart).not.toHaveBeenCalled();
+  });
 
   it("refuses invalid cloud bootstrap prerequisites before signing, DB creation, or HTTP setup", async () => {
     const realConfig = await vi.importActual<typeof import("../config.js")>("../config.js");

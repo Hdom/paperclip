@@ -1,3 +1,4 @@
+import { isMaintenanceRefusal, assertMaintenanceRecovery, assertMaintenanceAdmission, withMaintenanceOperation, maintenanceClosed, withMaintenanceRecovery } from "./instance-maintenance.js";
 import { assertNoPendingDeferredBlockerStall } from "../modules/wake-queue/index.js";
 import { hasRetainedSshWorkspaceSource, inspectRetainedSshWorkspaceSource } from "./retained-ssh-workspace-source.js";
 import { preserveRetainedSshWorkspace } from "./retained-ssh-workspace-preservation.js";
@@ -162,6 +163,7 @@ export async function wakeCopybackOwnerRecheck(db: Db, input: {
 /** Admission records intent only. No request handler runs physical recovery. */
 export async function requestWorkspaceRecovery(input: Source & { db: Db; idempotencyKey: string; actorId: string }) {
   return input.db.transaction(async tx => {
+    await assertMaintenanceRecovery(tx as unknown as Db, input);
     const [issue] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId))).for("update");
     const [action] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.id, input.actionId),
@@ -201,6 +203,10 @@ export async function requestWorkspaceRecovery(input: Source & { db: Db; idempot
 /** Physical repair remains serialized by the existing source ownership lock.
  * Neither preservation nor cleanup creates an agent turn. */
 export async function recoverRetainedWorkspace(input: Source & { db: Db; environmentRuntime: EnvironmentRuntimeService }) {
+  await withMaintenanceRecovery(input.db, input, () => recoverRetainedWorkspaceOwned(input));
+}
+
+async function recoverRetainedWorkspaceOwned(input: Source & { db: Db; environmentRuntime: EnvironmentRuntimeService }) {
   const { db } = input;
   await adoptSystemRecovery(db, input);
   let initial = await loadSystemRecovery(db, input);
@@ -262,10 +268,13 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
     };
     const observeActive = async () => {
       await ownership.assertHeld();
-      await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+      await db.transaction(async tx=>{
+      await assertMaintenanceRecovery(tx as unknown as Db,input);
+      await tx.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
         '{systemRecoveryActiveAt}', ${JSON.stringify(Date.now())}::jsonb)` }).where(and(
           eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
           sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,attemptId}' = ${reserved.attemptId}`));
+      });
     };
     let observing = Promise.resolve();
     const observer = setInterval(() => { observing = observing.then(observeActive).catch(() => undefined); }, 15_000);
@@ -276,7 +285,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const inspected = ssh ? { run: ssh.run, action: ssh.action, sources: [] } : await inspectWorkspaceRecoverySource(db, input);
       if (ssh) {
         await progress({ phase: "preserve_files" });
-        const operationId = await preserveRetainedSshWorkspace({ ...input, assertHeld: ownership.assertHeld });
+        const operationId = await preserveRetainedSshWorkspace({ ...input, assertHeld: async () => {
+          await ownership.assertHeld(); await assertMaintenanceRecovery(db, input);
+        } });
         await progress({ preservationOperationIds: [...new Set([...current!.preservationOperationIds, operationId])] });
       }
       let sourceUnavailable = false;
@@ -461,6 +472,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const next = { ...current!, revision: current!.revision + 1, phase: "reconcile_effects" as const,
         state: "complete" as const, nextAttemptAt: null };
       const activity = await db.transaction(async tx => {
+        // Revocation serializes on this same singleton gate. A verified archive
+        // alone cannot authorize releasing the original recovery hold.
+        await assertMaintenanceRecovery(tx as unknown as Db, input);
         if (retainedSsh) {
           // Serialize with notification creation/admission on the task row.
           await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
@@ -487,6 +501,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       current = next;
       try { publishActivity(activity.publication); } catch { logger.warn({ runId: input.runId }, "Recovery activity delivery deferred"); }
     } catch (error) {
+      // Revocation is an authority refusal, not a failed provider attempt. Keep
+      // retained evidence and the original hold without spending retry budget.
+      if (isMaintenanceRefusal(error)) throw error;
       await ownership.assertHeld();
       if (current!.state === "complete") {
         logger.warn({ runId: input.runId }, "Preserved workspace activity delivery deferred");
@@ -585,6 +602,10 @@ const unfinishedCursors = new WeakMap<Db, string>();
 /** Destruction is a later cleanup obligation, authorized only by a matching
  * saved-file receipt and the original recorded disposition. */
 export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+  return withMaintenanceOperation(db, "source_cleanup", () => scheduleRecoveredWorkspaceCleanupOwned(db, run));
+}
+async function scheduleRecoveredWorkspaceCleanupOwned(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+  if (await maintenanceClosed(db)) return;
   if (!await hasVerifiedWorkspaceRepair(db, run)) return;
   const legacy = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
   const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
@@ -598,7 +619,7 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
     ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider!), eq(environmentLeases.providerLeaseId, lease.providerLeaseId!),
   )).limit(1);
   if (other) return;
-  await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "ephemeral",
+  await writeEnvironmentCleanup(db, async tx => { await assertMaintenanceAdmission(tx as unknown as Db); return tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "ephemeral",
     updatedAt: new Date(), metadata: sql`(${environmentLeases.metadata} - 'workspaceRestoreRecovery' - 'remoteExecutionTermination') ||
       ${JSON.stringify({ workspaceRecoveryCleanup: { runId: run.id,
         // Keep the verified stop: successors wait on the stop, not on the destroy.
@@ -609,7 +630,7 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
     eq(environmentLeases.heartbeatRunId, run.id), eq(environmentLeases.providerLeaseId, ref.providerLeaseId),
     eq(environmentLeases.status, "released"), eq(environmentLeases.cleanupStatus, "success"),
     sql`${environmentLeases.metadata} = ${JSON.stringify(lease.metadata)}::jsonb`,
-    sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)), { companyId: run.companyId, runId: run.id });
+    sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)); }, { companyId: run.companyId, runId: run.id });
 }
 export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false, obligationsOnly = false, inFlightRunIds: string[] = []) {
   const cleanup = sql`(((${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,resourceDisposition}' = 'destroy'
@@ -675,6 +696,7 @@ export type PassiveSweep = { cursor?: string; complete?: boolean; restart?: bool
 export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRuntimeService,
   onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>, obligationsOnly = false,
   onFinished?: (continueSweep: boolean) => void, passiveSweep?: PassiveSweep) {
+  if (await maintenanceClosed(db)) return [];
   await adoptHistoricalWorkspaceRecoveries(db);
   let pending = workInFlight.get(db);
   if (!pending) { pending = new Set(); workInFlight.set(db, pending); }
@@ -730,7 +752,7 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
       const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
       const recovered = readWorkspaceRecovery(updated?.evidence ?? null)?.status === "recovered";
       const exhausted = readSystemRecovery(updated?.evidence)?.state === "exhausted";
-      if (recovered || exhausted) {
+      if ((recovered || exhausted) && !await maintenanceClosed(db)) {
         const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
         if (current) {
           if (recovered) {
@@ -740,7 +762,7 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
           // Only normal dispatch can consume existing authorized input. An
           // exhausted export permits evaluation of an isolated continuation,
           // never another export attempt or a replay of an old assignment.
-          await onRecovered(current);
+          await withMaintenanceOperation(db, "recovery_continuation", () => onRecovered(current));
         }
       }
     } catch { logger.warn({ runId: run.id }, "Retained workspace remains pending"); }

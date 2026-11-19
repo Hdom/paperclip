@@ -1,3 +1,5 @@
+import { openMaintenanceProviderChannel } from "./maintenance-provider-channel.js";
+import { withMaintenanceOperation, withMaintenanceSettlement } from "./instance-maintenance.js";
 import { acquireSshRunLease, releaseSshRunLease, verifySshLeaseStopped } from "./ssh-environment-runtime.js";
 import { readPluginLoginCredential } from "./plugin-login-credential.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller.js";
@@ -11,7 +13,7 @@ import {
   sandboxStateTransitionFailure,
 } from "./reusable-sandbox-resume-replacement.js";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
-import { HttpError } from "../errors.js";
+import { HttpError, conflict } from "../errors.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import { createOwnedSandbox, recoverSandboxCreations, recoverablePluginCreation } from "./sandbox-creation-operations.js";
 import { dueRunLeaseReleaseCondition, pendingRunLeaseReleaseCondition } from "./environment-lease-release-state.js";
@@ -3852,6 +3854,7 @@ export function environmentRuntimeService(
     async destroyRemoteWorkspaceLease(input: {
       companyId: string; workspaceId: string; leaseId: string; environmentId: string; providerLeaseId: string;
     }): Promise<EnvironmentLease | null> {
+      const perform = async (): Promise<EnvironmentLease | null> => {
       const scope = and(eq(environmentLeases.executionWorkspaceId, input.workspaceId),
         eq(environmentLeases.providerLeaseId, input.providerLeaseId));
       const [leaseRow] = await db.select().from(environmentLeases).where(and(
@@ -3863,6 +3866,11 @@ export function environmentRuntimeService(
       if (!environment || environment.driver !== "sandbox") throw new Error("remote_workspace_cleanup_environment_unavailable");
       return destroyClaimedSandboxLease({ environment, leaseRow, scopeCondition: scope, anyLeasePolicy: true,
         failureReason: "execution_workspace_closed" });
+
+      };
+      const maintenance = await withMaintenanceOperation(db, "environment_cleanup", perform);
+      if (!maintenance.admitted) { return null; }
+      return maintenance.value;
     },
 
     /**
@@ -3883,6 +3891,7 @@ export function environmentRuntimeService(
 
     /** Dispatch plugin-provided Runner execution, including resource preparation and task lifecycle. */
     async task(input: { companyId: string; leaseId: string; operation: PluginEnvironmentTaskOperation; executionContext?: unknown; expectedTaskId?: string }) {
+      const perform = async () => {
       if (controllerExecutionProtected() && !["describe", "status", "read_state", "archive_state", "complete", "stop"].includes(input.operation.kind)) {
         const lease = await environmentsSvc.getLeaseById(input.leaseId);
         const environment = lease?.environmentId ? await environmentsSvc.getById(lease.environmentId) : null;
@@ -3891,6 +3900,16 @@ export function environmentRuntimeService(
       }
       if (!options.pluginWorkerManager) throw new Error("Plugin-provided Runner execution worker manager unavailable");
       return executeEnvironmentTask(db, options.pluginWorkerManager, input);
+
+      };
+      // Observation and positive Stop do not reopen execution admission.
+      if (["describe", "status", "read_state", "stop"].includes(input.operation.kind)) return perform();
+      const lease = await environmentsSvc.getLeaseById(input.leaseId);
+      if (!lease || lease.companyId !== input.companyId) throw conflict("Environment task lease ownership changed.");
+      const kind = input.operation.kind === "complete" ? "environment_cleanup" : "environment_command";
+      const maintenance = await withMaintenanceSettlement(db, kind, lease.heartbeatRunId, perform);
+      if (!maintenance.admitted) throw conflict("Maintenance temporarily holds provider task dispatch.", { code: "instance_maintenance" });
+      return maintenance.value;
     },
 
     async acquireRunLease(input: {
@@ -3933,6 +3952,7 @@ export function environmentRuntimeService(
        */
       assertCompanyBinding?: boolean;
     }): Promise<EnvironmentRuntimeLeaseRecord> {
+      const perform = async (): Promise<EnvironmentRuntimeLeaseRecord> => {
       assertControllerSafeEnvironment(input.environment);
       if (input.environment.status !== "active") {
         throw new Error(`Environment "${input.environment.name}" is not active.`);
@@ -3969,6 +3989,11 @@ export function environmentRuntimeService(
         lease,
         leaseContext,
       };
+
+      };
+      const maintenance = await withMaintenanceSettlement(db, "environment_provision", input.heartbeatRunId, perform);
+      if (!maintenance.admitted) throw conflict("Maintenance temporarily holds environment preparation and transfer.", { code: "instance_maintenance" });
+      return maintenance.value;
     },
 
     async releaseRunLeases(
@@ -3979,6 +4004,7 @@ export function environmentRuntimeService(
       cancelActiveWork?: boolean,
       releaseOptions?: { respectCleanupDeadlines?: boolean },
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
+      const perform = async (): Promise<EnvironmentRuntimeLeaseRecord[]> => {
       const leaseRows = await db
         .select()
         .from(environmentLeases)
@@ -4164,6 +4190,12 @@ export function environmentRuntimeService(
       }
 
       return released;
+
+      };
+      if (providerResourceDisposition === "stop_and_retain" || providerResourceDisposition === "keep_running") return perform();
+      const maintenance = await withMaintenanceSettlement(db, "environment_cleanup", heartbeatRunId, perform);
+      if (!maintenance.admitted) { return []; }
+      return maintenance.value;
     },
 
     // Tear an orphan ephemeral sandbox down from its recorded provider config.
@@ -4190,6 +4222,7 @@ export function environmentRuntimeService(
       environment: Environment | null;
       lease: EnvironmentLease;
     }): Promise<unknown> {
+      const perform = async (): Promise<unknown> => {
       if (!(await allowLegacyShutdownWorkspaceCleanup(db, input.lease))) {
         throw new Error("Shutdown workspace settlement is still pending.");
       }
@@ -4205,6 +4238,12 @@ export function environmentRuntimeService(
         );
       }
       return await driver.retryPendingSandboxTeardown(input);
+
+      };
+      if (hasStopOnlyCleanup(input.lease)) return perform();
+      const maintenance = await withMaintenanceSettlement(db, "environment_cleanup", input.lease.heartbeatRunId, perform);
+      if (!maintenance.admitted) { throw conflict("Maintenance temporarily holds destructive environment work.", { code: "instance_maintenance" }); }
+      return maintenance.value;
     },
 
     // Report whether the provider worker can run an orphan teardown now. The
@@ -4225,6 +4264,7 @@ export function environmentRuntimeService(
     // New creation failures retain their database operation and do not make files.
     // Legacy buffers and files remain until their cleanup rows are durable.
     async flushDeferredOrphanCleanups(): Promise<{ recovered: number; pending: number }> {
+      const perform = async (): Promise<{ recovered: number; pending: number }> => {
       orphanRecoveryFlush ??= (async () => {
         await recoverSandboxCreations(db, async operation => {
           const allocationCreation = recoverablePluginCreation(operation);
@@ -4277,6 +4317,11 @@ export function environmentRuntimeService(
           .flatMap(driver => driver.flushDeferredOrphanCleanups ? [driver.flushDeferredOrphanCleanups] : []));
       })().finally(() => { orphanRecoveryFlush = null; });
       return orphanRecoveryFlush;
+
+      };
+      const maintenance = await withMaintenanceOperation(db, "environment_cleanup", perform);
+      if (!maintenance.admitted) { throw conflict("Maintenance temporarily holds destructive environment work.", { code: "instance_maintenance" }); }
+      return maintenance.value;
     },
 
     async destroyReusableSandboxLeases(input: {
@@ -4285,6 +4330,7 @@ export function environmentRuntimeService(
       executionWorkspaceId?: string | null;
       failureReason?: string;
     }): Promise<EnvironmentRuntimeLeaseRecord[]> {
+      const perform = async (): Promise<EnvironmentRuntimeLeaseRecord[]> => {
       const scopeConditions = [
         input.issueId ? eq(environmentLeases.issueId, input.issueId) : undefined,
         input.executionWorkspaceId ? eq(environmentLeases.executionWorkspaceId, input.executionWorkspaceId) : undefined,
@@ -4358,6 +4404,11 @@ export function environmentRuntimeService(
         });
       }
       return destroyed;
+
+      };
+      const maintenance = await withMaintenanceOperation(db, "environment_cleanup", perform);
+      if (!maintenance.admitted) { return []; }
+      return maintenance.value;
     },
 
     /**
@@ -4380,7 +4431,13 @@ export function environmentRuntimeService(
      * delete stays blocked with nothing the operator can do.
      */
     async releaseRestoreSourcesForEnvironmentDelete(input: { environmentId: string; consentedBy: string }): Promise<number> {
+      const perform = async (): Promise<number> => {
       return await releaseRestoreSourcesForEnvironmentDelete(db, input);
+
+      };
+      const maintenance = await withMaintenanceOperation(db, "environment_cleanup", perform);
+      if (!maintenance.admitted) { throw conflict("Maintenance temporarily holds destructive environment work.", { code: "instance_maintenance" }); }
+      return maintenance.value;
     },
 
     async destroyReusableSandboxLeasesForEnvironment(input: {
@@ -4389,6 +4446,7 @@ export function environmentRuntimeService(
       /** The operator who consented to the delete; releases restore protection. */
       consentedBy?: string;
     }): Promise<{ destroyed: number; failed: number; skippedLiveRun: number }> {
+      const perform = async (): Promise<{ destroyed: number; failed: number; skippedLiveRun: number }> => {
       const environment = await environmentsSvc.getById(input.environmentId);
       if (!environment) return { destroyed: 0, failed: 0, skippedLiveRun: 0 };
       if (input.consentedBy) {
@@ -4454,9 +4512,15 @@ export function environmentRuntimeService(
         else failed += 1;
       }
       return { destroyed, failed, skippedLiveRun };
+
+      };
+      const maintenance = await withMaintenanceOperation(db, "environment_cleanup", perform);
+      if (!maintenance.admitted) { throw conflict("Maintenance temporarily holds destructive environment work.", { code: "instance_maintenance" }); }
+      return maintenance.value;
     },
 
     async resumeRunLease(input: EnvironmentDriverResumeInput): Promise<PluginEnvironmentLease | EnvironmentLease | null> {
+      const perform = async (): Promise<PluginEnvironmentLease | EnvironmentLease | null> => {
       assertControllerSafeEnvironment(input.environment);
       assertControllerSafeEnvironment({ driver: getLeaseDriverKey(input.lease, input.environment), config: input.environment.config });
       if (await legacyShutdownWorkspaceResourceProtected(db, input.lease)) return null;
@@ -4465,12 +4529,18 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support lease resume.`);
       }
       return await driver.resumeRunLease(input);
+
+      };
+      const maintenance = await withMaintenanceSettlement(db, "environment_provision", input.lease.heartbeatRunId, perform);
+      if (!maintenance.admitted) { return null; }
+      return maintenance.value;
     },
 
     async resumeWorkspaceRecoveryLease(input: {
       source: WorkspaceRecoverySourceIdentity; leaseId: string; environmentId: string;
       ownership: NativeWorkspaceFinalizationOwnership;
     }): Promise<PluginEnvironmentLease | EnvironmentLease | null> {
+      const perform = async (): Promise<PluginEnvironmentLease | EnvironmentLease | null> => {
       const { lease, environment, remoteCwd } = await ownedWorkspaceRecoveryLease(db, { ...input.source,
         leaseId: input.leaseId, environmentId: input.environmentId, ownership: input.ownership });
       const driver = requireDriverKey(getLeaseDriverKey(lease, environment as Environment));
@@ -4479,9 +4549,15 @@ export function environmentRuntimeService(
       // Ordinary resume and destructive cleanup keep their existing fences.
       return await driver.resumeRunLease({ environment: environment as Environment, lease: lease as EnvironmentLease,
         requestedCwd: remoteCwd });
+
+      };
+      const maintenance = await withMaintenanceOperation(db, "environment_cleanup", perform);
+      if (!maintenance.admitted) { return null; }
+      return maintenance.value;
     },
 
     async destroyRunLease(input: EnvironmentDriverLeaseInput): Promise<EnvironmentLease | null> {
+      const perform = async (): Promise<EnvironmentLease | null> => {
       if (await nativeWorkspaceExportPendingForLease(db, input.lease)) return null;
       if (await legacyShutdownWorkspaceResourceProtected(db, input.lease)) return null;
       if (input.lease.metadata?.legacyShutdownWorkspaceSettlement) {
@@ -4495,11 +4571,17 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support lease destroy.`);
       }
       return await driver.destroyRunLease(input);
+
+      };
+      const maintenance = await withMaintenanceSettlement(db, "environment_cleanup", input.lease.heartbeatRunId, perform);
+      if (!maintenance.admitted) { return null; }
+      return maintenance.value;
     },
 
     async realizeWorkspace(
       input: EnvironmentDriverRealizeWorkspaceInput,
     ): Promise<PluginEnvironmentRealizeWorkspaceResult> {
+      const perform = async (): Promise<PluginEnvironmentRealizeWorkspaceResult> => {
       assertControllerSafeEnvironment(input.environment);
       assertControllerSafeEnvironment({ driver: getLeaseDriverKey(input.lease, input.environment), config: input.environment.config });
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
@@ -4507,6 +4589,11 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support workspace realization.`);
       }
       return await driver.realizeWorkspace(input);
+
+      };
+      const maintenance = await withMaintenanceSettlement(db, "environment_provision", input.lease.heartbeatRunId, perform);
+      if (!maintenance.admitted) throw conflict("Maintenance temporarily holds environment preparation and transfer.", { code: "instance_maintenance" });
+      return maintenance.value;
     },
 
     async readLoginCredential(input: { environment: Environment; lease: EnvironmentLease }): Promise<Buffer> {
@@ -4514,6 +4601,7 @@ export function environmentRuntimeService(
     },
 
     async execute(input: EnvironmentDriverExecuteInput): Promise<PluginEnvironmentExecuteResult> {
+      const perform = async (): Promise<PluginEnvironmentExecuteResult> => {
       assertControllerSafeEnvironment(input.environment);
       assertControllerSafeEnvironment({ driver: getLeaseDriverKey(input.lease, input.environment), config: input.environment.config });
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
@@ -4521,6 +4609,11 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support command execution.`);
       }
       return await driver.execute(input);
+
+      };
+      const maintenance = await withMaintenanceSettlement(db, "environment_command", input.lease.heartbeatRunId, perform);
+      if (!maintenance.admitted) throw conflict("Maintenance temporarily holds environment preparation and transfer.", { code: "instance_maintenance" });
+      return maintenance.value;
     },
 
     supportsSync(input: EnvironmentDriverLeaseInput): boolean {
@@ -4553,20 +4646,32 @@ export function environmentRuntimeService(
         if (controllerExecutionProtected() && file.followSymlinks) throw new Error("Controller signing-key protection forbids dereferenced source archives");
         await assertControllerSourcePathAllowed(file.sourcePath);
       }
+      const perform = async (): Promise<PluginEnvironmentSyncResult> => {
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.syncIn) {
         throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
       }
       return await driver.syncIn(input);
+
+      };
+      const maintenance = await withMaintenanceSettlement(db, "environment_provision", input.lease.heartbeatRunId, perform);
+      if (!maintenance.admitted) throw conflict("Maintenance temporarily holds environment preparation and transfer.", { code: "instance_maintenance" });
+      return maintenance.value;
     },
 
     async syncOut(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {
+      const perform = async (): Promise<PluginEnvironmentSyncResult> => {
       for (const operation of input.operations) for (const file of operation.files) await assertControllerSourcePathAllowed(file.targetPath, true);
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.syncOut) {
         throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
       }
       return await driver.syncOut(input);
+
+      };
+      const maintenance = await withMaintenanceSettlement(db, "workspace_transfer", input.lease.heartbeatRunId, perform);
+      if (!maintenance.admitted) throw conflict("Maintenance temporarily holds environment preparation and transfer.", { code: "instance_maintenance" });
+      return maintenance.value;
     },
 
     async openDuplexChannel(
@@ -4589,7 +4694,7 @@ export function environmentRuntimeService(
       if (effective.duplexCommandStream !== true) {
         throw new Error(DUPLEX_CHANNEL_CAPABILITY_DENIED);
       }
-      return await driver.openDuplexChannel(input);
+      return await openMaintenanceProviderChannel(db, { lease:input.lease, environment:input.environment }, () => driver.openDuplexChannel!(input));
     },
 
     async getRunnerIngressEndpoint(

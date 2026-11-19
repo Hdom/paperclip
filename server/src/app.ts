@@ -1,3 +1,4 @@
+import { instanceMaintenanceRoutes } from "./routes/instance-maintenance.js";
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { startMcpClientMirrorSync } from "./services/public-mcp/client-mirror-sync.js";
 import { registerIdleMcpOwners } from "./services/public-mcp/idle-sleep-proof.js";
@@ -870,6 +871,7 @@ export async function createApp(
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db, workerManager, opts.prepareIdleDatabaseBackup, opts.idleDeadlineOwners,
     input => resourceLifecycleDelivery.prepareForIdleSleep(input)));
+  api.use(instanceMaintenanceRoutes(db));
   api.use(ephemeralEnrollmentRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));

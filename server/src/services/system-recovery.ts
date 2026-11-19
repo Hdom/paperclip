@@ -1,3 +1,4 @@
+import { assertMaintenanceRecovery } from "./instance-maintenance.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
 import { agents, issues, heartbeatRuns, issueComments, issueRecoveryActions, type Db } from "@paperclipai/db";
@@ -10,6 +11,7 @@ import { capturePolicyRearmDueAt, capturePolicyRearmPendingCondition, retainedSo
 
 export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {
   return db.transaction(async tx => {
+    await assertMaintenanceRecovery(tx as unknown as Db, source);
     const [existing] = await tx.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions)
       .where(and(eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.id, source.actionId),
         eq(issueRecoveryActions.sourceIssueId, source.issueId))).for("update");
@@ -68,6 +70,7 @@ export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySour
     ...(handoff ? { message: handoff } : {}),
   };
   return writeExecutionControl(db, DELIVERY_QUEUES.workspaceRecovery, async tx => {
+    await assertMaintenanceRecovery(tx as unknown as Db, source);
     const [updated] = await tx.update(issueRecoveryActions).set({
       ownerType: exhausted ? "board" : "system", ownerAgentId: null, ownerUserId: null,
       ...(handoff ? { nextAction: handoff } : {}),

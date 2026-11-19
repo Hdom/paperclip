@@ -1,3 +1,4 @@
+import { maintenanceClosed, withMaintenanceOperation } from "./instance-maintenance.js";
 import { notifyWorkflowHandoff } from "./task-workflow-handoff-state.js";
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
 import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
@@ -964,6 +965,7 @@ export function heartbeatService(
     return cachedWorktreeRunExecutionOverride;
   };
   const getSchedulingSuppression = async (fresh = false) => {
+    if (await maintenanceClosed(db)) return { suppressed: true as const, reason: "task_drain" as const };
     const override = await resolveWorktreeRunExecutionOverride(fresh);
     return resolveHeartbeatSchedulingSuppression(runtimeEnv, {
       allowWorktreeRunExecution: override.allowed,
@@ -1887,7 +1889,8 @@ export function heartbeatService(
       onNativeExecutionLeaseAcquired?: () => Promise<void>;
     } = {},
   ) {
-    return withRunExecutionTiming(runId, () => runInOwnStorageScope(() => executeRunAttempt(runId, runOptions)));
+    const operation = await withMaintenanceOperation(db, "execution", () => withRunExecutionTiming(runId, () => runInOwnStorageScope(() => executeRunAttempt(runId, runOptions))), undefined, runId);
+    if (!operation.admitted) await releaseRunClaimedJustBeforeSuppression(runId);
   }
 
   const { deferRunForProviderLimit } = createProviderLimitWait(db, {

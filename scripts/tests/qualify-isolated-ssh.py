@@ -6,7 +6,7 @@ This is network separation only: both processes still share this test host's FS.
 import argparse, ipaddress, json, os, pathlib, pwd, shutil, signal, subprocess, tempfile, uuid, time, threading
 
 def main():
- parser=argparse.ArgumentParser();parser.add_argument('--user',required=True);parser.add_argument('--node-bin',required=True);parser.add_argument('--case',choices=['all','coordinator','recovery','workflow','chain','faults','ownership','guards'],default='all');parser.add_argument('--handoff-pool-max',type=int,choices=[1,10],default=10)
+ parser=argparse.ArgumentParser();parser.add_argument('--user',required=True);parser.add_argument('--node-bin',required=True);parser.add_argument('--case',choices=['all','coordinator','recovery','workflow','chain','faults','ownership','guards','maintenance'],default='all');parser.add_argument('--handoff-pool-max',type=int,choices=[1,10],default=10)
  args=parser.parse_args();owner=pwd.getpwnam(args.user)
  if os.geteuid()!=0 or owner.pw_uid<1000 or not hasattr(os,'pidfd_open') or not hasattr(signal,'pidfd_send_signal'):raise ValueError('Root fixture setup and unprivileged test owner required')
  node=pathlib.Path(args.node_bin).resolve();repo=pathlib.Path(__file__).resolve().parents[2]
@@ -71,7 +71,7 @@ def main():
    'COREPACK_ENABLE_NETWORK':'0','PAPERCLIP_TEST_ISOLATED_SSH_FIXTURE':str(fixture)}
   if args.handoff_pool_max==1:environment['PAPERCLIP_TEST_HANDOFF_DB_POOL_MAX']='1'
   result=subprocess.run(['runuser','-u',args.user,'--',str(node/'corepack'),'pnpm','exec','vitest','run',
-   'server/src/__tests__/retained-ssh-workspace-integration.test.ts']+([] if args.case=='all' else ['-t',{'coordinator':'fresh Coordinator','recovery':'preserves immutable','workflow':'actual Codex adapter','chain':'actual Codex adapter.*chain','faults':'actual Codex adapter.*(cancel|provider_failed|doc_changed|unsafe_link|restart|drain)','ownership':'actual Codex adapter.*(older_writer|db_disconnect)','guards':'actual Codex adapter.*(doc_changed|unsupported_workspace)'}[args.case]]),cwd=repo,env=environment)
+   'server/src/__tests__/retained-ssh-workspace-integration.test.ts']+([] if args.case=='all' else ['-t',{'maintenance':'maintenance exact source recovery','coordinator':'fresh Coordinator','recovery':'preserves immutable','workflow':'actual Codex adapter','chain':'actual Codex adapter.*chain','faults':'actual Codex adapter.*(cancel|provider_failed|doc_changed|unsafe_link|restart|drain)','ownership':'actual Codex adapter.*(older_writer|db_disconnect)','guards':'actual Codex adapter.*(doc_changed|unsupported_workspace)'}[args.case]]),cwd=repo,env=environment)
   return result.returncode
  finally:
   errors=[];empty=not namespace_created

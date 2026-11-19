@@ -1,3 +1,8 @@
+import { maintenanceContinuationReview } from "../services/maintenance-continuation-review.js";
+import { instanceMaintenanceRoutes } from "../routes/instance-maintenance.js";
+import { instanceMaintenanceOperations } from "@paperclipai/db";
+import { startMaintenance, reconcileMaintenance, readMaintenance, releaseMaintenance, withMaintenanceOperation, revokeMaintenanceRecovery } from "../services/instance-maintenance.js";
+import { nativeSha256 } from "../services/native-runtime/canonical.js";
 import { withScopedTaskWorkspaceAuthority } from "../services/scoped-task-workspace-authority.js";
 import { recordTaskWorkflowReturn } from "../services/task-workflow-handoff.js";
 import { withDedicatedDbConnection } from "@paperclipai/db";
@@ -209,6 +214,89 @@ it.each(["Coordinator","Researcher","Planner","Implementer","Reviewer","Research
     expect(roleRuns).toHaveLength(unboundRetry?2:1);
     expect(roleRuns.filter(run=>run.status!=="failed").map(run=>run.id)).toEqual([started!.id]);
   }finally{registerServerAdapter(original);await heartbeat.drainActiveRunExecutions();}
+},90000);
+
+it.each(["complete","revoke_before_completion","lost_reply"] as const)("maintenance exact source recovery preserves real SSH bytes while admissions and original intents stay held: %s",async mode=>{
+  const originalDb=db,maintenanceDatabase=await startEmbeddedPostgresTestDatabase("maintenance-real-ssh-");
+  db=createDb(maintenanceDatabase.connectionString);
+  try {
+  const f=await seed(),spec={...connection,remoteCwd:connection.remoteWorkspacePath!,runScope:f.scope};
+  await prepareSshRunScope(connection,f.scope);
+  await runSshCommand(spec,`mkdir -p ${shellQuote(f.source.remoteDir)} && chmod 700 ${shellQuote(f.source.remoteDir)} && printf 'maintenance retained real bytes' > ${shellQuote(f.source.remoteDir+'/saved.txt')}`);
+  await stopSshRunScope(spec,f.scope);
+  const [wake]=await db.insert(agentWakeupRequests).values({companyId:f.input.companyId,agentId:f.agentId,source:"automation",status:"deferred_issue_execution",payload:{issueId:f.input.issueId,executionWait:{reason:"execution_recovery",recoveryActionId:f.input.actionId}}}).returning();
+  const initial=await readMaintenance(db);
+  const held=await startMaintenance(db,{actorId:"operator",requestId:randomUUID(),expectedGeneration:initial.generation,operatorNote:"Synthetic source only",continuationPolicy:"requires_readiness_decision"});
+  expect((await reconcileMaintenance(db)).state).toBe("held");
+  let savedOperationId="";
+  let result:{admitted:boolean};
+  if(mode==="lost_reply") {
+    await db.insert(authUsers).values({id:"operator",name:"Synthetic operator",email:"synthetic-operator@example.test",createdAt:new Date(),updatedAt:new Date()});
+    await db.insert(companyMemberships).values({companyId:f.input.companyId,principalType:"user",principalId:"operator",status:"active",membershipRole:"owner"});
+    let drop=true;
+    const app=express();app.use(express.json());app.use((req,res,next)=>{
+      req.actor={type:"board",userId:"operator",source:"session",isInstanceAdmin:true,companyIds:[f.input.companyId],memberships:[{companyId:f.input.companyId,membershipRole:"owner",status:"active"}]};
+      if(req.method==="POST"&&req.path==="/instance/maintenance/recover-source"&&drop){
+        const json=res.json.bind(res);res.json=((value:unknown)=>{if(value&&typeof value==="object"&&"accepted" in value){drop=false;res.destroy();return res;}return json(value);}) as typeof res.json;
+      }
+      next();
+    });app.use(instanceMaintenanceRoutes(db));app.use(errorHandler);
+    const requestId=randomUUID(),payload={...f.input,requestId,generation:held.generation,ownerId:held.ownerId};
+    await expect(request(app).post('/instance/maintenance/recover-source').send(payload)).rejects.toThrow();
+    const receipt=await request(app).get(`/instance/maintenance/requests/${requestId}`);
+    expect(receipt.status,receipt.text).toBe(200);expect(receipt.body).toMatchObject({found:true,requestId,state:"settled",continuationReleased:false});
+    for(const retryId of [requestId,randomUUID()]) {
+      const retry=await request(app).post('/instance/maintenance/recover-source').send({...payload,requestId:retryId});
+      expect(retry.status,retry.text).toBe(409);
+    }
+    expect((await db.select().from(instanceMaintenanceOperations).where(eq(instanceMaintenanceOperations.kind,"source_recovery")))).toHaveLength(1);
+    const operations=await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId,f.input.runId));
+    const snapshots=operations.filter(op=>op.phase==="workspace_recovery_snapshot");expect(snapshots).toHaveLength(1);savedOperationId=snapshots[0].id;
+    result={admitted:true};
+  } else result=await withMaintenanceOperation(db,"source_recovery",async()=>{
+    const preserved=await withNativeWorkspaceFinalizationOwnership({db,companyId:f.input.companyId,runId:f.input.runId,retainedRepairActionId:f.input.actionId},owner=>preserveRetainedSshWorkspace({...f.input,db,assertHeld:owner.assertHeld}));
+    if(!preserved.acquired)throw Error("Synthetic source owner unavailable");savedOperationId=preserved.value;
+    await requestWorkspaceRecovery({...f.input,db,idempotencyKey:randomUUID(),actorId:"operator"});
+    if(mode==="complete")await recoverRetainedWorkspace({...f.input,db,environmentRuntime:environmentRuntimeService(db)});
+    else {
+      let signal!:()=>void,release!:()=>void;const atCommit=new Promise<void>(resolve=>{signal=resolve;}),continueCommit=new Promise<void>(resolve=>{release=resolve;});
+      const transaction=db.transaction.bind(db);
+      // Fault injection at the real final-transaction boundary. All authority,
+      // SQL, archive, ownership and stop checks still use the actual services.
+      const spy=vi.spyOn(db,"transaction").mockImplementation(async(callback,...args)=>{
+        if(callback.toString().includes('workspace_finalize')){signal();await continueCommit;}
+        return transaction(callback,...args);
+      });
+      const recovery=recoverRetainedWorkspace({...f.input,db,environmentRuntime:environmentRuntimeService(db)});
+      const refused=expect(recovery).rejects.toThrow(/revoked/);
+      try {
+        await atCommit;
+        const [op]=await db.select().from(instanceMaintenanceOperations).where(eq(instanceMaintenanceOperations.state,"active"));
+        await revokeMaintenanceRecovery(db,{generation:held.generation,ownerId:held.ownerId!,operationId:op.id,actorId:"operator",requestId:randomUUID()});
+      } finally {release();await refused;spy.mockRestore();}
+    }
+  },{...f.input,leaseId:f.leaseId,leaseGeneration:f.scope.generation,descriptorFingerprint:nativeSha256(f.recovery),maintenanceGeneration:held.generation,maintenanceOwnerId:held.ownerId!,operation:"preserve-and-recover-exact-source",requestId:randomUUID()});
+  expect(result.admitted).toBe(true);
+  const [operation]=await db.select().from(workspaceOperations).where(eq(workspaceOperations.id,savedOperationId));
+  const archive=operation.metadata!.archive as {objectKey:string;sha256:string;byteSize:number};
+  const stored=await storageModule.getStorageService().getObject(f.input.companyId,archive.objectKey);const chunks:Buffer[]=[];
+  for await(const chunk of stored.stream)chunks.push(Buffer.from(chunk));
+  const content=Buffer.concat(chunks);expect(content.length).toBe(archive.byteSize);expect(createHash("sha256").update(content).digest("hex")).toBe(archive.sha256);
+  const dest=await mkdtemp(path.join(root,"staging","maintenance-bytes-")),archiveFile=path.join(dest,"snapshot.tar"),tree=path.join(dest,"files");
+  await writeFile(archiveFile,content,{mode:0o600});await mkdir(tree,{mode:0o700});await extractControllerWorkspaceArchive(archiveFile,tree);
+  expect(await readFile(path.join(tree,"saved.txt"),"utf8")).toBe("maintenance retained real bytes");
+  expect((await readMaintenance(db)).state).toBe("held");
+  expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,wake.id)))[0]).toEqual(wake);
+  expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.input.companyId))).map(run=>run.id)).toEqual([f.input.runId]);
+  const [action]=await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id,f.input.actionId));
+  if(mode!=="revoke_before_completion")expect(readSystemRecovery(action.evidence)).toMatchObject({state:"complete",preservationOperationIds:[savedOperationId]});
+  else {
+    expect(readSystemRecovery(action.evidence)?.state).not.toBe("complete");
+    expect((await getExecutionBlocker(db,f.input.companyId,f.input.issueId))?.workspaceRepairRequired).toBe(true);
+    expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId,f.input.runId))).filter(op=>op.phase==="workspace_finalize")).toHaveLength(0);
+  }
+  await expect(runSshCommand(spec,"true")).rejects.toMatchObject({code:125});
+  } finally {await db.$client.end();await maintenanceDatabase.cleanup();db=originalDb;}
 },90000);
 
 it.each(["retry_first","notification_first","pause_retry_first","pause_interrupted_notification_first"])("preserves immutable output before exact audited wake retirement, recovery and public Retry: %s",async order=>{
@@ -425,6 +513,20 @@ it.each(["retry_first","notification_first","pause_retry_first","pause_interrupt
     await issueService(db).update(child.id,{status:"done",actorUserId:"operator"});
     await db.update(issueRecoveryActions).set({status:"resolved",resolvedAt:new Date()}).where(eq(issueRecoveryActions.id,childAction.id));
     await db.update(companies).set({status:"active"}).where(eq(companies.id,f.input.companyId));
+    if(order==="retry_first") {
+      // This fixture has already recovered bytes and satisfied its dependency;
+      // unlike the production incident it has a qualified supported workspace.
+      const state=await readMaintenance(db);
+      const maintenance=await startMaintenance(db,{actorId:"operator",requestId:randomUUID(),expectedGeneration:state.generation,operatorNote:"Synthetic supported continuation review"});
+      expect((await reconcileMaintenance(db)).state).toBe("held");
+      const [originalIntent]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,retry.requestId!));
+      await heartbeat.resumeTaskRetry(f.input.companyId,retry.requestId!).catch(error=>{expect(String(error)).toMatch(/maintenance|drain|paused/i);});
+      expect(continued).toBe(0);expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.input.companyId)))).toHaveLength(1);
+      const [heldIntent]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,retry.requestId!));
+      expect(heldIntent.id).toBe(originalIntent.id);expect(heldIntent.payload).toEqual(originalIntent.payload);
+      const reviewed=await maintenanceContinuationReview(db,"review_all");
+      await releaseMaintenance(db,{actorId:"operator",requestId:randomUUID(),generation:maintenance.generation,ownerId:maintenance.ownerId!,reviewFingerprint:reviewed.fingerprint});
+    }
     const notify=async()=>{
       const result=await heartbeat.reconcileResolvedDependencyWakes({companyId:f.input.companyId,blockerIssueId:child.id});
       expect(result.checked).toBe(1);
@@ -750,12 +852,15 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
       },{timeout:15000});
       const [unchanged]=await db.select().from(issues).where(eq(issues.id,issueId));
       expect(unchanged.assigneeAgentId).toBe(producerId);expect(unchanged.status).toBe("in_progress");
-      const blocker=await getExecutionBlocker(db,companyId,issueId);expect(blocker?.canRetry).toBe(false);expect(blocker?.workspaceRepairRequired).toBe(true);
+      const blocker=await getExecutionBlocker(db,companyId,issueId);expect(blocker?.canRetry).toBe(false);
       const targetWakes=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId,reviewerId));expect(targetWakes).toHaveLength(0);
       const leases=await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId,started!.id));expect(leases).toHaveLength(1);expect(hasRemoteTerminationReceipt(leases[0])).toBe(true);
       await vi.waitFor(async()=>{
         const [source]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,started!.id));
         expect(source.resultJson?.workspaceRestoreRecovery).toMatchObject({source:{runId:source.id,leaseId:leases[0].id,providerLeaseId:leases[0].providerLeaseId}});
+        // A held handoff intent is not yet the canonical retained-source hold.
+        // Await its actual descriptor/blocker publication before certifying it.
+        expect((await getExecutionBlocker(db,companyId,issueId))?.workspaceRepairRequired).toBe(true);
       },{timeout:15000});
       if(scenario.action==="cancel"){
         const denied=await request(app).patch(`/api/issues/${issueId}`).set("Authorization","Bearer "+sourceJwt)

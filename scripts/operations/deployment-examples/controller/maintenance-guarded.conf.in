@@ -1,0 +1,16 @@
+# REVIEWED TEMPLATE ONLY; replace @OPERATOR_ROOT@ with the protected exact
+# version directory, record exact bytes in host policy, then independently
+# verify manager properties. Never retain the deny-start drop-in concurrently.
+[Service]
+User=root
+Group=root
+WorkingDirectory=/
+Environment=
+EnvironmentFile=
+UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONHOME
+ExecStart=
+ExecStart=/usr/bin/python3 -I -S @OPERATOR_ROOT@/maintenance-host.py launch
+Restart=no
+NoNewPrivileges=yes
+AmbientCapabilities=
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID

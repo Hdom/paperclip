@@ -42,3 +42,7 @@ Flag a new table, route, or service that holds domain data without a company
 scope and is not listed here. Flag an exception that skips company membership
 validation for its audit context. Flag a preference that grants authority,
 changes company or agent configuration, or rewrites work records.
+
+## Instance maintenance
+
+`instance_maintenance`, `instance_maintenance_operations`, and `instance_maintenance_events` are instance-admin operational containment and audit. They grant no company, run, filesystem or secret authority. Private notes, actors and operation subjects are never projected into company/task responses.

@@ -143,7 +143,11 @@ const skillDestinations = ['server', 'packages/adapters/claude-local', 'packages
 if (fs.existsSync(path.join(source, 'cli/package.dev.json'))) throw new Error('Existing CLI backup must be resolved before packaging');
 let version, succeeded = false;
 const sourcePatchReferences = new Map();
+const operatorTools = path.join(staging, 'operator-tools');
 try {
+  // Build against clean, pinned source before the CLI producer temporarily
+  // rewrites tracked manifests/README. Keep all operator source checks strict.
+  run(process.execPath, ['scripts/operations/build-tools.mjs', operatorTools, sha], source);
   // Snapshot reference bytes before any producer lifecycle runs. This trusts
   // the workflow's fresh frozen pnpm install, not git status of ignored files.
   for (const [name, versions] of patchDefinitions) {
@@ -416,8 +420,6 @@ try {
   const extractedServer = path.join(extractedPayload, 'node_modules/@paperclipai/server');
   run(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(path.join(extractedServer, 'dist/app.js')).href)}); process.exit(0)`], extractedPayload);
   fs.accessSync(path.join(extractedServer, 'dist/vendor/paperclip-runner/bin/paperclip-runnerd'), fs.constants.X_OK);
-  const operatorTools = path.join(staging, 'operator-tools');
-  run(process.execPath, ['scripts/operations/build-tools.mjs', operatorTools, sha], source);
   const operatorArchive = `paperclip-${sha.slice(0, 12)}-operator-tools.tar.gz`;
   run('tar', ['-czf', path.join(output, operatorArchive), '-C', staging, 'operator-tools'], staging);
   const operatorManifest = json(path.join(operatorTools, 'operator-tools-manifest.json'));

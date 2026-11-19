@@ -1,3 +1,4 @@
+import { assertMaintenanceRecovery } from "./instance-maintenance.js";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, heartbeatRuns, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { adoptSystemRecovery } from "./system-recovery.js";
@@ -37,6 +38,7 @@ export async function adoptHistoricalWorkspaceRecoveries(db: Db) {
     sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ? 'systemRecoveryAdoption')`,
   )).orderBy(asc(heartbeatRuns.id)).limit(remaining);
   for (const { run, issue } of missing) await db.transaction(async tx => {
+    await assertMaintenanceRecovery(tx as unknown as Db);
     await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issue.id)).for("update");
     const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId),
       eq(heartbeatRuns.id, run.id))).for("update");

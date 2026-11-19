@@ -1,3 +1,4 @@
+import { withMaintenanceOperation, assertMaintenanceProviderAdmission } from "../instance-maintenance.js";
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
@@ -9611,7 +9612,13 @@ export function resolveNativeCancellationStatus(input: {
   };
 }
 
-export async function executePaperclipNativeSession(input: {
+export async function executePaperclipNativeSession(input: Parameters<typeof executePaperclipNativeSessionOwned>[0]) {
+  const result = await withMaintenanceOperation(input.db, "native_execution", () => executePaperclipNativeSessionOwned(input), undefined, input.execution.binding.runId);
+  if (!result.admitted) throw new Error("instance_maintenance: native execution is held");
+  return result.value;
+}
+
+async function executePaperclipNativeSessionOwned(input: {
   casesEnabled?: boolean;
   getFreshSessionHandoff?: () => Promise<string | null>;
   /** Retire a retained transport so recovery can replace provider tool declarations. */
@@ -11516,7 +11523,9 @@ async function executePaperclipNativeSessionAttempt(
             onSessionAdmission: async () => {
               if (existingWarmSession) runnerdBackend?.bindDiagnosticSession?.(existingWarmSession);
               // Invalidate prior stop evidence before a backend can spawn.
-              await appendHeartbeatRunEvent(input.db, {
+              await input.db.transaction(async tx => {
+                await assertMaintenanceProviderAdmission(tx as unknown as Db, input.execution.binding.runId, input.execution.binding.companyId, input.execution.binding.agentId);
+                await appendHeartbeatRunEvent(tx as unknown as Db, {
                 companyId: input.execution.binding.companyId,
                 runId: input.execution.binding.runId,
                 agentId: input.execution.binding.agentId,
@@ -11528,6 +11537,7 @@ async function executePaperclipNativeSessionAttempt(
                 // The provider attempt opens that attempt's outcome window for
                 // the work-based budget (provider-attempt-outcome.ts).
                 payload: { hostname: hostname(), providerAttempt: attempt, requestedAt: new Date().toISOString() },
+                });
               });
               crashPoint("native.process_start.after_requested_before_spawn");
             },
