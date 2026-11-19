@@ -123,4 +123,39 @@ class HostContract(unittest.TestCase):
             if protocol==1:host.verify_candidate(policy,uid=os.getuid())
             else:
                 with self.assertRaises(host.Refusal):host.verify_candidate(policy,uid=os.getuid())
+class CapsuleTransport(unittest.TestCase):
+    def setUp(self):
+        import io,tarfile
+        self.io=io;self.tarfile=tarfile;self.root=pathlib.Path(tempfile.mkdtemp(prefix='.maintenance-archive-',dir=pathlib.Path.home()))
+        self.destination=self.root/'extracted';self.destination.mkdir();self.archive=self.root/'fixture.tar'
+        p=module.parents[0].parent/'tests/qualify-maintenance-cli.py';spec=importlib.util.spec_from_file_location('cli_qualification',p);self.driver=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.driver)
+    def tearDown(self):shutil.rmtree(self.root)
+    def create(self,entries):
+        with self.tarfile.open(self.archive,'w') as tar:
+            for name,kind,value in entries:
+                info=self.tarfile.TarInfo(name);info.mode=0o755 if kind=='dir' else 0o644
+                if kind=='file':info.size=len(value);tar.addfile(info,self.io.BytesIO(value))
+                else:
+                    info.type={'dir':self.tarfile.DIRTYPE,'symlink':self.tarfile.SYMTYPE,'hardlink':self.tarfile.LNKTYPE,'fifo':self.tarfile.FIFOTYPE}[kind];info.linkname=value;tar.addfile(info)
+    def extract(self):self.driver.extract_native_capsule(self.archive,self.destination)
+    def test_relative_symlink_and_hardlink_are_contained_independent_files(self):
+        self.create([('payload','dir',''),('payload/bin','dir',''),('payload/library','dir',''),('payload/library/tool','file',b'synthetic'),('payload/bin/tool','symlink','../library/tool'),('payload/copy','hardlink','payload/library/tool')]);self.extract()
+        original=self.destination/'payload/library/tool';copy=self.destination/'payload/copy'
+        self.assertEqual(copy.read_bytes(),b'synthetic');self.assertNotEqual(copy.stat().st_ino,original.stat().st_ino);self.assertEqual(original.stat().st_nlink,1)
+        self.assertEqual((self.destination/'payload/bin/tool').resolve(),original)
+    def test_escape_and_special_entry_refused_before_extract(self):
+        for entry in [('payload/link','symlink','../../outside'),('payload/link','symlink','/etc/passwd'),('../outside','file',b'bad'),('payload/fifo','fifo','')]:
+            self.create([('payload','dir',''),entry])
+            with self.assertRaises(ValueError):self.extract()
+            self.assertEqual(list(self.destination.iterdir()),[])
+    def test_hardlink_chain_or_missing_target_is_not_authority(self):
+        for target in ('outside','payload/missing'):
+            self.create([('payload','dir',''),('payload/link','hardlink',target)])
+            with self.assertRaises(ValueError):self.extract()
+    def test_duplicate_member_refused(self):
+        self.create([('payload/a','file',b'a'),('payload/a','file',b'b')])
+        with self.assertRaises(ValueError):self.extract()
+    def test_dangling_symlink_is_refused(self):
+        self.create([('payload','dir',''),('payload/link','symlink','missing')])
+        with self.assertRaises(FileNotFoundError):self.extract()
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -4,7 +4,7 @@ Synthetic populated TEMPLATE clone; loopback-only owned namespace. Runs the
 real packaged CLI and dependencies after UID/GID/group/NNP drop. Systemd manager
 installation is deliberately not exercised. No production config/key is read.
 """
-import argparse,hashlib,importlib.util,json,os,pathlib,pwd,queue,shutil,signal,stat,subprocess,sys,tarfile,threading,time,urllib.request,uuid
+import argparse,hashlib,importlib.util,json,os,pathlib,posixpath,pwd,queue,shutil,signal,stat,subprocess,sys,tarfile,threading,time,urllib.request,uuid
 sys.dont_write_bytecode=True
 REPO=pathlib.Path(__file__).resolve().parents[2]
 
@@ -16,6 +16,44 @@ def digest_file(file):
  with file.open('rb') as f:
   for b in iter(lambda:f.read(1024*1024),b''):h.update(b)
  return h.hexdigest()
+
+def extract_native_capsule(archive,root):
+ # Materialize in phases so no archive-controlled symlink can redirect a
+ # file write. Some Python3.10 data filters incorrectly interpret symlinks
+ # relative to the archive root. Ordinary members still use data_filter;
+ # link validation is explicit, relative to each link's physical parent.
+ root=pathlib.Path(root)
+ if root.resolve()!=root or not root.is_dir() or any(root.iterdir()):raise ValueError('New empty physical fixture required')
+ with tarfile.open(archive) as tar:
+  members=tar.getmembers();indexed={m.name.rstrip('/'):m for m in members}
+  if len(members)>300000 or len(indexed)!=len(members):raise ValueError('Native member bound/uniqueness required')
+  total=sum(m.size for m in members)
+  for m in members:
+   name=m.name.rstrip('/');n=pathlib.PurePosixPath(name)
+   if n.is_absolute() or '..' in n.parts or not n.parts or n.parts[0]!='payload' or str(n)!=name or not (m.isdir() or m.isfile() or m.issym() or m.islnk()) or (not m.issym() and m.mode&0o6022):raise ValueError('Unsafe native fixture member')
+   if m.issym():
+    target=posixpath.normpath(posixpath.join(posixpath.dirname(name),m.linkname))
+    if posixpath.isabs(m.linkname) or not (target=='payload' or target.startswith('payload/')):raise ValueError('Escaping native symlink')
+   if m.islnk():
+    target=indexed.get(m.linkname)
+    if not target or not target.isfile() or target.islnk():raise ValueError('Hardlink target must be an authenticated ordinary member')
+    total+=target.size
+  if total>8*1024**3:raise ValueError('Expanded capsule bound exceeded')
+  if not hasattr(tarfile,'data_filter'):raise ValueError('Safe ordinary-member filter required')
+  tar.extractall(root,members=[m for m in members if not (m.issym() or m.islnk())],filter='data')
+  for m in members:
+   if not m.islnk():continue
+   target=(root/m.linkname).resolve(strict=True);destination=root/m.name
+   if not target.is_relative_to(root) or not target.is_file() or destination.parent.resolve(strict=True)!=destination.parent:raise ValueError('Unsafe hardlink materialization')
+   with target.open('rb') as source,destination.open('xb') as output:shutil.copyfileobj(source,output,1024*1024)
+   destination.chmod(m.mode&0o777)
+  for m in members:
+   if not m.issym():continue
+   destination=root/m.name
+   if destination.parent.resolve(strict=True)!=destination.parent:raise ValueError('Alias parent cannot receive archive members')
+   destination.symlink_to(m.linkname)
+  for m in members:
+   if m.issym() and not (root/m.name).resolve(strict=True).is_relative_to(root/'payload'):raise ValueError('Resolved symlink escapes capsule')
 
 class Child:
  def __init__(self,args,**options):
@@ -190,28 +228,7 @@ def main():
  root=base/('paperclip-cli-qualification-'+uuid.uuid4().hex);root.mkdir(mode=0o755);identity=root.stat();namespace='pccli'+uuid.uuid4().hex[:8];created=False;ns_identity=None;settled=False;success=False;forced_cleanup=False
  run=lambda *a:subprocess.check_output(a,stderr=subprocess.PIPE)
  try:
-  with tarfile.open(archive) as tar:
-   members=tar.getmembers()
-   if len(members)>300000 or sum(m.size for m in members)>8*1024**3:raise ValueError('Archive fixture bound exceeded')
-   for m in members:
-    n=pathlib.PurePosixPath(m.name)
-    if n.is_absolute() or '..' in n.parts or not n.parts or n.parts[0]!='payload' or not (m.isdir() or m.isfile() or m.issym() or m.islnk()) or (not m.issym() and m.mode&0o6022):raise ValueError('Unsafe native fixture member')
-   if not hasattr(tarfile,'data_filter'):raise ValueError('Safe archive data filter required')
-   indexed={m.name:m for m in members}
-   if len(indexed)!=len(members):raise ValueError('Duplicate native archive member')
-   links=[m for m in members if m.islnk()]
-   for m in links:
-    target=indexed.get(m.linkname)
-    if not target or not target.isfile() or target.islnk():raise ValueError('Hardlink target must be an authenticated ordinary member')
-   # Native transport may deduplicate identical files. Materialize only
-   # authenticated contained link targets as independent physical files;
-   # the final capsule/guard still refuses every hardlinked file.
-   tar.extractall(root,members=[m for m in members if not m.islnk()],filter='data')
-   for m in links:
-    target=(root/m.linkname).resolve(strict=True);destination=root/m.name
-    if not target.is_relative_to(root) or not target.is_file() or not destination.parent.resolve(strict=True).is_relative_to(root):raise ValueError('Unsafe hardlink materialization')
-    with target.open('rb') as source,destination.open('xb') as output:shutil.copyfileobj(source,output,1024*1024)
-    destination.chmod(m.mode&0o777)
+  extract_native_capsule(archive,root)
   run('ip','netns','add',namespace);created=True;st=os.stat('/var/run/netns/'+namespace);ns_identity=(st.st_dev,st.st_ino)
   run('ip','netns','exec',namespace,'ip','link','set','lo','up')
   routes=json.loads(run('ip','netns','exec',namespace,'ip','-j','route','show','table','all'))
