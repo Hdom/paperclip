@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2023", "module": "ESNext", "moduleResolution": "Bundler",
+    "jsx": "react-jsx", "strict": true, "skipLibCheck": true, "esModuleInterop": true,
+    "noEmit": true, "types": ["node"], "typeRoots": ["./server/node_modules/@types", "./ui/node_modules/@types"], "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "paths": { "@/*": ["./ui/src/*"] }
+  },
+  "include": ["server/src/management/**/*.ts", "ui/src/management/**/*.tsx", "ui/src/vite-env.d.ts", "ui/vite.management.config.ts"]
+}

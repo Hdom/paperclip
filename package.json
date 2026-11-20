@@ -95,7 +95,11 @@
     "test:lifecycle-baseline": "node tests/lifecycle-baseline/run.mjs",
     "test:lifecycle-baseline:support": "node --test tests/lifecycle-baseline/report.test.mjs",
     "test:lifecycle-baseline:typecheck": "node scripts/typecheck-test-projects.mjs tests/lifecycle-baseline",
-    "verify": "node --import ./cli/node_modules/tsx/dist/loader.mjs scripts/ensure-workspace-package-links.ts && node scripts/local-verify.mjs"
+    "verify": "node --import ./cli/node_modules/tsx/dist/loader.mjs scripts/ensure-workspace-package-links.ts && node scripts/local-verify.mjs",
+    "management:build": "node scripts/build-management.mjs",
+    "management:typecheck": "tsc -p tsconfig.management.json",
+    "management:test": "node --test scripts/__tests__/management-only.test.mjs",
+    "management:test:browser": "node scripts/test-management-browser.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
