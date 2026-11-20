@@ -8,7 +8,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixture } from "./__tests__/management-test-fixture.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const entry = path.join(root, "server/dist-management/entry.mjs"), ui = path.join(root, "ui/dist-management");
+const packageRoot=process.env.MANAGEMENT_PACKAGE_DIR;
+const entry = packageRoot ? path.join(packageRoot,"entry.mjs") : path.join(root, "server/dist-management/entry.mjs"), ui = packageRoot ? path.join(packageRoot,"ui") : path.join(root, "ui/dist-management");
 const f = fixture({issueCount:2000}); let child, browser; const findings = { projectedTasks:2000, cliStart: false, desktop: false, phone: false, restart: false, anonymousDenied: false, expiredDenied: false, unexpectedRequests: [], badResponses: [], pageErrors: [], consoleErrors: [] };
 const freePort = async () => { const s = createServer(); await new Promise(ok => s.listen(0,"127.0.0.1",ok)); const port = s.address().port; await new Promise(ok => s.close(ok)); return port; };
 async function start(port) {

@@ -38,6 +38,25 @@ unexpected requests. It neither starts the normal app nor calls real providers.
 The tests also exercise human/company/digest/signature/time refusals, immutable
 data, file replacement, unsafe ancestors/links, asset tampering and write denial.
 
+## Exact archive qualification
+
+The fork's Linux qualification workflow retains its existing coverage and adds
+management build/type/integrity checks. After the normal package qualification,
+it assembles a separate `paperclip-management-<source>.tar.gz` and checks that
+exact archive. This archive contains only the management entry, reviewed static
+assets and generic closure/source manifests. It contains no data or auth config.
+
+`scripts/package-management.mjs` requires a clean exact source revision and
+rebuilds its inputs. `scripts/qualify-management-archive.mjs` checks the archive
+digest through a stable descriptor, bounded decompression, file-only inventory
+and every extracted file digest before
+running the negative tests and real CLI/browser acceptance from the extraction.
+The same immutable verified tar bytes feed listing and extraction; replacement
+or in-place archive mutation during capture is refused before execution.
+The hosted artifact records the exact source/archive digest and synthetic test
+evidence. It does not publish or activate a release, configure live access or
+start the normal runtime. The ordinary app/operator packages remain unchanged.
+
 ## Projection and file authority
 
 `server/src/management/projection.ts` owns the exact bounded v1 schema. It accepts

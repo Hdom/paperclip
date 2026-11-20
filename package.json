@@ -98,7 +98,7 @@
     "verify": "node --import ./cli/node_modules/tsx/dist/loader.mjs scripts/ensure-workspace-package-links.ts && node scripts/local-verify.mjs",
     "management:build": "node scripts/build-management.mjs",
     "management:typecheck": "tsc -p tsconfig.management.json",
-    "management:test": "node --test scripts/__tests__/management-only.test.mjs",
+    "management:test": "node --test scripts/__tests__/management-only.test.mjs scripts/__tests__/management-archive-reader.test.mjs",
     "management:test:browser": "node scripts/test-management-browser.mjs"
   },
   "devDependencies": {

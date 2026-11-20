@@ -78,6 +78,12 @@ jobs:
       - name: Install locked dependencies
         working-directory: source
         run: pnpm install --frozen-lockfile
+      - name: Build and check isolated management entry
+        working-directory: source
+        run: |
+          pnpm management:build
+          pnpm management:typecheck
+          pnpm management:test
       - name: Build all workspaces
         working-directory: source
         run: /usr/bin/time -v pnpm build
@@ -175,6 +181,28 @@ jobs:
             --user "$(id -un)" --node-bin "$(dirname "$(command -v node)")" \
             --archive "$assets/$app" --sha256 "$app_digest" --source "$PAPERCLIP_BUILD_COMMIT" \
             --operator-archive "$assets/$operator" --operator-sha256 "$operator_digest"
+      - name: Assemble exact isolated management archive
+        working-directory: source
+        run: node scripts/package-management.mjs "$PAPERCLIP_BUILD_COMMIT" "$RUNNER_TEMP/management-release"
+      - name: Qualify exact management archive CLI and browser
+        working-directory: source
+        run: |
+          archive="paperclip-management-${PAPERCLIP_BUILD_COMMIT:0:12}.tar.gz"
+          assets="$RUNNER_TEMP/management-release"
+          (cd "$assets" && sha256sum -c SHA256SUMS)
+          digest="$(awk -v name="$archive" '$2 == name {print $1}' "$assets/SHA256SUMS")"
+          [[ "$digest" =~ ^[a-f0-9]{64}$ ]]
+          node scripts/qualify-management-archive.mjs "$assets/$archive" "$digest" "$PAPERCLIP_BUILD_COMMIT" "$RUNNER_TEMP/management-evidence"
+      - name: Upload verified management candidate and evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: paperclip-management-${{ inputs.source_sha }}
+          path: |
+            ${{ runner.temp }}/management-release/*
+            ${{ runner.temp }}/management-evidence/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
       - name: Upload verified candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

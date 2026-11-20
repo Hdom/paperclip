@@ -5,11 +5,12 @@ import fs, { readFileSync, writeFileSync, chmodSync, symlinkSync, mkdirSync, cop
 import { syncBuiltinESMExports } from "node:module";
 import { generateKeyPairSync, createPublicKey, verify } from "node:crypto";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { loadManagement } from "../../server/dist-management/entry.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { canonical, fixture } from "./management-test-fixture.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const ui = path.join(root, "ui/dist-management");
+const packageRoot=process.env.MANAGEMENT_PACKAGE_DIR;
+const ui = packageRoot ? path.join(packageRoot,"ui") : path.join(root, "ui/dist-management");
+const {loadManagement}=await import(pathToFileURL(packageRoot ? path.join(packageRoot,"entry.mjs") : path.join(root,"server/dist-management/entry.mjs")));
 async function setup(t) {
   const f = fixture(); t.after(() => f.cleanup()); const { server, projectionSha256 } = loadManagement(f.projectionPath, f.authPath, ui);
   await new Promise(ok => server.listen(0, "127.0.0.1", ok)); t.after(() => new Promise(ok => { server.close(ok); server.closeAllConnections(); }));
@@ -37,7 +38,7 @@ test("fail closed for agent, foreign company, subject, issuer, audience and gene
 });
 test("strict short-lived signed assertion checks", async t => {
   const f = await setup(t), now = Math.floor(Date.now() / 1000);
-  for (const change of [{ iat: now - 120, nbf: now - 120, exp: now - 60 }, { exp: now + 61 }, { iat: now + 20, nbf: now + 20, exp: now + 60 }, { iat: "0" }, { exp: Infinity }, { nbf: now - 1 }]) assert.equal((await f.get("/", { token: f.token(change) })).status, 401);
+  for (const change of [{ iat: now - 120, nbf: now - 120, exp: now - 60 }, { iat: now, nbf: now, exp: now + 61 }, { iat: now + 20, nbf: now + 20, exp: now + 60 }, { iat: "0" }, { exp: Infinity }, { nbf: now - 1 }]) assert.equal((await f.get("/", { token: f.token(change) })).status, 401);
   for (const header of [{ alg: "none" }, { alg: "HS256" }, { jku: "https://untrusted.invalid/key" }]) assert.equal((await f.get("/", { token: f.token({}, header) })).status, 401);
   assert.equal((await f.get("/", { token: f.token({}, {}, generateKeyPairSync("ed25519").privateKey) })).status, 401);
   for (const token of ["", "a.b.c", f.token()+"=", f.token().replace(/.$/, "!")]) assert.equal((await f.get("/", { token })).status, 401);
@@ -71,7 +72,7 @@ test("loader refuses unsafe files, aliases, asset tampering and oversized inputs
   } finally { f.cleanup(); }
 });
 test("assembled server contains only management code and node builtins", () => {
-  const meta = JSON.parse(readFileSync(path.join(root,"server/dist-management/closure.json")));
+  const meta = JSON.parse(readFileSync(packageRoot ? path.join(packageRoot,"server-closure.json") : path.join(root,"server/dist-management/closure.json")));
   assert.equal(Object.keys(meta.inputs).length,4); for(const file of Object.keys(meta.inputs)) assert.match(file,/server\/src\/management\//);
   for(const output of Object.values(meta.outputs))for(const imp of output.imports)assert.match(imp.path,/^node:(http|crypto|fs|path|url)$/);
 });
